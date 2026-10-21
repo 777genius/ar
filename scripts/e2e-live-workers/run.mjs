@@ -330,6 +330,8 @@ async function codexProjectControllerStartsChildWorker() {
     await mkdir(registryRootDir, { recursive: true });
     await mkdir(jobsRoot, { recursive: true });
     await mkdir(worktreesRoot, { recursive: true });
+    await mkdir(join(root, "consumed-ledger"), { recursive: true });
+    await mkdir(join(root, "consumed-evidence"), { recursive: true });
 
     const prefix = "pc-live-e2e-";
     const controllerJobId = `${prefix}controller`;
@@ -363,9 +365,11 @@ async function codexProjectControllerStartsChildWorker() {
       allowedBranches: ["main", "master"],
       allowedGitRemotes: ["origin"],
       allowedAccountIds: codexAccounts,
+      consumedOutputLedgerRoots: [join(root, "consumed-ledger")],
+      consumedOutputEvidenceRoots: [join(root, "consumed-evidence")],
     };
 
-    await codexGoalTool("codex_goal_create_job", {
+    assertToolOk(codexGoalTool("codex_goal_create_job", {
       registryRootDir,
       jobId: controllerJobId,
       description: "Sandbox project-scoped controller live e2e",
@@ -388,16 +392,16 @@ async function codexProjectControllerStartsChildWorker() {
       projectAccessScope,
       networkAccess: "restricted",
       confirmCreate: true,
-    });
+    }), "create project controller job");
 
-    await codexGoalTool("codex_goal_project_create_worktree", {
+    assertToolOk(codexGoalTool("codex_goal_project_create_worktree", {
       registryRootDir,
       controllerJobId,
       sourceWorkspacePath: sourceWorkspace,
       path: childWorkspace,
       confirmCreateWorktree: true,
-    });
-    await codexGoalTool("codex_goal_project_create_job", {
+    }), "create project child worktree");
+    assertToolOk(codexGoalTool("codex_goal_project_create_job", {
       registryRootDir,
       controllerJobId,
       jobId: childJobId,
@@ -420,13 +424,13 @@ async function codexProjectControllerStartsChildWorker() {
       accessBoundary: "isolated_workspace_write",
       networkAccess: "restricted",
       confirmCreate: true,
-    });
-    await codexGoalTool("codex_goal_project_start", {
+    }), "create project child job");
+    assertToolOk(codexGoalTool("codex_goal_project_start", {
       registryRootDir,
       controllerJobId,
       jobId: childJobId,
       confirmStart: true,
-    });
+    }), "start project child worker");
 
     const result = await waitForCodexProjectChildResult({
       registryRootDir,
@@ -560,6 +564,8 @@ async function codexProjectIntegrationLifecycleTools() {
     const registryRootDir = join(root, "registry");
     const controllerJobId = "pc-integration-controller";
     const controllerJobRoot = join(root, "jobs", controllerJobId);
+    await mkdir(join(root, "consumed-ledger"), { recursive: true });
+    await mkdir(join(root, "consumed-evidence"), { recursive: true });
     await codexGoalTool("codex_goal_create_job", {
       registryRootDir,
       jobId: controllerJobId,
@@ -581,6 +587,8 @@ async function codexProjectIntegrationLifecycleTools() {
         tmuxSessionPrefixes: ["pc-integration-"],
         allowedBranches: [branch],
         allowedGitRemotes: ["origin"],
+        consumedOutputLedgerRoots: [join(root, "consumed-ledger")],
+        consumedOutputEvidenceRoots: [join(root, "consumed-evidence")],
       },
       confirmCreate: true,
     });
@@ -750,9 +758,13 @@ async function codexProjectControllerManifestLivenessContract() {
       skipDoctor: true,
     });
     assertEqual(ordinaryStart.ok, false);
-    assert(
-      String(ordinaryStart.error).includes("codex_goal_access_boundary_blocked"),
-      "ordinary controller launch must fail closed without a broker-only LLM surface",
+    assertEqual(
+      ordinaryStart.reason,
+      "project_control_broker_required",
+    );
+    assertEqual(
+      ordinaryStart.requiredTool,
+      "codex_goal_project_controller_start",
     );
 
     assertToolOk(codexGoalTool("codex_goal_project_create_worktree", {
@@ -1618,6 +1630,8 @@ async function claudeControlledControllerStartsChildWorker() {
     const authRoot = codexAuthRoot;
     await mkdir(registryRootDir, { recursive: true });
     await mkdir(jobsRoot, { recursive: true });
+    await mkdir(join(root, "consumed-ledger"), { recursive: true });
+    await mkdir(join(root, "consumed-evidence"), { recursive: true });
     await mkdir(worktreesRoot, { recursive: true });
 
     const prefix = "claude-pc-live-e2e-";
@@ -1652,6 +1666,8 @@ async function claudeControlledControllerStartsChildWorker() {
       allowedBranches: ["main", "master"],
       allowedGitRemotes: ["origin"],
       allowedAccountIds: codexAccounts,
+      consumedOutputLedgerRoots: [join(root, "consumed-ledger")],
+      consumedOutputEvidenceRoots: [join(root, "consumed-evidence")],
     };
     assertToolOk(codexGoalTool("codex_goal_create_job", {
       registryRootDir,
@@ -2066,18 +2082,26 @@ async function claudeInboxReadOnly() {
     await worker.seedClaudeOAuth({
       oauthToken: "dummy-token-not-used-by-real-cli-engine",
     });
-    const first = await worker.run({
-      jobId: "claude-live-readonly-job",
-      runId: "claude-live-readonly-run-1",
-      prompt:
-        "If an updated task from operator is present, follow it exactly. If no operator update is present, return exactly CLAUDE_WORKER_BASE.",
-    });
-    const second = await worker.run({
-      jobId: "claude-live-readonly-job",
-      runId: "claude-live-readonly-run-2",
-      prompt: "Return exactly CLAUDE_WORKER_SECOND.",
-    });
-    await worker.dispose();
+    let first, second;
+    try {
+      first = await worker.run({
+        jobId: "claude-live-readonly-job",
+        runId: "claude-live-readonly-run-1",
+        prompt:
+          "If an updated task from operator is present, follow it exactly. If no operator update is present, return exactly CLAUDE_WORKER_BASE.",
+      });
+      second = await worker.run({
+        jobId: "claude-live-readonly-job",
+        runId: "claude-live-readonly-run-2",
+        prompt: "Return exactly CLAUDE_WORKER_SECOND.",
+      });
+    } catch (error) {
+      const providerSkip = claudeRunProviderUnavailableSkip(error);
+      if (providerSkip) return providerSkip;
+      throw error;
+    } finally {
+      await worker.dispose();
+    }
     const views = await controlInbox.listSignals({
       target: { jobId: "claude-live-readonly-job" },
       includeBodies: false,
@@ -2127,13 +2151,21 @@ async function claudeInboxEdit() {
     await worker.seedClaudeOAuth({
       oauthToken: "dummy-token-not-used-by-real-cli-engine",
     });
-    const result = await worker.run({
-      jobId: "claude-live-edit-job",
-      runId: "claude-live-edit-run-1",
-      prompt:
-        "Create claude-result.txt with exactly two lines: CLAUDE_EDIT_BASE and base-instruction-used. Verify the file exists before finishing.",
-    });
-    await worker.dispose();
+    let result;
+    try {
+      result = await worker.run({
+        jobId: "claude-live-edit-job",
+        runId: "claude-live-edit-run-1",
+        prompt:
+          "Create claude-result.txt with exactly two lines: CLAUDE_EDIT_BASE and base-instruction-used. Verify the file exists before finishing.",
+      });
+    } catch (error) {
+      const providerSkip = claudeRunProviderUnavailableSkip(error);
+      if (providerSkip) return providerSkip;
+      throw error;
+    } finally {
+      await worker.dispose();
+    }
     const content = await readFile(join(workspacePath, "claude-result.txt"), "utf8");
     const views = await controlInbox.listSignals({
       target: { jobId: "claude-live-edit-job" },
@@ -2209,7 +2241,12 @@ function codexWorker(root, suffix, overrides = {}) {
     model: process.env.CODEX_LIVE_MODEL ?? "gpt-5.5",
     reasoningEffort: process.env.CODEX_LIVE_EFFORT ?? "xhigh",
     serviceTier: process.env.CODEX_LIVE_SERVICE_TIER ?? "fast",
-    sourceEnv: process.env,
+    // The trusted refresh bootstrap enforces the job-root temp boundary.
+    sourceEnv: {
+      ...process.env,
+      SUBSCRIPTION_RUNTIME_JOB_ROOT: join(root, "job-root"),
+      SUBSCRIPTION_RUNTIME_TMPDIR: join(root, "job-root", "tmp"),
+    },
     capacityPolicy: {
       quotaCooldownMs: 60_000,
       reconnectCooldownMs: 60_000,
@@ -2755,6 +2792,28 @@ function claudeControlledProviderUnavailableSkip(status) {
     return {
       skipped: true,
       reason: `Claude live account unavailable: ${safeTail(status.safeMessage ?? status.status)}`,
+    };
+  }
+  return null;
+}
+
+function claudeRunProviderUnavailableSkip(error) {
+  const details = error?.details ?? {};
+  const code = String(details.code ?? "");
+  const message = String(error?.message ?? "").toLowerCase();
+  if (
+    code === "quota_limited" ||
+    code === "account_unavailable" ||
+    message.includes("usage limit") ||
+    message.includes("quota") ||
+    message.includes("rate limit") ||
+    message.includes("not authenticated") ||
+    message.includes("oauth") ||
+    message.includes("login")
+  ) {
+    return {
+      skipped: true,
+      reason: `Claude live account unavailable: ${safeTail(String(error?.message ?? code))}`,
     };
   }
   return null;
