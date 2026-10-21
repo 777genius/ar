@@ -826,6 +826,15 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
           registryDir: existsSync(root + "/state/registry/" + jobId) };
       } catch { facts.runPath = "unreadable"; }
       try {
+        const hp = "/var/lib/subscription-runtime-host-policy";
+        facts.hostPolicy = { receiptHistory: existsSync(hp + "/dependency-receipt-history"),
+          sourceBindings: existsSync(hp + "/dependency-source-bindings"),
+          receipts: existsSync(hp + "/dependency-receipts"),
+          readonlyStarts: existsSync(hp + "/readonly-dependency-starts"),
+          readonlyEpoch: existsSync(hp + "/readonly-epoch.json"),
+          checkpointAdmission: existsSync(root + "/.terminal-checkpoint-admission") };
+      } catch { facts.hostPolicy = "unreadable"; }
+      try {
         facts.probeFiles = { readonlyProbe: existsSync(workspace + "/TEST-readonly-probe.json"),
           readonlyFailedProbe: existsSync(workspace + "/TEST-readonly-failed-probe.json"),
           providerProbeFailed: existsSync(workspace + "/TEST-provider-probe-failed.json"),
@@ -908,6 +917,15 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
                 target.startsWith("/opt/subscription-runtime") ? "runtime" :
                 target.startsWith("/run/") ? "run" : target.startsWith("/etc/") ? "etc" : "other";
               shape.fsPathLength = Math.min(target.length, 4096);
+              shape.fsLeaf = target === "/var/lib/subscription-runtime-host-policy/dependency-receipt-history" ? "receipt_history" :
+                target === "/var/lib/subscription-runtime-host-policy/dependency-source-bindings" ? "source_bindings" :
+                target === "/var/lib/subscription-runtime-host-policy/dependency-receipts" ? "receipts" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-dependency-starts" ? "readonly_starts" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-epoch.json" ? "readonly_epoch" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-inventory.json" ? "readonly_inventory" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-custody" ? "readonly_custody" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-services" ? "readonly_services" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-revoked" ? "readonly_revoked" : "other";
             } else if (/^[A-Z][A-Z_]{1,20}: /.test(trimmed)) shape.errorClass = "node_other";
             else if (/^[a-z][a-z0-9_]{2,60}[:; ]/.test(trimmed)) {
               shape.errorClass = "token_message";
