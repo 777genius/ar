@@ -243,9 +243,12 @@ export class CodexJsonAgentDriver implements AgentDriver {
             return {
               status: "failed",
               failure: {
-                code: "provider_session_invalid",
+                // A missing env key is a local configuration gap, not a dead
+                // provider session: provider_session_invalid would disable the
+                // shared account capacity record for every later run.
+                code: "provider_runtime_unavailable",
                 retryable: false,
-                reconnectRequired: true,
+                reconnectRequired: false,
                 safeMessage: `Codex MiMo backend requires ${error.envVarName} to be set.`,
               },
               telemetry: {
