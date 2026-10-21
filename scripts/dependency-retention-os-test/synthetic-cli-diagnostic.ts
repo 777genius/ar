@@ -3,7 +3,7 @@ import type { TransientStartSample } from "./transient-start-diagnostic.ts";
 import { CodexGoalOriginReason, decodeCodexGoalOriginDiagnostic } from "../../dist/worker-codex/codex-goal-origin-diagnostic.js";
 const runtime = "/opt/subscription-runtime-dependency-os-TEST";
 const policy = "/var/lib/subscription-runtime-host-policy";
-export const syntheticProviderSha256 = "47d2ed2c9f76529c20e042694c50e4a51e43a9f2eb5b93f0e2142409dd8809ac";
+export const syntheticProviderSha256 = "c5bcd81e0928e53bd8deb58eaf24e7479ebd45ea37d90752b0f5d649f941f3b2";
 const syntheticPrompt = "Execute the fixed dependency-reading TEST probe. This is a synthetic provider protocol fixture.\n";
 type SyntheticInputs = Readonly<{ scenario: string | undefined; phase: string; entry: string | undefined; command: string;
   jobId: string; root: string; workspace: string; args: readonly string[]; env: Readonly<Record<string, string | undefined>>;

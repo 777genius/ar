@@ -692,7 +692,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   json(runtime + "/codex/TEST-probe.json", { scenario: OwnedOsScenario.Readonly, failSecondReadonlyTurn: true,
     workspace, guestNamespaces: namespaces, inputSha256: digest(input) }, 0o644);
   const args = [runtime + "/dist/worker-codex/codex-goal-cli.js", "run", "--task-id", jobId, "--job-id", jobId,
-    "--job-root", root, "--workspace", workspace, "--prompt", root + "/prompt", "--accounts", "TEST-account", "--auth-root", root + "/auth",
+    "--job-root", root, "--runtime-home-root", root + "/home", "--workspace", workspace, "--prompt", root + "/prompt", "--accounts", "TEST-account", "--auth-root", root + "/auth",
     "--codex-binary", runtime + "/codex/bin/provider.ts", "--model", "TEST-synthetic-model", "--effort", "low",
     "--timeout", "5m", "--max-goal-turns", "1", "--max-attempts", "1", "--continuation-mode", "disabled",
     "--registry-root", root + "/state/registry", "--output", resultPath, "--worker-report-mode", "structured-output"];
@@ -809,10 +809,11 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
         if (!existsSync(path)) facts.providerFailure = "absent";
         else {
           const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-          const record = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as { site?: unknown; code?: unknown } : {};
-          const site = record.site, code = record.code;
+          const record = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as { site?: unknown; code?: unknown; assert?: unknown } : {};
+          const site = record.site, code = record.code, startup = record.assert;
           facts.providerFailure = { site: typeof site === "string" && ["startup", "probe", "protocol", "deadline"].includes(site) ? site : "other",
-            code: Number.isSafeInteger(code) ? code : null };
+            code: Number.isSafeInteger(code) ? code : null,
+            assert: typeof startup === "string" && ["workspace_shape", "cwd_home_identity", "cwd_home_root"].includes(startup) ? startup : null };
         }
       } catch { facts.providerFailure = "unreadable"; }
       try {

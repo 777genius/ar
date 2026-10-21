@@ -231,12 +231,15 @@ const config = JSON.parse(readFileSync(providerConfig, "utf8")) as {
 const workspace = config.workspace;
 // One closed reachability marker: the provider began executing its config.
 try { writeFileSync(workspace + "/TEST-provider-start.json", JSON.stringify({ schemaVersion: 1 }) + "\n", { flag: "wx", mode: 0o600 }); } catch { /* Closed exit channel alone survives. */ }
+let startupAssert: "workspace_shape" | "cwd_home_identity" | "cwd_home_root" = "workspace_shape";
 try {
   if (config.scenario === "readonly") assert.match(workspace, /^\/mnt\/TEST-retention-readonly-storage\/jobs\/TEST-readonly-[a-f0-9-]{36}\/workspace$/);
   else assert.match(workspace, /^\/var\/lib\/subscription-runtime-host-policy\/dependency-test-jobs\/jobs\/TEST-os-[a-f0-9-]{36}\/workspace$/);
+  startupAssert = "cwd_home_identity";
   assert.equal(process.cwd(), process.env.HOME);
+  startupAssert = "cwd_home_root";
   assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/home/"));
-} catch { markProviderFailure("startup", 71); process.stderr.write("TEST_provider_startup_failed\n"); process.exit(71); }
+} catch { markProviderFailure("startup", 71, startupAssert); process.stderr.write("TEST_provider_startup_failed\n"); process.exit(71); }
 let objective = "TEST dependency read", complete = false, initialized = false, started = false, turned = false;
 const threadId = "TEST-thread", turnId = "TEST-turn";
 function send(value: unknown): void { process.stdout.write(JSON.stringify(value) + "\n"); }
@@ -359,10 +362,11 @@ function markProviderTermination(kind: "stdin_eof" | "sigterm"): void {
 }
 /** One closed failure marker before a hard provider exit: fixed site enum and
  * numeric exit code only. Best effort; the exit code stands unchanged. */
-function markProviderFailure(site: "startup" | "probe" | "protocol" | "deadline", code: number): void {
+function markProviderFailure(site: "startup" | "probe" | "protocol" | "deadline", code: number,
+  assertName?: "workspace_shape" | "cwd_home_identity" | "cwd_home_root"): void {
   try {
     writeFileSync(workspace + "/TEST-provider-failure.json",
-      JSON.stringify({ schemaVersion: 1, site, code }) + "\n", { flag: "wx", mode: 0o600 });
+      JSON.stringify({ schemaVersion: 1, site, code, ...(assertName ? { assert: assertName } : {}) }) + "\n", { flag: "wx", mode: 0o600 });
   } catch { /* Closed exit channel alone survives. */ }
 }
 process.once("SIGTERM", () => {
