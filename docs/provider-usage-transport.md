@@ -14,8 +14,12 @@ HTTPS provider endpoint. The child still sends authentication to that endpoint;
 the relay does not return or persist credentials. The upstream target cannot be
 changed through HTTP input and redirects are never followed.
 
-The app-server option also pins one exact model and must belong to one authorized
-invocation. Create a separate engine for each invocation; dispose it after child
+The app-server option records one configured invocation model and must belong to
+one authorized invocation. Client-native model aliases and helper models pass
+through unchanged; telemetry does not grant or restrict inference authority.
+Observed model identity comes only from upstream response metadata. The installed
+Anthropic SDK uses `/v1/messages/count_tokens`; this bounded auxiliary endpoint
+passes through without emitting inference facts. Create a separate engine for each invocation; dispose it after child
 closure. Hosted containment profiles remain unsupported by this loopback option,
 because reaching the host loopback requires a separate existing confinement
 contract. The source-owned hosted MiMo proxy has its own optional

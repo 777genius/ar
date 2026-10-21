@@ -29,7 +29,7 @@ export async function startProviderUsageRelay(input: {
         response.writeHead(404).end(); return;
       }
       const suffix = path.slice(prefix.length);
-      if (!["/responses", "/chat/completions", "/messages", "/v1/messages"].includes(suffix)) { response.writeHead(404).end(); return; }
+      if (!["/responses", "/chat/completions", "/messages", "/v1/messages", "/messages/count_tokens", "/v1/messages/count_tokens"].includes(suffix)) { response.writeHead(404).end(); return; }
       if (active.size >= 8) { response.writeHead(429).end(); return; }
       const controller = new AbortController(); active.add(controller);
       const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 120000); timer.unref();
@@ -45,20 +45,20 @@ export async function startProviderUsageRelay(input: {
         }
         const body = Buffer.concat(chunks);
         const parsed = JSON.parse(body.toString("utf8")) as { model?: unknown };
-        if (parsed.model !== input.model) { response.writeHead(400).end(); return; }
+        if (typeof parsed.model !== "string" || !/^[^\u0000-\u001f\u007f]{1,200}$/.test(parsed.model)) { response.writeHead(400).end(); return; }
         const headers: Record<string, string> = { "content-type": "application/json" };
         const hopByHop = new Set(["host", "connection", "proxy-connection", "proxy-authorization", "transfer-encoding", "content-length", "keep-alive", "upgrade", "te", "trailer", "accept-encoding",
           ...String(request.headers.connection ?? "").split(",").map(value => value.trim().toLowerCase())]);
         for (const [name, value] of Object.entries(request.headers)) {
           if (!hopByHop.has(name) && typeof value === "string") headers[name] = value;
         }
-        call = createProviderCallObservation(input.model, input.observe,
+        if (!suffix.endsWith("/count_tokens")) call = createProviderCallObservation(input.model, input.observe,
           suffix.endsWith("/messages") ? ProviderCallProtocol.AnthropicMessages : suffix === "/chat/completions" ? ProviderCallProtocol.ChatCompletions : ProviderCallProtocol.Responses);
-        await call.dispatched();
+        await call?.dispatched();
         const upstream = await (input.fetchUpstream ?? fetch)(target.href.replace(/\/$/, "") + suffix, {
           method: "POST", headers, body: body.toString("utf8"), signal: controller.signal, redirect: "manual",
         });
-        call.status(upstream.status);
+        call?.status(upstream.status);
         response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/octet-stream", "cache-control": "no-store" });
         if (!upstream.body) { failed = true; response.end(); return; }
         const decoder = new TextDecoder(), sse = upstream.headers.get("content-type")?.includes("text/event-stream");

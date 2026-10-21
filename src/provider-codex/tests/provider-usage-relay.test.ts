@@ -36,11 +36,11 @@ it("retains Anthropic inclusive tokens across split SSE frames and ignores obser
   expect(facts[1]).toMatchObject({ state: "completed", completeness: "complete", tokens: { inputTotal: 35, outputTotal: 7, total: 42, cacheRead: 20 } });
 });
 
-it("never dispatches unauthorized model/path requests", async () => {
+it("never dispatches malformed model or unauthorized path requests", async () => {
   const transport = vi.fn<typeof fetch>();
   const relay = await startProviderUsageRelay({ upstreamBaseUrl: "https://provider.test/v1", model: "allowed", observe: () => {}, fetchUpstream: transport });
   try {
-    expect((await fetch(relay.baseUrl + "/responses", { method: "POST", body: '{"model":"foreign"}' })).status).toBe(400);
+    expect((await fetch(relay.baseUrl + "/responses", { method: "POST", body: '{"model":42}' })).status).toBe(400);
     expect((await fetch(relay.baseUrl + "/../../admin", { method: "POST" })).status).toBe(404);
     expect(transport).not.toHaveBeenCalled();
   } finally { await relay.close(); }
@@ -69,4 +69,20 @@ it("bounds a never-settling observer before upstream dispatch and cleanup", asyn
   const started = performance.now();
   try { const response = await fetch(relay.baseUrl + "/responses", { method: "POST", body: '{"model":"test"}' }); await response.text(); expect(transport).toHaveBeenCalledOnce(); } finally { await relay.close(); }
   expect(performance.now() - started).toBeLessThan(4000);
+});
+
+it("passes resolved aliases and auxiliary token counting without changing bytes or inventing models", async () => {
+  const facts: ProviderCallObservation[] = [];
+  const transport = vi.fn<typeof fetch>().mockImplementation(async () => new Response('{"usage":{"input_tokens":2,"output_tokens":1}}', { headers: { "content-type": "application/json" } }));
+  const relay = await startProviderUsageRelay({ upstreamBaseUrl: "https://provider.test", model: "sonnet", observe: fact => { facts.push(fact); }, fetchUpstream: transport });
+  const body = '{"model":"claude-sonnet-4-6","messages":[]}';
+  try {
+    for (const suffix of ["/v1/messages/count_tokens", "/v1/messages"]) {
+      const response = await fetch(relay.baseUrl + suffix, { method: "POST", body });
+      expect(response.status).toBe(200); await response.text();
+    }
+  } finally { await relay.close(); }
+  expect(transport.mock.calls.map(call => call[1]?.body)).toEqual([body, body]);
+  expect(facts).toHaveLength(2);
+  expect(facts[1]).toMatchObject({ requestedModel: "sonnet", actualModel: null });
 });
