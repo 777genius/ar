@@ -347,7 +347,9 @@ export function setupResearchFixture(): void;
 export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string }): void;
 export function setupResearchFixture(options: { readonly nativeBackingFacts?: boolean; readonly allocationParent?: string } = {}): void {
   fixture.nativeBackingFacts = options.nativeBackingFacts === true;
-  const parent = options.allocationParent ?? (fixture.nativeBackingFacts ? "/dev/shm" : tmpdir());
+  // macOS TMPDIR is a /var -> /private/var alias; the launch contract
+  // requires canonical paths, so allocate under the resolved temp base.
+  const parent = options.allocationParent ?? (fixture.nativeBackingFacts ? "/dev/shm" : nativeFs.realpathSync(tmpdir()));
   if (options.allocationParent !== undefined && (resolve(parent) !== parent || nativeFs.realpathSync(parent) !== parent ||
       !nativeFs.lstatSync(parent).isDirectory() || nativeFs.lstatSync(parent).isSymbolicLink()))
     throw new Error("Expected a canonical TEST fixture allocation parent");
