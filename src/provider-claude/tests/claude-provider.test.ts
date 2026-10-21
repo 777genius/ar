@@ -143,6 +143,11 @@ describe("Claude provider adapter", () => {
         "5 messages remaining until your usage limit resets",
       ),
     ).toBe("quota_limited");
+    expect(
+      classifyClaudeRuntimeFailure(
+        "claude exited 1: You've hit your weekly limit \u00b7 resets 2pm (Europe/Kiev)",
+      ),
+    ).toBe("quota_limited");
     expect(classifyClaudeRuntimeFailure("approval required")).toBe(
       "permission_required",
     );

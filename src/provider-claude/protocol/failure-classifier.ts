@@ -158,7 +158,7 @@ function isQuotaLimited(normalized: string): boolean {
     /\b(?:usage[_ -]?limit(?: reached| exceeded)?|limit reached|quota_exceeded|insufficient_quota)\b/.test(
       normalized,
     ) ||
-    /\byou(?:'|\u2019)ve hit your usage limit\b/.test(normalized) ||
+    /\byou(?:'|\u2019)ve hit your (?:[a-z0-9-]+ )?limit\b/.test(normalized) ||
     /\b(?:purchase|buy|add|get) more credits\b/.test(normalized)
   );
 }
