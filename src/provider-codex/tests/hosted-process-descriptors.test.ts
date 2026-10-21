@@ -13,13 +13,15 @@ const probe = `import { assertHostedProcessDescriptors } from ${JSON.stringify(h
 try { assertHostedProcessDescriptors(); process.stdout.write("accepted"); }
 catch (error) { process.stdout.write(error.message); process.exitCode = 70; }`;
 
-it("accepts an actual fresh process with only pipe stdio", () => {
+// The real-process descriptor probes below scan /proc/self/fd and exist only
+// in the Linux custody contract; other platforms keep the suite honest skips.
+it.skipIf(process.platform !== "linux")("accepts an actual fresh process with only pipe stdio", () => {
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { encoding: "utf8", stdio: "pipe" });
   expect(result.status).toBe(0);
   expect(result.stdout).toBe("accepted");
 });
 
-it.each(["writable", "readonly", "opath", "directory", "stdio"] as const)(
+it.skipIf(process.platform !== "linux").each(["writable", "readonly", "opath", "directory", "stdio"] as const)(
   "rejects an actual inherited %s descriptor before untrusted code", kind => {
     const root = mkdtempSync(join(tmpdir(), "readonly-fd-"));
     const target = join(root, "protected");

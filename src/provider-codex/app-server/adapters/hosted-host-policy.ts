@@ -95,17 +95,25 @@ export function readHostedActivationMode(): HostedActivationMode {
   return HostedActivationMode.Required;
 }
 
+// Containment is only ever proven by cgroup evidence; an absent cgroup file
+// (non-Linux kernel, unmounted cgroupfs) is simply "not proven", never a raw
+// ENOENT leaking past the closed hosted contract.
+function readSelfCgroup(): string | undefined {
+  try { return readFileSync("/proc/self/cgroup", "utf8"); }
+  catch { return undefined; }
+}
+
 export function isHostedContainment(env: Readonly<Record<string, string | undefined>>): boolean {
   if (process.platform !== "linux") return false;
   if (env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" ||
       process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job" ||
-      /\/subscription-runtime-(?:ordinary|outer|hosted|research)-/.test(readFileSync("/proc/self/cgroup", "utf8"))) return true;
+      /\/subscription-runtime-(?:ordinary|outer|hosted|research)-/.test(readSelfCgroup() ?? "")) return true;
   return false;
 }
 
 export function hasHostedActivationOrigin(): boolean {
   return process.platform === "linux" &&
-    /\/subscription-runtime-(?:ordinary|outer)-/.test(readFileSync("/proc/self/cgroup", "utf8"));
+    /\/subscription-runtime-(?:ordinary|outer)-/.test(readSelfCgroup() ?? "");
 }
 
 /** No explicit enrollment can become a baseline launch after grant loss,
