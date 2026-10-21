@@ -15,8 +15,7 @@ export class CodexUsageRelay {
   private relay: Awaited<ReturnType<typeof startProviderUsageRelay>> | undefined;
   private starting: Promise<void> | undefined;
   constructor(private readonly options: { upstreamBaseUrl: string; model: string; observe: ProviderCallObserver; timeoutMs: number }) {}
-  async prepare(model: string): Promise<void> {
-    if (model !== this.options.model) throw new Error("usage_relay_model_scope_invalid");
+  async prepare(_model: string): Promise<void> {
     this.starting ??= startProviderUsageRelay(this.options).then(relay => { this.relay = relay; });
     await this.starting;
   }

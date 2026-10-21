@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { PackagedCodexJsonExecutionEngine } from "../codex-json-execution-engine";
+import { CodexUsageRelay } from "../provider-usage-relay-config";
 import { StaticRunner } from "./codex-provider-test-support";
 import type { ProviderCallObservation } from "../../provider-usage/provider-call-observation";
 
@@ -31,4 +32,10 @@ it("routes the actual child-selected endpoint through telemetry even when the ch
     expect(facts.map(f => f.state)).toEqual(["dispatched", "completed"]);
     expect(facts[1]?.tokens.total).toBe(10);
   } finally { fetchSpy.mockRestore(); await rm(directory, { recursive: true, force: true }); }
+});
+
+it("does not turn optional telemetry model metadata into app-server execution admission", async () => {
+  const relay = new CodexUsageRelay({ upstreamBaseUrl: "https://api.anthropic.com", model: "sonnet", observe: () => {}, timeoutMs: 1000 });
+  try { await expect(relay.prepare("claude-haiku-4-5")).resolves.toBeUndefined(); expect(relay.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/); }
+  finally { await relay.close(); }
 });
