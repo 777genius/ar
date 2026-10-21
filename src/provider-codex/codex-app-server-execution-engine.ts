@@ -81,8 +81,7 @@ import {
 import { appServerEngineCapabilities, appServerWireOutputSchema, resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
 import { CodexModelBackend } from "./codex-model-backend";
 import { codexProviderEgressPolicy } from "./codex-provider-egress-policy";
-import { startProviderUsageRelay } from "../provider-usage/provider-usage-relay";
-import { providerUsageRelayArgs } from "./provider-usage-relay-config";
+import { CodexUsageRelay } from "./provider-usage-relay-config";
 export type {
   CodexAppServerChildProcess,
   CodexAppServerProcessFactory,
@@ -107,14 +106,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   private readonly executionProfile: ResolvedCodexExecutionProfile;
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
-  private usageRelay: Awaited<ReturnType<typeof startProviderUsageRelay>> | undefined;
-  private usageRelayStarting: Promise<void> | undefined;
-  private async ensureUsageRelay(model: string): Promise<void> {
-    if (!this.options.usageRelay) return;
-    if (model !== this.options.usageRelay.model) throw new Error("usage_relay_model_scope_invalid");
-    this.usageRelayStarting ??= startProviderUsageRelay({ ...this.options.usageRelay, timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs }).then(relay => { this.usageRelay = relay; });
-    await this.usageRelayStarting;
-  }
+  private readonly usageRelay: CodexUsageRelay | undefined;
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
     const captured = { ...options };
     this.options = { ...captured, ...(captured.providerEgressPolicy ? {
@@ -122,6 +114,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     } : {}) };
     options = this.options;
     this.executionLifetime = resolveAppServerEngineLifetime(options);
+    this.usageRelay = options.usageRelay ? new CodexUsageRelay({ ...options.usageRelay, timeoutMs: options.timeoutMs ?? defaultTimeoutMs }) : undefined;
     this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
     if (options.usageRelay && (options.hostedPermissionProfiles || options.hostedCodingAuthority || options.childBudget || options.executionLifetime)) throw new Error("usage_relay_hosted_profile_unsupported");
     if (!options.codexBinaryPath.trim()) {
@@ -150,10 +143,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(this.options.providerEgressPolicy ? { providerEgressPolicy: this.options.providerEgressPolicy } : {}),
       ...(options.publicSourceReader ? { publicSourceReader: options.publicSourceReader } : {}),
       ...(options.hostedPermissionProfiles === undefined ? {} : { hostedPermissionProfiles: options.hostedPermissionProfiles }),
-      processFactory: options.usageRelay ? (input => {
-        if (!this.usageRelay) throw new Error("usage_relay_not_initialized");
-        return (options.processFactory ?? spawnCodexAppServerProcess)({ ...input, args: [...providerUsageRelayArgs(this.modelBackend, this.usageRelay.baseUrl), ...input.args] });
-      }) : options.processFactory ?? spawnCodexAppServerProcess,
+      processFactory: this.usageRelay ? this.usageRelay.wrapProcessFactory(this.modelBackend, options.processFactory ?? spawnCodexAppServerProcess) : options.processFactory ?? spawnCodexAppServerProcess,
       signalChildProcess: signalCodexAppServerChildGroup,
       runStore: this.runStore,
       ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
@@ -191,7 +181,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     });
   }
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
-    await this.ensureUsageRelay(input.model);
+    if (this.usageRelay) await this.usageRelay.prepare(input.model);
     this.options.childBudget?.beginInvocation();
     const returned = new AppServerReturnedEvidence();
     const pending = this.runInvocation(input, returned);
@@ -245,7 +235,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       readonly previousCheckpoint?: string;
     },
   ): Promise<CodexLogicalThreadExecutionResult> {
-    await this.ensureUsageRelay(input.model);
+    if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     return await runCodexAppServerLogicalThreadWithSlot(input, {
@@ -283,7 +273,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionResult> {
-    await this.ensureUsageRelay(input.model);
+    if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     const schemaPlan = prepareCodexOutputSchemaPlan(input.outputSchema);
@@ -303,7 +293,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   async dispose(): Promise<void> {
     this.executionLifetime?.close();
     try { await this.slotPool.dispose(); }
-    finally { await this.usageRelayStarting; await this.usageRelay?.close(); }
+    finally { await this.usageRelay?.close(); }
     await this.options.fallback?.dispose?.();
   }
   async prewarm(input: {
@@ -317,7 +307,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly warmupPrompt?: string;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionPrewarmResult> {
-    await this.ensureUsageRelay(input.model);
+    if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.executionLifetime) throw new Error("child_prewarm_denied");
     try {
       const slot = await this.slotPool.ensureSlot(input);
