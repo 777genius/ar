@@ -24,6 +24,7 @@ import {
   durableCodexGoalHandoffPacketFiles,
 } from "../codex-goal-durable-handoff-packet";
 import {
+  materializeReconciledTerminalCodexGoalHandoff,
   terminalCodexGoalHandoffResultDetails,
   tryMaterializeTerminalCodexGoalHandoff,
 } from "../codex-goal-terminal-handoff-materialization";
@@ -441,6 +442,25 @@ describe("durable terminal handoff packet", () => {
       },
     })).rejects.toThrow("handoff_workspace_changed_during_materialization");
     expect(await readDirectoryNames(fixture.durableRoot)).toEqual([]);
+  });
+
+  it("diagnoses a workspace without any base commit instead of a generic materialization failure", async () => {
+    const fixture = await createFixture();
+    const unborn = join(fixture.root, "unborn-workspace");
+    await mkdir(unborn);
+    await git(unborn, ["init", "--quiet", "--initial-branch=main"]);
+    await git(unborn, ["config", "user.name", "iliya"]);
+    await git(unborn, ["config", "user.email", "iliyazelenkog@gmail.com"]);
+    await writeFile(join(unborn, "dirty.txt"), "no base commit yet\n");
+    await expect(materializeReconciledTerminalCodexGoalHandoff({
+      config: {
+        jobRootDir: fixture.root,
+        taskId: "task-1",
+        workspacePath: unborn,
+        durableHandoffRootDir: fixture.durableRoot,
+      },
+      changedFiles: ["dirty.txt"],
+    })).rejects.toThrow("dirty_terminal_handoff_unavailable:handoff_base_commit_required");
   });
 
   it("defaults the durable root under the job root and exposes packet SHA details", async () => {

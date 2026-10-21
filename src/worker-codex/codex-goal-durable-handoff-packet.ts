@@ -162,6 +162,10 @@ export async function materializeDurableCodexGoalHandoffPacket(input: {
   if (managedContext === undefined) await chmod(durableRootDir, 0o700);
   else assertManagedDependencyGitContext(managedContext);
 
+  // Terminal capture requires a real base commit; an unborn HEAD would fail
+  // inside identity capture as an opaque git error otherwise.
+  if (await gitOptionalText(workspacePath, ["rev-parse", "--verify", "--quiet", "HEAD"], managedContext) === undefined)
+    throw new Error("handoff_base_commit_required");
   for (let attempt = 1; attempt <= captureAttempts; attempt += 1) {
     const before = await captureWorkspaceIdentity(workspacePath, managedContext);
     if (input.expectedHeadCommit && input.expectedHeadCommit !== before.head) {
