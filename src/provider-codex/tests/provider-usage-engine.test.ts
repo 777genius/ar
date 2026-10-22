@@ -5,6 +5,8 @@ import { expect, it, vi } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { PackagedCodexJsonExecutionEngine } from "../codex-json-execution-engine";
 import { CodexUsageRelay } from "../provider-usage-relay-config";
+import { CodexModelBackend } from "../codex-model-backend";
+import type { CodexAppServerProcessFactory } from "../app-server/application/app-server-process-port";
 import { StaticRunner } from "./codex-provider-test-support";
 import type { ProviderCallObservation } from "../../provider-usage/provider-call-observation";
 
@@ -38,4 +40,21 @@ it("does not turn optional telemetry model metadata into app-server execution ad
   const relay = new CodexUsageRelay({ upstreamBaseUrl: "https://api.anthropic.com", model: "sonnet", observe: () => {}, timeoutMs: 1000 });
   try { await expect(relay.prepare("claude-haiku-4-5")).resolves.toBeUndefined(); expect(relay.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/); }
   finally { await relay.close(); }
+});
+
+it("preserves the original storage-context marker through the usage relay process factory", () => {
+  const relay = new CodexUsageRelay({ upstreamBaseUrl: "https://api.anthropic.com", model: "sonnet", observe: () => {}, timeoutMs: 1000 });
+  const base = Object.assign((() => { throw new Error("not spawned"); }) as unknown as CodexAppServerProcessFactory, { originalProviderStorageContext: true as const });
+  const wrapped = relay.wrapProcessFactory(CodexModelBackend.XiaomiMimoTokenPlan, base);
+  expect(wrapped.originalProviderStorageContext).toBe(true);
+});
+
+it("retries a later prepare after a failed relay start and disposes cleanly", async () => {
+  const options = { upstreamBaseUrl: "http://insecure.test", model: "sonnet", observe: () => {}, timeoutMs: 1000 };
+  const relay = new CodexUsageRelay(options);
+  await expect(relay.prepare("sonnet")).rejects.toThrow("usage_relay_target_invalid");
+  await expect(relay.close()).resolves.toBeUndefined();
+  options.upstreamBaseUrl = "https://api.anthropic.com";
+  await expect(relay.prepare("sonnet")).resolves.toBeUndefined();
+  await expect(relay.close()).resolves.toBeUndefined();
 });

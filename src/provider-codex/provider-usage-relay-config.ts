@@ -17,17 +17,20 @@ export class CodexUsageRelay {
   constructor(private readonly options: { upstreamBaseUrl: string; model: string; observe: ProviderCallObserver; timeoutMs: number }) {}
   async prepare(_model: string): Promise<void> {
     this.starting ??= startProviderUsageRelay(this.options).then(relay => { this.relay = relay; });
-    await this.starting;
+    try { await this.starting; } catch (error) { this.starting = undefined; throw error; }
   }
   wrapProcessFactory(backend: CodexModelBackend, factory: CodexAppServerProcessFactory): CodexAppServerProcessFactory {
-    return input => factory({ ...input, args: [...providerUsageRelayArgs(backend, this.baseUrl), ...input.args] });
+    const wrapped: CodexAppServerProcessFactory = input => factory({ ...input, args: [...providerUsageRelayArgs(backend, this.baseUrl), ...input.args] });
+    if (factory.originalProviderStorageContext) Object.defineProperty(wrapped, "originalProviderStorageContext", { value: true });
+    return wrapped;
   }
   get baseUrl(): string {
     if (!this.relay) throw new Error("usage_relay_not_initialized");
     return this.relay.baseUrl;
   }
   async close(): Promise<void> {
-    await this.starting;
+    await this.starting?.catch(() => undefined);
+    this.starting = undefined;
     await this.relay?.close();
   }
 }
