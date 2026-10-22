@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {assertCiRootProtocolTap} from "./current-h1-tool-inputs-ci.ts";
 
-// Names and summary verified against run38609653829 artifact11917466947.
+// Case names mirror the fixed mandatory ROOT inventory; summary counts mirror the fixed protocol inventory.
 // This isolated parser test is not part of the fixed ROOT child invocation.
 const cases=[
+ "shared decoder adapters retain the CI scope and cannot turn expired/caller DATA into a native tool launch",
  "qualified package lock reproduces the previously measured complete signed image",
  "qualified acquisition pins every dependency and retains all five original seeds",
  "real acquired file hashes retained bytes and refuses post-read deadline/identity mutation",
@@ -15,10 +16,10 @@ const cases=[
  "selected ROOT detects nested caller mutations at real yields including frozen parents and complete fallback",
  "selected ROOT refuses inherited function and getter hooks at optimized fallback and publication windows"
 ];
-const tap=cases.map((name,index)=>`ok ${index+1} - ${name}`).join("\n")+"\n# tests 43\n# pass 42\n# fail 0\n# skipped 1\n";
+const tap=cases.map((name,index)=>`ok ${index+1} - ${name}`).join("\n")+"\n# tests 45\n# pass 44\n# fail 0\n# skipped 1\n";
 test("fixed ROOT inventory accepts expanded successful summary and refuses old counts or failures",()=>{
  assert.doesNotThrow(()=>assertCiRootProtocolTap(tap));
- for(const changed of [tap.replace("# tests 43","# tests 41").replace("# pass 42","# pass 40"),tap.replace("# fail 0","# fail 1"),tap.replace("# skipped 1","# skipped 2"),tap.replace("# pass 42","# pass 41")])assert.throws(()=>assertCiRootProtocolTap(changed));
+ for(const changed of [tap.replace("# tests 45","# tests 43").replace("# pass 44","# pass 42"),tap.replace("# fail 0","# fail 1"),tap.replace("# skipped 1","# skipped 2"),tap.replace("# pass 44","# pass 43")])assert.throws(()=>assertCiRootProtocolTap(changed));
 });
 test("each new and original mandatory ROOT case must pass without skipping or renaming",()=>{
  for(const name of cases){
