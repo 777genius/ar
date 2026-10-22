@@ -13,6 +13,11 @@ function churnChild() {
   return { child, pid: child.pid };
 }
 
+// Known flake modes (2026-10), both harness-premise loss, not product regressions:
+// (1) hosted_fd_boundary_unresolved on an empty fdinfo read, fixed by the
+// empty-body drop handling; (2) rows 0-2 missing without a throw = the churn
+// child died mid-loop (a zombie's fd table is empty and exitCode stays null
+// because this loop never yields). Rerun the shard on red.
 linuxOnly("observes a live process without losing rows to transient fd churn", async () => {
   const { child, pid } = churnChild();
   try {
