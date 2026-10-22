@@ -12,8 +12,11 @@ import type {
   ClaudeTaskExecutionResult,
 } from "../task/engine-contract";
 import { claudeCliEnvForSession } from "./claude-cli-env";
+import { startProviderUsageRelay } from "../../provider-usage/provider-usage-relay";
+import type { ProviderCallObserver } from "../../provider-usage/provider-call-observation";
 
 export type ClaudeCliTaskExecutionEngineOptions = {
+  readonly usageRelay?: { readonly upstreamBaseUrl: string; readonly observe: ProviderCallObserver };
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
   readonly claudePath?: string;
   readonly timeoutMs?: number;
@@ -37,17 +40,18 @@ export class ClaudeCliTaskExecutionEngine implements ClaudeTaskExecutionEngine {
     assertClaudeReadOnlyToolPolicy(input.editMode, input.allowedTools);
 
     const warnings = unsupportedWarnings(input);
-    const result = await input.runner.run({
+    const relay = this.options.usageRelay ? await startProviderUsageRelay({ ...this.options.usageRelay, model: input.model, timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs }) : undefined;
+    const result = await (async () => { try { return await input.runner.run({
       command: this.options.claudePath ?? "claude",
       args: this.args(input),
       cwd: input.workspacePath,
-      env: claudeCliEnvForSession({
+      env: { ...claudeCliEnvForSession({
         session: input.session,
         baseEnv: this.options.baseEnv ?? process.env,
-      }),
+      }), ...(relay ? { ANTHROPIC_BASE_URL: relay.baseUrl } : {}) },
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
       abortSignal: input.abortSignal,
-    });
+    }); } finally { await relay?.close(); } })();
 
     const stdout = input.redactor.redact(result.stdout.trim());
     const stderr = input.redactor.redact(result.stderr.trim());

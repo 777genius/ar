@@ -56,7 +56,7 @@ export function runtimeDiagnostic(text: string) {
     "hosted_custody_runtime_bootstrap_denied", "hosted_custody_kernel_evidence_invalid", "hosted_readonly_policy_invalid",
     "hosted_activation_evidence_invalid", "hosted_activation_authority_required", "system_bus_infrastructure_invalid", "system_bus_infrastructure_unqualified", "hosted_process_admission_required",
     "hosted_process_activation_invalid", "dependency_cleanup_unresolved", "dependency_profile_unsupported", "dependency_environment_busy",
-    "dependency_needs_install", "dependency_tree_unsafe", "hosted_fd_profile_invalid", "hosted_fd_boundary_unresolved",
+    "dependency_needs_install", "dependency_tree_unsafe", "dependency_installer_unresolved", "hosted_fd_profile_invalid", "hosted_fd_boundary_unresolved",
     "hosted_fd_launch_invalidated", "hosted_fd_input_overflow", "TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline",
     "hosted_readonly_operator_action_failed", "hosted_readonly_host_operator_required", "hosted_readonly_authority_invalid",
     "hosted_readonly_managed_grant_required", "hosted_readonly_independent_review_required", "hosted_readonly_verified_stage_required",
@@ -84,8 +84,11 @@ export function command(file: string, args: readonly string[], timeout = 30000, 
   fifth?: string | ((failure: CommandFailure) => void), tmpdir?: string): string {
   const onFailure = typeof fifth === "function" ? fifth : undefined;
   const temporary = typeof fifth === "string" ? fifth : tmpdir;
+  // Pipe stdin with immediate EOF, never /dev/null: the product descriptor
+  // boundary (assertHostedProcessDescriptors) requires FIFO/socket stdio and
+  // denies a character-device stdin before any operator action runs.
   const result = spawnSync(file, [...args], { cwd, env: temporary === undefined ? cleanEnv : { ...cleanEnv, TMPDIR: temporary }, encoding: "utf8", timeout,
-    maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    maxBuffer: 4 * 1024 * 1024, input: "", stdio: ["pipe", "pipe", "pipe"] });
   if (result.error || result.status !== 0 || result.signal !== null) {
     onFailure?.({ status: result.status, signal: result.signal, diagnostic: runtimeDiagnostic((result.stdout ?? "") + "\n" + (result.stderr ?? "")) });
   }
@@ -108,7 +111,9 @@ export function directoryIdentity(path: string) {
   const stat = lstatSync(path, { bigint: true }); assert(stat.isDirectory() && !stat.isSymbolicLink());
   return { canonicalPath: path, dev: String(stat.dev), ino: String(stat.ino) };
 }
-export function installedArtifactDigest(): string {
+// Existing current/registration callers retain the full inventory; CLOSED
+// dependency/readonly guests select their actual composed scenario explicitly.
+export function installedArtifactDigest(scenario: OwnedOsScenario = OwnedOsScenario.CurrentDependency): string {
   const entries: unknown[] = []; let count = 0, size = 0; const deadline = Date.now() + 30000;
   function walk(path: string): void {
     assert(++count <= 200000 && Date.now() < deadline);
@@ -127,58 +132,119 @@ export function installedArtifactDigest(): string {
     }
   }
   for (const name of ["dist", "packages", "node_modules", "scripts", "package.json", "toolchain"]) walk(runtime + "/" + name);
-  for (const relative of currentBackingRuntimeModules) walk(runtime + "/" + relative);
+  if (scenario === OwnedOsScenario.CurrentDependency)
+    for (const relative of currentBackingRuntimeModules) walk(runtime + "/" + relative);
   return digest(JSON.stringify(entries));
 }
 
 // Only the fixed guest service invokes this builtin-only bootstrap. Production
 // module imports belong to the child so even an import/ELF failure is observable.
 if (process.argv[2] === "control-sink" && process.argv[1] === runtime + "/scripts/dependency-retention-os-test/common.ts") {
-  assert.equal(process.argv.length, 3); assert.equal(process.execPath, node); assert(process.send && process.connected);
-  const { readHostedReadonlyHostInventory } = await import("../../dist/worker-codex/hosted-readonly-host-kernel.js");
-  const { HostedInstallationActivationStore } = await import("../../dist/worker-codex/hosted-installation-activation.js");
-  const { hostedFdLaunch, hostedFdInvocationUnit, HostedFdLaunchKind, spawnHostedFdChild } =
-    await import("../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js");
-  const { retryHostedFenceAcquisition } = await import("../../dist/provider-codex/app-server/adapters/hosted-fd-fence.js");
-  const { requireHostedForegroundRequest, publishHostedForegroundResult, hostedForegroundExitCode } =
-    await import("../../dist/worker-codex/hosted-foreground-result.js");
-  const store = new HostedInstallationActivationStore(), launch = readHostedReadonlyHostInventory().runtimeLaunch;
-  const request = requireHostedForegroundRequest(launch.args, launch.cwd);
-  const child = store.runOrdinaryRuntimeLaunch(launch.command, launch.args, launch.cwd, actual =>
-    spawnHostedFdChild(actual.command, actual.args, { cwd: launch.cwd }, hostedFdInvocationUnit(actual.args), HostedFdLaunchKind.Foreground));
-  const closed = new Promise<void>((resolve, reject) => {
-    child.once("error", reject); child.once("close", (code, signal) => code === 0 && signal === null ? resolve() : reject(new Error("TEST control-sink child failed")));
-  });
-  void closed.catch(() => {});
-  const guard = hostedFdLaunch(child); child.stdin!.on("error", () => {});
-  const timeout = setTimeout(() => { guard.invalidate(); child.kill("SIGTERM"); }, 6 * 60000);
+  // Closed-fact TEST diagnostics only: one stage token and one classified exit
+  // code. No payload, path or raw error text is ever recorded, and these facts
+  // have no authority or effect on production gates.
+  let stage = "argv_identity", requestFdCountBefore = -1, requestFdCountAfter = -1;
+  const diagnostic = (exitClass: string) => {
+    try { writeFileSync("/run/TEST-control-sink-diagnostic.json", JSON.stringify({ schemaVersion: 1, stage, exitClass,
+      requestFdCountBefore, requestFdCountAfter }) + "\n", { mode: 0o600 }); }
+    catch { /* TEST-only diagnostic. */ }
+  };
+  const classifyExit = (error: unknown): string => {
+    if (error instanceof Error && (error as { code?: unknown }).code === "ERR_ASSERTION") return "assertion";
+    const known: Record<string, string> = {
+      hosted_foreground_result_unresolved: "request_unresolved", hosted_fd_launch_invalidated: "launch_invalidated",
+      hosted_fd_input_overflow: "input_overflow", child_invocation_consumed: "invocation_consumed",
+      hosted_readonly_host_operator_required: "operator_required", hosted_readonly_authority_invalid: "authority_invalid",
+      hosted_activation_invalid: "activation_invalid", hosted_activation_evidence_invalid: "activation_evidence_invalid",
+      hosted_activation_publication_recovery_required: "publication_recovery_required",
+      hosted_activation_stop_incomplete: "activation_stop_incomplete", hosted_activation_authority_required: "activation_authority_required",
+      hosted_ordinary_owned_unresolved: "owned_unresolved", hosted_custody_inherited_handle_denied: "descriptor_denied",
+      hosted_custody_stdio_pipe_required: "stdio_pipe_required", hosted_custody_descriptor_invalid: "descriptor_invalid",
+      hosted_custody_launch_frame_invalid: "frame_invalid", hosted_custody_creator_not_fenced: "creator_not_fenced",
+      hosted_custody_stop_incomplete: "custody_stop_incomplete", hosted_fd_boundary_unresolved: "fd_boundary_unresolved"
+    };
+    const code = error instanceof Error ? error.message : "";
+    return code in known ? known[code]! : error instanceof Error ? "unclassified" : "non_error_throw";
+  };
   try {
-    await guard.observe();
-    // This IPC barrier delays TEST observation only. It supplies no fence,
-    // owner/Ready/peer facts, and the product revalidates after the acknowledgment.
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("TEST control-sink observation timeout")), 5000);
-      const receive = (value: unknown) => {
-        assert.deepEqual(value, { phase: ControlSinkPhase.Release });
-        clearTimeout(timeout); process.off("message", receive); resolve();
-      };
-      process.on("message", receive);
-      process.send!({ phase: ControlSinkPhase.Observed, outputPaths: guard.outputPaths });
+    assert.equal(process.argv.length, 3); assert.equal(process.execPath, node); assert(process.send && process.connected);
+    stage = "imports";
+    const { readHostedReadonlyHostInventory } = await import("../../dist/worker-codex/hosted-readonly-host-kernel.js");
+    const { HostedInstallationActivationStore } = await import("../../dist/worker-codex/hosted-installation-activation.js");
+    const { hostedFdLaunch, hostedFdInvocationUnit, HostedFdLaunchKind, spawnHostedFdChild } =
+      await import("../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js");
+    const { retryHostedFenceAcquisition } = await import("../../dist/provider-codex/app-server/adapters/hosted-fd-fence.js");
+    const { requireHostedForegroundRequest, recheckHostedForegroundRequest, publishHostedForegroundResult, hostedForegroundExitCode } =
+      await import("../../dist/worker-codex/hosted-foreground-result.js");
+    stage = "inventory";
+    const store = new HostedInstallationActivationStore(), launch = readHostedReadonlyHostInventory().runtimeLaunch;
+    stage = "foreground_request";
+    requestFdCountBefore = readdirSync("/proc/self/fd").length;
+    const request = requireHostedForegroundRequest(launch.args, launch.cwd);
+    requestFdCountAfter = readdirSync("/proc/self/fd").length;
+    stage = "ordinary_launch";
+    // Match the product launch contract (runHostedRuntimeForeground): the retained
+    // request and launch environment are handed to the activation store so descriptor
+    // boundary verification can exempt the request's own prior fd.
+    const frameEnv = { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" };
+    const child = store.runOrdinaryRuntimeLaunch(launch.command, launch.args, launch.cwd, (actual, fence, original) => {
+      stage = "spawn_submit";
+      recheckHostedForegroundRequest(request, fence);
+      const submitted = spawnHostedFdChild(actual.command, actual.args, { cwd: launch.cwd }, hostedFdInvocationUnit(actual.args), HostedFdLaunchKind.Foreground, original);
+      stage = "spawn_returned";
+      return submitted;
+    }, request, frameEnv);
+    stage = "guard";
+    const closed = new Promise<void>((resolve, reject) => {
+      child.once("error", reject); child.once("close", (code, signal) => code === 0 && signal === null ? resolve() : reject(new Error("TEST control-sink child failed")));
     });
-    await retryHostedFenceAcquisition(() => store.releaseOrdinaryRuntimeFrame((fence, revalidate) =>
-      guard.release(fence, Buffer.from(JSON.stringify({ schemaVersion: 1,
-        env: { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" } })), true, revalidate)), guard.remainingSetupMs());
-    await closed; store.recordOrdinaryRuntimeWaitCompletion();
-    const facts = guard.foregroundResult();
-    const result = store.withOrdinaryForegroundTerminal(facts, owner =>
-      publishHostedForegroundResult(request, facts, owner));
-    assert.equal(hostedForegroundExitCode(result), 0); assert(store.releaseOrdinaryDependencyConsumer());
-    process.send!({ phase: ControlSinkPhase.Drained, outputPaths: guard.outputPaths });
-    process.disconnect();
-  } catch {
-    guard.invalidate(); try { store.requestOrdinaryDependencyCleanup(); } catch { /* Retained uncertainty survives. */ }
-    process.exitCode = 70; process.disconnect();
-  } finally { clearTimeout(timeout); }
+    void closed.catch(() => {});
+    const guard = hostedFdLaunch(child); child.stdin!.on("error", () => {});
+    const timeout = setTimeout(() => { guard.invalidate(); child.kill("SIGTERM"); }, 6 * 60000);
+    try {
+      stage = "observe";
+      await guard.observe();
+      // This IPC barrier delays TEST observation only. It supplies no fence,
+      // owner/Ready/peer facts, and the product revalidates after the acknowledgment.
+      stage = "observed_ipc";
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("TEST control-sink observation timeout")), 5000);
+        const receive = (value: unknown) => {
+          assert.deepEqual(value, { phase: ControlSinkPhase.Release });
+          clearTimeout(timeout); process.off("message", receive); resolve();
+        };
+        process.on("message", receive);
+        process.send!({ phase: ControlSinkPhase.Observed, outputPaths: guard.outputPaths });
+      });
+      stage = "release";
+      await retryHostedFenceAcquisition(() => store.releaseOrdinaryRuntimeFrame((fence, revalidate) =>
+        guard.release(fence, Buffer.from(JSON.stringify({ schemaVersion: 1, env: frameEnv })), true, revalidate)), guard.remainingSetupMs());
+      stage = "wait_completion";
+      await closed; store.recordOrdinaryRuntimeWaitCompletion();
+      stage = "foreground_result";
+      const facts = guard.foregroundResult();
+      stage = "publish";
+      const result = store.withOrdinaryForegroundTerminal(facts, owner =>
+        publishHostedForegroundResult(request, facts, owner));
+      // Product terminal contract (runHostedRuntimeForeground): the reader
+      // completion path is attempted first and only its legacy fallback
+      // releases the dependency consumer.
+      stage = "reader_completion";
+      let legacyRelease = true;
+      try { legacyRelease = !store.completeOrdinaryDependencyReader(facts); }
+      catch { legacyRelease = false; try { store.requestOrdinaryDependencyCleanup(); } catch { /* Retained uncertainty survives. */ } }
+      stage = "consumer_release";
+      assert.equal(hostedForegroundExitCode(result), 0); if (legacyRelease) assert(store.releaseOrdinaryDependencyConsumer());
+      stage = "drained_ipc";
+      process.send!({ phase: ControlSinkPhase.Drained, outputPaths: guard.outputPaths });
+      stage = "disconnect";
+      process.disconnect();
+    } catch {
+      guard.invalidate(); try { store.requestOrdinaryDependencyCleanup(); } catch { /* Retained uncertainty survives. */ }
+      process.exitCode = 70; process.disconnect();
+    } finally { clearTimeout(timeout); }
+    diagnostic(process.exitCode ? "inner_guard_failure" : "clean");
+  } catch (error) { diagnostic(classifyExit(error)); throw error; }
 }
 if (process.argv[2] === "fd-io-child" && process.argv[1] === runtime + "/scripts/dependency-retention-os-test/common.ts") {
   assert.equal(process.argv.length, 3); assert.equal(realpathSync(process.execPath), node);

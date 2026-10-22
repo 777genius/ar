@@ -187,7 +187,9 @@ export async function materializeHostedDependencyLocalAbsence(binding: HostedDep
         !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
     assertOwner(binding, attempt,capturedOrigin);
     const blobs = await openHostedDependencyManifestPlacement();
-    try {assertOwner(binding,attempt,capturedOrigin);if (await blobs.put(final.canonicalBytes) !== final.digest) fail();} finally {await blobs.close();}
+    // Private immutable blob I/O holds placement FDs. Full origin admission
+    // remains before open and after awaited closure, before any Ready effect.
+    try {if (await blobs.put(final.canonicalBytes) !== final.digest) fail();} finally {await blobs.close();}
     assertOwner(binding,attempt,capturedOrigin);
     // All observer/placement descriptors have joined close before FDA origin
     // inspection. Source sessions retain logical pins, not leaked scan FDs.

@@ -472,6 +472,8 @@ async function createFixture() {
   await mkdir(workspacePath, { recursive: true });
   await mkdir(jobRootDir, { recursive: true });
   await git(workspacePath, ["init"]);
+  // User-global hooks must not gate fixture commits.
+  await git(workspacePath, ["config", "core.hooksPath", "/dev/null"]);
   await git(workspacePath, ["config", "user.email", "test@example.com"]);
   await git(workspacePath, ["config", "user.name", "Test User"]);
   await writeFile(join(workspacePath, "README.md"), "fixture\n");

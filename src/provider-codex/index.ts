@@ -53,3 +53,5 @@ export { OpenWorkerLayoutErrorCode, assertHostedOpenWorkerLayout, renderHostedOp
 
 export { prepareHostedMimoCodingEngineAuthority, type HostedMimoCodingEngineAuthority } from "./hosted-mimo-coding-engine-authority";
 export { parseMimoProxyFailureDetails, type MimoProxyFailure } from "./mimo-proxy-failure";
+export { ProviderCallState, ProviderCallProtocol, createProviderCallObservation, type ProviderCallObservation, type ProviderCallObserver } from "../provider-usage/provider-call-observation";
+export { startProviderUsageRelay } from "../provider-usage/provider-usage-relay";

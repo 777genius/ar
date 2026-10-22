@@ -19,6 +19,14 @@ import { HostedDependencyInstaller } from "../hosted-dependency-installer";
 import * as installerRecipe from "../hosted-dependency-installer-recipe";
 import { HostedDependencyInstallerRevision, type HostedDependencyInstallerProfile } from "../hosted-dependency-installer-recipe";
 import * as receipts from "../hosted-dependency-receipts";
+import * as manifestPlacement from "../hosted-dependency-manifest-placement";
+import { qualifyHostedDependencyToolClosure } from "../hosted-dependency-tool-profile";
+import { captureManagedDependencyGitContext, assertUnmanagedDependencyGitRoute, requiresManagedDependencyGitRunner,
+  ManagedDependencyGitRunner, isLinkedGitWorktree } from "../managed-dependency-git";
+import { LocalGitRevisionReader, readLocalGitHeadCommit } from "../codex-goal-git-revision";
+import { changedFilesFromWorkspace } from "../codex-goal-workspace-changes";
+import { withHandoffWorktreeIndex } from "../codex-goal-handoff-worktree-index";
+import { DefaultWorkspaceSnapshotter } from "../../worker-local/safe-execution/adapters/default-workspace-snapshotter";
 import type { HostedOrdinaryStart, HostedOrdinaryReservation } from "../../worker-core/hosted-custody/domain/hosted-installation-activation";
 
 function profile(): HostedDependencyInstallerProfile {
@@ -40,10 +48,11 @@ function profile(): HostedDependencyInstallerProfile {
 export function registerMaterializationAttemptTest(input: {
   prepared: () => { binding: HostedDependencyBinding; retained: { start: HostedOrdinaryStart; reservation: HostedOrdinaryReservation } };
   local: (path: string) => string;
-  fixture: { boot: string; manifestMountInfo: string; captureAncestry: boolean; captureDirectories: Map<number, string> };
+  fixture: { boot: string; manifestMountInfo: string; captureAncestry: boolean; captureDirectories: Map<number, string>;
+    legacyGitReads: number; afterLegacyGitRead: (() => void) | undefined };
 }): void {
   describe.skipIf(process.platform !== "linux")("materialization attempt after async input capture", () => {
-    it("five concurrent same-key owner claims finish one real cold materialization and return four Busy", async () => {
+    it.each(["success", "origin_drift", "close_failure"] as const)("five concurrent same-key claims retain descriptor and publication boundaries (%s)", async disposition => {
       // Real shared-core owner CAS plus original generic materializer. Core
       // Running is owner state, not permission for public/current task execution.
       // Only the installer boundary/profile and OS facts are synthetic; genuine
@@ -63,6 +72,23 @@ export function registerMaterializationAttemptTest(input: {
       writeFileSync(input.local(join(path,"package.json")),packageBytes,{mode:0o600});
       writeFileSync(input.local(join(path,"package-lock.json")),lockBytes,{mode:0o600});
       const sentinelPath=input.local(join(path,"TEST-concurrent-source"));writeFileSync(sentinelPath,"preserved original source\n",{mode:0o600});
+      // Actual Git repository and child reads; only the existing TEST transport
+      // maps its protected workspace to these private temporary files.
+      const realChild = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const gitSetup = (args: readonly string[]) => {
+        const result = realChild.spawnSync("/usr/bin/git", args, { cwd: input.local(path), encoding: "utf8", timeout: 5000,
+          env: { PATH: "/nonexistent", HOME: "/", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_AUTHOR_NAME:"iliya",GIT_AUTHOR_EMAIL:"iliyazelenkog@gmail.com",
+            GIT_COMMITTER_NAME:"iliya",GIT_COMMITTER_EMAIL:"iliyazelenkog@gmail.com" } });
+        expect(result.status).toBe(0); return result.stdout.trim();
+      };
+      writeFileSync(input.local(path+"/.gitignore"),"node_modules/\n",{mode:0o600});
+      gitSetup(["init", "--initial-branch=main"]);
+      gitSetup(["add", "--", "package.json", "package-lock.json", "dirty-source", "TEST-concurrent-source", ".gitignore"]);
+      expect(gitSetup(["var","GIT_AUTHOR_IDENT"])).toMatch(/^iliya <iliyazelenkog@gmail\.com> /);
+      expect(gitSetup(["var","GIT_COMMITTER_IDENT"])).toMatch(/^iliya <iliyazelenkog@gmail\.com> /);
+      gitSetup(["commit", "-m", "test: initialize disposable Git baseline"]);
+      const originalHead = gitSetup(["rev-parse", "HEAD"]);
       const absencePath=`/var/lib/subscription-runtime-host-policy/dependency-fresh-absence/${binding.workspace.dev}-${binding.workspace.ino}.json`;
       mkdirSync(input.local(dirname(absencePath)),{recursive:true,mode:0o700});
       const absenceBytes=Buffer.from(JSON.stringify({version:1,workspace:binding.workspace,coverageRevision:receipts.dependencyCoverageRevision(binding)})+"\n");
@@ -126,6 +152,30 @@ export function registerMaterializationAttemptTest(input: {
         expect(realFs.readlinkSync(`/proc/self/fd/${fd}`).startsWith(input.local("/var/lib/subscription-runtime-host-policy/TEST-concurrent-installer-output")+"/")).toBe(true);
         const stat=realFs.fstatSync(fd);realFs.fchownSync(fd,stat.uid,stat.gid);
       });
+      // The outer proc projection normally hides runner handles. Expose the
+      // actual placement directory FDs to the real original-origin census so a
+      // census before awaited close reproduces the native inherited-handle RED.
+      const manifestPrefix=input.local("/mnt/TEST-private-manifests"),fixtureReaddir=projectedFs.readdirSync;
+      const manifestDescriptors=()=>realFs.readdirSync("/proc/self/fd").filter(name=>{
+        try {const stat=realFs.fstatSync(Number(name)),target=realFs.readlinkSync(`/proc/self/fd/${name}`);
+          return stat.isDirectory() && (target.startsWith(manifestPrefix+"/") || target===manifestPrefix);}
+        catch(error){if(["EBADF","ENOENT"].includes((error as NodeJS.ErrnoException).code??""))return false;throw error;}
+      });
+      const census=vi.spyOn(projectedFs,"readdirSync").mockImplementation(((path,options)=>{
+        const entries:unknown=Reflect.apply(fixtureReaddir,projectedFs,[path,options]);
+        return path==="/proc/self/fd" ? [...new Set([...(entries as string[]),...manifestDescriptors()])] : entries;
+      }) as typeof fixtureReaddir);
+      const realPlacementOpen=manifestPlacement.openHostedDependencyManifestPlacement;
+      let placementOpened=0,placementClosed=0;
+      vi.spyOn(manifestPlacement,"openHostedDependencyManifestPlacement").mockImplementation(async()=>{
+        const store=await realPlacementOpen();placementOpened++;
+        expect(manifestDescriptors().length).toBeGreaterThanOrEqual(4);
+        return {...store,async put(bytes){const digest=await store.put(bytes);
+          if(disposition==="origin_drift")input.fixture.boot="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+          return digest;},async close(){await store.close();placementClosed++;
+            expect(manifestDescriptors()).toEqual([]);if(disposition==="close_failure")throw new Error("TEST manifest close failed");}};
+      });
+      const publications=vi.spyOn(receipts,"publishHostedDependencyReceipt");
       let enterInstaller!:()=>void,finishInstaller!:()=>void;
       let installerPhase:"not_entered"|"recipe"|"workspace"|"package"|"lock"|"waiting"|"output"="not_entered";
       const entered=new Promise<void>(resolve=>{enterInstaller=resolve;}),finish=new Promise<void>(resolve=>{finishInstaller=resolve;});
@@ -166,7 +216,54 @@ export function registerMaterializationAttemptTest(input: {
           installationId:binding.installationId,bootId:p.retained.start.bootId,runtimeSha:binding.runtimeSha,grantDigest:binding.grantDigest,
           startId:p.retained.reservation.startId,unit:p.retained.reservation.unit},randomUUID()));
         await materializeHostedDependencyAbsence(binding,attempt);
+        const ready=receipts.readHostedDependencyReceipt(binding),exclusive=readOwner();
+        expect(ready?.state).toBe(DependencyReceiptState.Ready);
+        expect(exclusive?.owner?.phase).toBe(DependencyOwnerPhase.ExclusiveMutation);
+        const foreignGrant=binding.grantDigest==="a".repeat(64)?"b".repeat(64):"a".repeat(64);
+        await expect(qualifyHostedDependencyToolClosure({...binding,grantDigest:foreignGrant},attempt))
+          .rejects.toMatchObject({reason:DependencyAdmissionFailure.StaleAttempt});
+        await expect(qualifyHostedDependencyToolClosure(binding,{...attempt,attemptId:randomUUID()}))
+          .rejects.toMatchObject({reason:DependencyAdmissionFailure.StaleAttempt});
+        expect(readOwner()).toEqual(exclusive);expect(receipts.readHostedDependencyReceipt(binding)).toEqual(ready);
+        // Real legacy v1 cold admission has no N3 capability. It must finish
+        // the authenticated no-profile qualifier before the Running transition.
+        await expect(qualifyHostedDependencyToolClosure(binding,attempt)).resolves.toBeUndefined();
         withOwners(store=>markDependencyConsumerRunning(store,binding.workspace,attempt));
+        await expect(qualifyHostedDependencyToolClosure(binding,attempt)).rejects.toMatchObject({reason:DependencyAdmissionFailure.Unsupported});
+        expect(requiresManagedDependencyGitRunner(path)).toBe(true);
+        expect(() => captureManagedDependencyGitContext(path)).toThrow("dependency_host_git_legacy_context_unsupported");
+        expect(() => assertUnmanagedDependencyGitRoute()).toThrow();
+        await expect(readLocalGitHeadCommit(path)).resolves.toBe(originalHead);
+        await expect(isLinkedGitWorktree(path)).resolves.toBe(false);
+        const runner = new ManagedDependencyGitRunner();
+        await expect(runner.run({command:"/usr/bin/git",cwd:path,args:["rev-parse","HEAD^{tree}"]}))
+          .resolves.toMatchObject({stdout:expect.stringMatching(/^[a-f0-9]{40,64}\n$/)});
+        await expect(runner.run({command:"/usr/bin/git",cwd:path,args:["diff","--relative","--stat","--no-ext-diff","--","."]}))
+          .resolves.toMatchObject({stdout:""});
+        const snapshotter = new DefaultWorkspaceSnapshotter({commandRunner:runner,gitBinaryPath:"/usr/bin/git"});
+        await expect(snapshotter.capture({workspacePath:path,includeDiff:true}))
+          .resolves.toMatchObject({mode:"git",workspacePath:path,dirty:false,changedFiles:[],fingerprint:expect.any(String)});
+        await expect(changedFilesFromWorkspace(path)).resolves.toEqual({changedFiles:[]});
+        const reads = input.fixture.legacyGitReads, initialize = vi.fn(async()=>{}), operation = vi.fn(async()=>{});
+        await expect(withHandoffWorktreeIndex({initialize,operation})).rejects.toThrow();
+        await expect(readLocalGitHeadCommit(path+"/../workspace")).rejects.toThrow();
+        await expect(new LocalGitRevisionReader({gitBinaryPath:"/tmp/TEST-untrusted-git"}).readHeadCommit({workspacePath:path})).rejects.toThrow();
+        expect(input.fixture.legacyGitReads).toBe(reads); expect(initialize).not.toHaveBeenCalled();expect(operation).not.toHaveBeenCalled();
+        const bindingPath=input.local("/var/lib/subscription-runtime-host-policy/"+workspace.hostedDependencyBindingName(binding.jobId));
+        const bindingBytes=readFileSync(bindingPath);
+        writeFileSync(bindingPath,JSON.stringify({...binding,runtimeSha:"b".repeat(40)})+"\n");
+        try { await expect(readLocalGitHeadCommit(path)).rejects.toThrow(); }
+        finally { writeFileSync(bindingPath,bindingBytes); }
+        expect(input.fixture.legacyGitReads).toBe(reads);
+        // A real query may finish, but changed actual kernel origin facts must
+        // prevent its bytes from being published as a successful observation.
+        const boot = input.fixture.boot;
+        input.fixture.afterLegacyGitRead = () => { input.fixture.boot="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"; };
+        try { await expect(readLocalGitHeadCommit(path)).rejects.toThrow(); }
+        finally { input.fixture.afterLegacyGitRead=undefined;input.fixture.boot=boot; }
+        expect(input.fixture.legacyGitReads).toBe(reads+1);
+        expect(readOwner()?.owner).toMatchObject({phase:DependencyOwnerPhase.Running,attempt});
+        expect(receipts.readHostedDependencyReceipt(binding)).toEqual(ready);
         return attempt;
       };
       input.fixture.captureAncestry=true;
@@ -205,8 +302,17 @@ export function registerMaterializationAttemptTest(input: {
         const installing=receipts.readHostedDependencyReceipt(binding);expect(installing?.state).toBe(DependencyReceiptState.Installing);
         expect(existsSync(input.local(join(path,"node_modules")))).toBe(false);
         finishInstaller();const results=await completed;
-        expect(results.filter(row=>row.status==="fulfilled")).toHaveLength(1);
-        expect(results.filter(row=>row.status==="rejected")).toHaveLength(4);expect(install).toHaveBeenCalledTimes(1);
+        expect(results.filter(row=>row.status==="fulfilled")).toHaveLength(disposition==="success"?1:0);
+        expect(results.filter(row=>row.status==="rejected")).toHaveLength(disposition==="success"?4:5);expect(install).toHaveBeenCalledTimes(1);
+        expect(placementOpened).toBe(1);expect(placementClosed).toBe(1);expect(manifestDescriptors()).toEqual([]);
+        if(disposition!=="success"){
+          expect(receipts.readHostedDependencyReceipt(binding)).toEqual(installing);
+          expect(publications.mock.calls.some(call=>call[2].state===DependencyReceiptState.Ready)).toBe(false);
+          expect(readOwner()?.owner).toMatchObject({phase:DependencyOwnerPhase.ExclusiveMutation});
+          expect(readFileSync(input.local(join(path,"node_modules/module.js")),"utf8")).toBe("module.exports = 'one install';\n");
+          expect(readFileSync(sentinelPath,"utf8")).toBe("preserved original source\n");expect(readFileSync(input.local(absencePath))).toEqual(absenceBytes);
+          return;
+        }
         const ready=receipts.readHostedDependencyReceipt(binding);expect(ready?.state).toBe(DependencyReceiptState.Ready);
         if(ready?.state!==DependencyReceiptState.Ready || installing?.state!==DependencyReceiptState.Installing)throw new Error("TEST production Ready was not published");
         expect(ready.installKey).toBe(installing.requestedKey);expect(ready.generation).toBe(installing.generation);
@@ -219,7 +325,7 @@ export function registerMaterializationAttemptTest(input: {
         // Subsequent assertion/materialization failures need the same finite
         // phase facts, while Vitest retains the original exception as primary.
         console.error("TEST_CONCURRENT_ADMISSION_FACTS "+JSON.stringify(diagnostic()));throw error;
-      } finally {finishInstaller();await completed;asyncNamed.mockRestore();asyncOpened.mockRestore();closed.mockRestore();renamed.mockRestore();named.mockRestore();opened.mockRestore();transport.captureDirectories.clear();input.fixture.captureAncestry=false;input.fixture.captureDirectories.clear();}
+      } finally {finishInstaller();await completed;census.mockRestore();asyncNamed.mockRestore();asyncOpened.mockRestore();closed.mockRestore();renamed.mockRestore();named.mockRestore();opened.mockRestore();transport.captureDirectories.clear();input.fixture.captureAncestry=false;input.fixture.captureDirectories.clear();}
     });
     it("rejects a replaced same-launch owner before Installing publication or installer launch", async () => {
       // Red if the final current-owner join accepts only launch identity: a

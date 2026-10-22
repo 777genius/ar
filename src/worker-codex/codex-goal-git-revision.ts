@@ -1,4 +1,4 @@
-import { resolveManagedDependencyGitContext, runManagedDependencyGitBuffer,
+import { resolveManagedDependencyGitContext, runManagedDependencyGitBuffer, runLegacyHostedDependencyGit,
   type HostedDependencyRootPurposeContext } from "./managed-dependency-git";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -20,6 +20,15 @@ export class LocalGitRevisionReader implements RevisionReaderPort {
     readonly workspacePath: string;
     readonly managedContext?: HostedDependencyRootPurposeContext;
   }): Promise<RevisionReadResult> {
+    if (input.managedContext === undefined) {
+      const legacy = await runLegacyHostedDependencyGit(input.workspacePath, ["rev-parse", "--verify", "HEAD"],
+        { timeoutMs: this.options.timeoutMs ?? gitRevisionTimeoutMs, maxBufferBytes: 1024 * 1024,
+          ...(this.options.gitBinaryPath === undefined ? {} : { gitBinaryPath: this.options.gitBinaryPath }) });
+      if (legacy) {
+        const commit = legacy.stdout.toString("utf8").trim();
+        return commit ? { commit } : { reason: "head_commit_empty" };
+      }
+    }
     const context = resolveManagedDependencyGitContext(input.workspacePath, input.managedContext);
     if (context !== undefined) {
       const { stdout } = await runManagedDependencyGitBuffer(context, ["rev-parse", "--verify", "HEAD"],

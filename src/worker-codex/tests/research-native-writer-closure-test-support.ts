@@ -6,6 +6,7 @@ import * as admission from "../research-launch-admission";
 import * as fixture from "./research-launch-fixture";
 import { parseCodexGoalProjectAccessScope } from "../codex-goal-access-plan";
 import { AccessBoundary, NetworkAccessMode, ProjectOperation } from "@vioxen/subscription-runtime/worker-core";
+import { codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { codexProjectAdmissionGate } from "../application/project-control/codex-goal-project-mutation-admission";
 import { listCodexGoalJobs, readCodexGoalJob } from "../codex-goal-jobs";
 import { execFile } from "node:child_process";
@@ -171,7 +172,11 @@ export function registeredNativeWriterClosureTests(input: { allocation(configure
         expect(await (await prepareResearchJobWriterObservation(current.manifest))()).toEqual({ status: "released" });
       });
     });
-    it("attests two actual foreign original readers then skips their code for an independent CreateJob preparation", async () => {
+    // The frozen foreign fixture (native-writer-original-00bbb) pins the
+    // mimo-v2.6-pro era, and current-era contract pins can only mint jobs of
+    // the current default. Foreign-era jobs stay unreadable unless both eras
+    // match, so the attestation pair runs only at the fixture's own era.
+    it.skipIf((codexMimoDefaultModel as string) !== "mimo-v2.6-pro")("attests two actual foreign original readers then skips their code for an independent CreateJob preparation", async () => {
       const oldRoot = "/opt/subscription-runtime/releases/" + "a".repeat(40), currentRoot = "/opt/subscription-runtime/releases/" + "b".repeat(40);
       const fixtureRoot = join(process.cwd(), "src/worker-codex/tests/fixtures/native-writer-original-00bbb");
       const staticRuntime = join(fixtureRoot, "runtime");

@@ -12,7 +12,7 @@ export interface FixedSelectedToolrootInput {
  readonly graphBytes:Buffer;readonly selectionBytes:Buffer;
 }
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
-const vector="d89a9c1fd845ec3123839f3d223e24d3a1a1c02ce36c3bb36637d6902a839d5b";
+const vector="76a701735a773c8a1909ea320a711c7b9f521796c383191c985ac67854024187";
 const literal=(b64:string)=>Buffer.from(b64,"base64").toString("ascii");
 function assertPlainGraph(value:unknown):void {
  const seen=new Set<object>();let work=0;

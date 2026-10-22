@@ -1,5 +1,9 @@
+import { prepareFreshDependencyManifestPolicy, qualifyFreshDependencyManifestPlacement } from "./manifest-placement.ts";
+import { observeOwnedSyntheticInstallerFailure } from "./owned-installer-diagnostic.ts";
 import { qualifyIoUringEffects } from "./io-uring.ts";
-import { classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
+import { classifyOwnedProxyStderr, classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
+import { sameSyntheticDiagnosticFile, syntheticCliStderrDiagnostic, verifiedSyntheticCliInputs } from "./synthetic-cli-diagnostic.ts";
+import { observeSyntheticResultFile, syntheticStructuredFailure } from "./synthetic-result-diagnostic.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -17,6 +21,7 @@ import { inspectReadonlyInputs } from "../../dist/worker-codex/hosted-readonly-c
 import { runHostedRuntimeForeground } from "../../dist/worker-codex/hosted-readonly-foreground.js";
 import { hostedForegroundExitCode } from "../../dist/worker-codex/hosted-foreground-result.js";
 import { readCodexGoalResultSummary } from "../../dist/worker-codex/codex-goal-status-files.js";
+import { decodeCodexGoalOriginDiagnostic } from "../../dist/worker-codex/codex-goal-origin-diagnostic.js";
 import { collectCodexGoalStatus } from "../../dist/worker-codex/codex-goal-ops.js";
 import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
 import { CodexProviderEgressProfileId, verifySystemBusInfrastructure } from "../../dist/provider-codex/index.js";
@@ -69,7 +74,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   evidence.kernelGatePhase = "actual_system_bus_infrastructure";
   const systemBusInfrastructure = await issueActualSystemBusInfrastructure(evidence);
   assert(!existsSync(policy)); directory(policy);
-  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
     directory(policy + "/" + name);
   const results = evidence.results as unknown[];
   evidence.kernel = command("/usr/bin/uname", ["--release"]).trim();
@@ -77,7 +82,7 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   evidence.namespaces = { ...guestNamespaces, cgroup: readlinkSync("/proc/self/ns/cgroup") };
   evidence.uidMap = readFileSync("/proc/self/uid_map", "utf8").trim();
   evidence.bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-  evidence.runtimeManifestSha256 = installedArtifactDigest();
+  evidence.runtimeManifestSha256 = installedArtifactDigest(process.env.TEST_OS_SCENARIO as OwnedOsScenario);
   const actualPackage = lstatSync(runtime + "/package.json");
   assert(actualPackage.isFile() && !actualPackage.isSymbolicLink() && actualPackage.uid === 0 && actualPackage.nlink === 1 && !(actualPackage.mode & 0o022));
   evidence.installedRuntimeRootPackage = { path: runtime + "/package.json", sha256: fileDigest(runtime + "/package.json"),
@@ -163,6 +168,8 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     catch { evidence.kernelInventoryObservation = { purpose: "TEST_kernel_predicate_observation_only", unavailable: true }; }
     throw error;
   }
+  evidence.kernelGatePhase = "fresh_manifest_storage_configuration";
+  evidence.manifestStorageConfiguration = prepareFreshDependencyManifestPolicy();
   evidence.kernelGatePhase = "cold_installation";
   const store = new HostedInstallationActivationStore();
   try { store.install(); }
@@ -171,6 +178,8 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     catch { evidence.kernelInventoryObservation = { purpose: "TEST_kernel_predicate_observation_only", unavailable: true }; }
     throw error;
   }
+  evidence.kernelGatePhase = "fresh_manifest_placement_readback";
+  evidence.manifestStoragePlacement = await qualifyFreshDependencyManifestPlacement();
   results.push({ scenario: "unchanged_cold_host_installation", result: "qualified_actual_finite_inventory", controlGroup });
   evidence.kernelGatePhase = "research_shared_host_early_denial";
   assertResearchInitialRoot(true);
@@ -214,11 +223,20 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
       uid: stat.uid, mode: stat.mode & 0o777, dev: String(stat.dev), ino: String(stat.ino) }; }
     catch (error) { return { slot, present: false, missing: (error as NodeJS.ErrnoException).code === "ENOENT" }; }
   });
+  const releaseTrace = releaseChainTrace();
   for (const mode of ["fresh", "hot"] as const) {
     evidence.kernelGatePhase = mode + "_real_cli";
+    releaseTrace.reset();
     const foreground = await runHostedRuntimeForeground(node, args, workspace, env), cliStatus = hostedForegroundExitCode(foreground);
+    evidence[mode + "ReleaseChainObservation"] = releaseTrace.snapshot();
     if (cliStatus !== 0) {
-      try { evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus); }
+      try {
+        // Redacted fixture stderr text needs only the exact fixture proof for the
+        // current phase; the wider fixture channels stay fresh-only.
+        const synthetic = verifyOwnedSyntheticDiagnosticInputs(`${mode}_real_cli`, jobId, root, workspace, node, args, env);
+        evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus,
+          mode === "fresh" && synthetic, synthetic);
+      }
       catch { evidence.cliFailureObservation = { purpose: "TEST_owned_cli_failure_only", status: cliStatus, unavailable: true }; }
     }
     assert.equal(cliStatus, 0, `actual ${mode} CLI failed`);
@@ -232,7 +250,12 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
     evidence.kernelGatePhase = mode + "_receipt_owner_probe";
     const receipt = readHostedDependencyReceipt(binding); assert(receipt);
     const owner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
-    try { assert.equal(owner.read(binding.workspace)?.owner, null, "actual creator/drain release unresolved"); }
+    try {
+      const row = owner.read(binding.workspace);
+      try { evidence[mode + "ReceiptOwnerProbeObservation"] = receiptOwnerProbeObservation(policy, row, workspace); }
+      catch { evidence[mode + "ReceiptOwnerProbeObservation"] = { unavailable: true }; }
+      assert.equal(row?.owner, null, "actual creator/drain release unresolved");
+    }
     finally { owner.close(); }
     const probes = readdirSync(workspace).filter(name => /^TEST-provider-probe-[12]\.json$/.test(name)).sort();
     assert.equal(probes.length, mode === "fresh" ? 1 : 2);
@@ -259,14 +282,14 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
       receiptSha256: currentReady, probe: observed, output: outputEvidence });
   }
   evidence.kernelGatePhase = "actual_inherited_relay_control_sink";
-  results.push(await qualifyRelayControlSink(systemBusInfrastructure, workspace, resultPath));
+  results.push(await qualifyRelayControlSink(systemBusInfrastructure, workspace, resultPath, evidence));
   const afterSink = readHostedDependencyReceipt(binding); assert(afterSink);
   assert.equal(digest(JSON.stringify(afterSink)), readyDigest);
   const afterSinkOwner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
   try { assert.equal(afterSinkOwner.read(binding.workspace)?.owner, null); } finally { afterSinkOwner.close(); }
   evidence.pendingNativeCases = ["direct_daemon_socket_sent_byte_capture", "noop_and_stale_same_inode_result", "unauthorized_destination_no_preread"];
   evidence.kernelGatePhase = "actual_final_release_deadline_denial";
-  results.push(await qualifyLateRelease(node, args, workspace, env, systemBusInfrastructure));
+  results.push(await qualifyLateRelease(node, args, workspace, env, systemBusInfrastructure, evidence));
   const afterLateReceipt = readHostedDependencyReceipt(binding); assert(afterLateReceipt);
   assert.equal(digest(JSON.stringify(afterLateReceipt)), readyDigest);
   assert.equal(readdirSync(policy + "/dependency-installers").filter(name => /^[a-f0-9-]{36}$/.test(name)).length, 1);
@@ -275,16 +298,166 @@ async function qualify(evidence: Record<string, unknown>): Promise<void> {
   results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
 }
 
+function closedFailureToken(error: unknown): string {
+  const tokens = ["hosted_foreground_result_unresolved", "hosted_activation_evidence_invalid",
+    "hosted_activation_fence_busy", "hosted_custody_legacy_lock_recovery_required", "hosted_custody_admission_denied",
+    "hosted_custody_runtime_not_started", "hosted_custody_runtime_stop_incomplete", "hosted_custody_inherited_handle_denied",
+    "hosted_custody_stdio_pipe_required", "hosted_custody_descriptor_invalid", "hosted_custody_kernel_evidence_invalid",
+    "hosted_custody_runtime_launch_denied", "hosted_fd_boundary_unresolved", "hosted_fd_profile_invalid"];
+  return error instanceof Error && tokens.includes(error.message) ? error.message : "unknown";
+}
+
+/** Closed-fact release chain trace. Wrappers record stage tokens and one
+ * classified error code, then rethrow — no product behavior change. */
+function releaseChainTrace() {
+  const stages: string[] = [];
+  const failure: { stage: string | null; class: string | null } = { stage: null, class: null };
+  const classify = (error: unknown): string => {
+    const code = error instanceof Error ? error.message : "";
+    const known: Record<string, string> = {
+      hosted_ordinary_reader_completion_held: "reader_completion_held",
+      hosted_dependency_provider_terminal_unresolved: "provider_terminal_unresolved",
+      hosted_custody_creator_not_fenced: "creator_not_fenced",
+      hosted_custody_stop_incomplete: "stop_incomplete",
+      hosted_activation_invalid: "activation_invalid",
+      hosted_readonly_conflicting_enrollment: "conflicting_enrollment",
+      child_invocation_consumed: "child_invocation_consumed"
+    };
+    if (code in known) return known[code]!;
+    const admission = error instanceof Error && "failure" in error ? (error as { failure?: unknown }).failure : undefined;
+    const failures = ["busy", "stale_attempt", "invalid_record", "workspace_changed", "needs_install", "unsafe_tree", "unsupported"];
+    if (typeof admission === "string" && failures.includes(admission)) return "admission_" + admission;
+    return "unclassified";
+  };
+  const wrap = (target: object, name: string, label: string) => {
+    const holder = target as Record<string, unknown>, original = holder[name];
+    if (typeof original !== "function") return;
+    holder[name] = function (this: unknown, ...args: unknown[]) {
+      stages.push(label);
+      try { return (original as (...a: unknown[]) => unknown).apply(this, args); }
+      catch (error) {
+        if (failure.stage === null) { failure.stage = label; failure.class = classify(error); }
+        throw error;
+      }
+    };
+  };
+  for (const name of ["runOrdinaryRuntimeLaunch", "recordOrdinaryRuntimeWaitCompletion", "withOrdinaryForegroundTerminal",
+    "completeOrdinaryDependencyReader", "releaseOrdinaryDependencyConsumer", "requestOrdinaryDependencyCleanup"])
+    wrap(HostedInstallationActivationStore.prototype, name, "store." + name);
+  for (const name of ["fenceOrdinaryCreator", "drainOrdinaryQueue", "confirmOrdinaryDescendants"])
+    wrap(HostedReadonlyHostKernel.prototype, name, "kernel." + name);
+  wrap(LocalDependencyOwnerStore.prototype, "compareAndSwap", "owner.compareAndSwap");
+  return {
+    reset: () => { stages.length = 0; failure.stage = null; failure.class = null; },
+    snapshot: () => ({ stages: stages.slice(0, 32), stageCount: stages.length, failureStage: failure.stage, failureClass: failure.class })
+  };
+}
+
+/** Closed-fact release observation for the owner probe: enums, booleans and
+ * counts only. Never record IDs, raw paths, bytes or stderr. */
+function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDependencyOwnerStore["read"]>, workspace: string): Record<string, unknown> {
+  const present = (path: string): boolean => { try { lstatSync(path); return true; } catch { return false; } };
+  const owner = row?.owner ?? null;
+  const attempt = owner && typeof owner === "object" && "attempt" in owner
+    ? owner.attempt as { attemptId?: unknown; epoch?: unknown } : undefined;
+  const attemptId = typeof attempt?.attemptId === "string" ? attempt.attemptId : null;
+  const attemptEpoch = typeof attempt?.epoch === "number" ? attempt.epoch : null;
+  const phaseValue: string = owner === null ? "none" : String(owner.phase);
+  const phase = phaseValue === "exclusive_mutation" || phaseValue === "running" || phaseValue === "fenced" ? phaseValue : "other";
+  const kindValue: string | undefined = owner === null || owner.kind === undefined ? undefined : String(owner.kind);
+  const ownerKind = owner === null ? "none" : kindValue === undefined ? "unspecified"
+    : kindValue === "consumer" || kindValue === "maintenance" ? kindValue : "other";
+  const continuity = (row as { generationContinuity?: { kind?: unknown } } | null)?.generationContinuity;
+  const continuityKind = row === null ? "no_record" : continuity === undefined ? "absent"
+    : continuity.kind === "baseline_authenticated_v1" ? "baseline_authenticated_v1"
+      : continuity.kind === "retired_ready_v1" ? "retired_ready_v1"
+        : continuity.kind === "retired_evicting_v1" ? "retired_evicting_v1" : "other";
+  const installers = policy + "/dependency-installers";
+  const activation = readHostedInstallationActivation().activation;
+  // Closed unit-state enum for the durable start's unit: a live unit with no
+  // zero record discriminates provider survival from an unpublishing terminal.
+  const unitState = (unit: string): string => {
+    try {
+      const text = command("/usr/bin/systemctl", ["show", "--property=LoadState,ActiveState,SubState", "--", unit], 5000);
+      const facts = new Map(text.split("\n").map(line => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
+      if (facts.get("LoadState") === "not-found") return "not_found";
+      const active = facts.get("ActiveState");
+      return ["active", "activating", "deactivating", "inactive", "failed"].includes(active ?? "") ? active! : "other";
+    } catch { return "unknown"; }
+  };
+  const rows = activation.ordinaryStarts.slice(0, 8).map(start => ({
+    unitClass: start.unit.startsWith("subscription-runtime-installer-") ? "installer"
+      : start.unit.startsWith("subscription-runtime-hosted-") ? "hosted"
+        : start.unit.startsWith("subscription-runtime-") ? "ordinary" : "other",
+    state: start.state === HostedCustodyReservationState.Reserved ? "reserved"
+      : start.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+    unitState: unitState(start.unit),
+    attemptFenceRecord: present(`${policy}/dependency-attempt-fences/${start.startId}.json`),
+    readerCompletionRecord: present(`${policy}/dependency-ordinary-reader-completions/${start.startId}.json`),
+    providerCompletionRecord: present(`${policy}/dependency-ordinary-provider-completions/${start.startId}.json`),
+    providerAttemptRecord: present(`${policy}/dependency-provider-attempts/${start.startId}.json`),
+    waitCompletionRecord: present(`${policy}/ordinary-completed/${start.startId}.json`),
+    installerStartRecord: present(`${installers}/${start.startId}/start.json`),
+    installerTerminalRecord: present(`${installers}/${start.startId}/terminal.json`)
+  }));
+  let installerAttemptRecordCount = 0, installerAttemptDetails: unknown[] = [];
+  try {
+    const attempts = readdirSync(installers).filter(name => /^attempt-[a-f0-9-]{36}\.json$/.test(name)).slice(0, 4);
+    installerAttemptRecordCount = attempts.length;
+    installerAttemptDetails = attempts.map(name => {
+      try {
+        const row = JSON.parse(readFileSync(installers + "/" + name, "utf8")) as { startId?: unknown };
+        const id = typeof row.startId === "string" ? row.startId : "";
+        return id === "" ? { parseFailed: true }
+          : { startRecord: present(`${installers}/${id}/start.json`), terminalRecord: present(`${installers}/${id}/terminal.json`) };
+      } catch { return { parseFailed: true }; }
+    });
+  } catch { installerAttemptRecordCount = -1; }
+  // Closed provider termination markers: which exit path the provider process
+  // actually took (EOF-driven clean exit vs a signaled stop).
+  let providerTerminationMarkers = "none";
+  try {
+    const markers = (JSON.parse(readFileSync(workspace + "/TEST-provider-termination.json", "utf8")) as { markers?: unknown }).markers;
+    const names = Array.isArray(markers) ? markers.filter(name => name === "stdin_eof" || name === "sigterm") : [];
+    providerTerminationMarkers = names.includes("stdin_eof") && names.includes("sigterm") ? "both"
+      : names.includes("stdin_eof") ? "stdin_eof" : names.includes("sigterm") ? "sigterm" : "none";
+  } catch { providerTerminationMarkers = "absent"; }
+  return {
+    ownerRowPresent: row !== null, recordVersion: row === null ? "no_record" : row.version,
+    ownerPhase: phase, ownerKind, continuityKind, providerTerminationMarkers,
+    attemptEpochMatchesRecord: attemptEpoch === null || row === null ? null : attemptEpoch === row.epoch,
+    activityLastEntry: row === null ? null : row.activity?.lastEntry !== undefined && row.activity?.lastEntry !== null,
+    activityLastRelease: row === null ? null : row.activity?.lastRelease !== undefined && row.activity?.lastRelease !== null,
+    ownerInstallerAttemptRecord: attemptId === null ? null : present(`${installers}/attempt-${attemptId}.json`),
+    installerAttemptRecordCount, installerAttemptDetails,
+    ordinaryStartCount: activation.ordinaryStarts.length, ordinaryStartRowsTruncated: activation.ordinaryStarts.length > 8,
+    ordinaryStartRows: rows
+  };
+}
+
 /** Captures bytes SENT to the inherited first-hop TEST relay. Incoming bus
  * replies, final manager state and Socket.bytesWritten are not send evidence.
  * This deliberately does not claim capture on a directly inherited daemon FD. */
-async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: string, resultPath: string) {
+async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: string, resultPath: string,
+  evidence: Record<string, unknown>) {
   verifySystemBusInfrastructure(bus);
   const endpointBefore = lstatSync(SYSTEM_BUS_ENDPOINT), name = "/run/TEST-control-relay-" + randomUUID();
   const server = createServer(), connection = once(server, "connection");
   let source: Socket | undefined, receiver: Socket | undefined, upstream: Socket | undefined;
   let child: ReturnType<typeof spawn> | undefined, birth: string | undefined, sentBytes = 0, prePayloadBytes = -1;
   let outputPaths: string[] = [], observed = false, drained = false;
+  // Closed-fact fixture diagnostics only: stage tokens and counts. No payload,
+  // path or raw error text is recorded and no gate authority changes here.
+  let checkpoint = "setup", handlerStage: string | null = null, handlerFailed = false;
+  let childCode: number | null = null, childSignal: "null" | "other" | null = null;
+  // Closed-enum unit/state classes only; no ids or paths leave this fixture.
+  const classifyUnit = (value: string) => value.startsWith("subscription-runtime-hosted-") ? "hosted"
+    : value.startsWith("subscription-runtime-ordinary-") ? "ordinary"
+    : value.startsWith("subscription-runtime-outer-") ? "outer" : "other";
+  const classifyState = (value: string) => value === HostedCustodyReservationState.Reserved ? "reserved"
+    : value === HostedCustodyReservationState.Terminal ? "terminal" : "other";
+  const snapshotRows = readHostedInstallationActivation().activation.ordinaryStarts
+    .map(row => ({ unit: classifyUnit(row.unit), state: classifyState(row.state) }));
   const previousStarts = new Set(readHostedInstallationActivation().activation.ordinaryStarts.map(row => row.startId));
   const countProbes = () => readdirSync(workspace).filter(value => /^TEST-provider-probe-[123]\.json$/.test(value)).length;
   assert.equal(countProbes(), 2);
@@ -305,7 +478,7 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     const receiverEnd = once(receiver, "end");
     child = spawn(node, ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/common.ts", "control-sink"],
       { env: cleanEnv, stdio: ["pipe", source, source, "ipc"] });
-    assert(child.pid); birth = observeHostedFdProcess(child.pid).birth;
+    assert(child.pid); birth = observeHostedFdProcess(child.pid).birth; checkpoint = "child_spawned";
     const actual = observeHostedFdProcess(child.pid);
     assert.equal(actual.group, boundedProc("/proc/self/cgroup", 4096).trim());
     const stdio = actual.descriptors.filter(row => row.fd === 1 || row.fd === 2);
@@ -315,43 +488,83 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     const messageFailure = new Promise<never>((_resolve, reject) => { rejectMessage = reject; });
     void messageFailure.catch(() => {});
     child.on("message", (value: unknown) => { try {
+      handlerStage = "shape";
       assert(value && typeof value === "object" && !Array.isArray(value));
       const message = value as Record<string, unknown>;
+      handlerStage = "keys";
       assert.equal(Object.keys(message).sort().join(","), "outputPaths,phase");
+      handlerStage = "output_paths";
       assert(Array.isArray(message.outputPaths) && message.outputPaths.length === 2 && message.outputPaths.every(path => typeof path === "string"));
       if (message.phase === ControlSinkPhase.Observed) {
+        handlerStage = "observed_once";
         assert(!observed); observed = true; outputPaths = message.outputPaths as string[];
+        handlerStage = "reservation";
         const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
         assert.equal(added.length, 1); const reserved = added[0]!; assert.equal(reserved.state, HostedCustodyReservationState.Reserved);
+        handlerStage = "start_record";
         const startBytes = readHostedPrivateBytes(policy + "/ordinary-starts/" + reserved.startId + ".json", 16384); assert(startBytes);
         const start = parseHostedOrdinaryStart(JSON.parse(startBytes.toString("utf8")));
+        handlerStage = "start_identity";
         assert.equal(start.creatorPidBirth, birth); assert.equal(start.workspacePath, workspace);
         assert.equal(start.unit, reserved.unit); assert.equal(start.activationGeneration, reserved.generation);
+        handlerStage = "output_layout";
         assert.deepEqual(outputPaths, [policy + "/foreground-output/" + reserved.unit + ".stdout", policy + "/foreground-output/" + reserved.unit + ".stderr"]);
-        verifySystemBusInfrastructure(bus); assert.equal(countProbes(), 2); prePayloadBytes = sentBytes; assert.equal(prePayloadBytes, 0);
+        handlerStage = "relay_state";
+        verifySystemBusInfrastructure(bus); assert.equal(countProbes(), 2);
+        handlerStage = "payload_bytes";
+        prePayloadBytes = sentBytes; assert.equal(prePayloadBytes, 0);
+        handlerStage = "log_files";
         for (const path of outputPaths) { const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.nlink === 1 && (stat.mode & 0o777) === 0o600 && stat.size === 0); }
+        handlerStage = "release_send";
         child!.send({ phase: ControlSinkPhase.Release });
       } else {
+        handlerStage = "drain_identity";
         assert.equal(message.phase, ControlSinkPhase.Drained); assert(observed && !drained); drained = true;
         assert.deepEqual(message.outputPaths, outputPaths);
       }
-    } catch (error) { rejectMessage(error); }
+    } catch (error) { handlerFailed = true; rejectMessage(error); }
     });
-    const [code, signal] = await boundedWait(Promise.race([closed, messageFailure]), 6 * 60000); assert.equal(code, 0); assert.equal(signal, null); assert(observed && drained);
-    source.end(); await boundedWait(receiverEnd, 2000); assert.equal(sentBytes, 0); assert.equal(countProbes(), 3);
+    const [code, signal] = await boundedWait(Promise.race([closed, messageFailure]), 6 * 60000);
+    childCode = code; childSignal = signal === null ? "null" : "other"; checkpoint = "child_closed";
+    assert.equal(code, 0); assert.equal(signal, null); assert(observed && drained);
+    source.end(); await boundedWait(receiverEnd, 2000); checkpoint = "relay_ended";
+    assert.equal(sentBytes, 0); assert.equal(countProbes(), 3);
     verifySystemBusInfrastructure(bus); const endpointAfter = lstatSync(SYSTEM_BUS_ENDPOINT);
     assert(endpointBefore.dev === endpointAfter.dev && endpointBefore.ino === endpointAfter.ino);
+    checkpoint = "rows_accounting";
     const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
-    assert.equal(added.length, 1); const row = added[0]!; assert.equal(row.state, HostedCustodyReservationState.Terminal);
+    // Canonical custody accounting for a successful window: this launch reserves
+    // exactly one ordinary reader row, and each spawned provider (probe 3) appends
+    // one hosted provider row. Rows are append-only and stay Reserved in the
+    // ordinary flow; window closure is the released consumer owner asserted
+    // after this scenario returns.
+    assert.equal(added.length, 2);
+    const readers = added.filter(value => !value.unit.startsWith("subscription-runtime-hosted-"));
+    const providers = added.filter(value => value.unit.startsWith("subscription-runtime-hosted-"));
+    assert.equal(readers.length, 1); assert.equal(providers.length, 1);
+    const row = readers[0]!, provider = providers[0]!;
+    assert.equal(row.state, HostedCustodyReservationState.Reserved);
+    assert.equal(provider.state, HostedCustodyReservationState.Reserved);
+    assert.equal(provider.creatorId, row.creatorId); assert.equal(provider.originSha256, row.originSha256);
+    assert(provider.generation > row.generation);
+    const present = (name: string): boolean => { try { lstatSync(name); return true; } catch { return false; } };
+    assert(present(`${policy}/ordinary-starts/${row.startId}.json`) && present(`${policy}/ordinary-starts/${provider.startId}.json`));
+    assert(present(`${policy}/dependency-provider-attempts/${provider.startId}.json`));
+    assert(present(`${policy}/ordinary-completed/${row.startId}.json`));
+    checkpoint = "output_identity";
     assert.deepEqual(outputPaths, [policy + "/foreground-output/" + row.unit + ".stdout", policy + "/foreground-output/" + row.unit + ".stderr"]);
+    checkpoint = "logs_accounting";
     const logs = outputPaths.map(path => { const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.nlink === 1 && !(stat.mode & 0o077));
       return { path, dev: String(stat.dev), ino: String(stat.ino), bytes: stat.size }; });
     assert(logs.reduce((sum, log) => sum + log.bytes, 0) > 0, "TEST successful payload did not exercise protected output");
+    checkpoint = "result_identity";
     const result = await readCodexGoalResultSummary(resultPath); assert(result.foregroundOutput);
     assert.equal(result.foregroundOutput.unit, row.unit);
     assert.equal(result.foregroundOutput.exitCode, 0);
+    checkpoint = "byte_compare";
     assert.equal(Buffer.byteLength(result.foregroundOutput.stdout), logs[0]!.bytes);
     assert.equal(Buffer.byteLength(result.foregroundOutput.stderr), logs[1]!.bytes);
+    checkpoint = "verified";
     return { scenario: "actual_inherited_control_relay", outcome: "protected_output_replacement_and_real_drain", inheritedStdio: stdio.map(row => ({ fd: row.fd, target: row.target })),
       relayEndpoint: name, upstreamEndpoint: SYSTEM_BUS_ENDPOINT, upstreamManagerPid: 1, producerPidBirth: birth, prePayloadSentBytes: prePayloadBytes,
       finalSentBytes: sentBytes, actualStartId: row.startId, unit: row.unit, logs,
@@ -360,6 +573,79 @@ async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: 
     if (child?.pid && birth && child.exitCode === null && observeHostedFdProcess(child.pid).birth === birth) child.kill("SIGTERM");
     source?.destroy(); receiver?.destroy(); upstream?.destroy();
     if (server.listening) await boundedWait(new Promise<void>(resolve => server.close(() => resolve())), 2000);
+    evidence.relayControlSinkObservation = { purpose: "TEST_relay_control_sink_closed_fact_classification",
+      checkpoint, handlerStage, handlerFailed, childCode, childSignal, observed, drained,
+      prePayloadBytes, finalSentBytes: sentBytes,
+      probeCount: (() => { try { return countProbes(); } catch { return null; } })(),
+      postFailureStart: (() => {
+        try {
+          const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+          if (added.length === 0) return "none";
+          try { lstatSync(`${policy}/ordinary-starts/${added[0]!.startId}.json`); return "row_and_record"; }
+          catch { return "row_only"; }
+        } catch { return "unknown"; }
+      })(),
+      // Closed-enum accounting of every start row the scenario window added, so an
+      // unexpected second row is classified by unit kind/state/record only. No ids.
+      snapshotStarts: { count: snapshotRows.length,
+        units: snapshotRows.slice(0, 8).map(row => row.unit),
+        states: snapshotRows.slice(0, 8).map(row => row.state),
+        overflow: snapshotRows.length > 8 },
+      postFailureAdded: (() => {
+        try {
+          const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+          const record = (startId: string) => { try { lstatSync(`${policy}/ordinary-starts/${startId}.json`); return "present"; } catch { return "absent"; } };
+          const privateJson = (name: string, startId: string): Record<string, unknown> | undefined => {
+            try {
+              const bytes = readHostedPrivateBytes(`${policy}/${name}/${startId}.json`, 16384);
+              return bytes ? JSON.parse(bytes.toString("utf8")) as Record<string, unknown> : undefined;
+            } catch { return undefined; }
+          };
+          const ordinary = added.find(row => classifyUnit(row.unit) === "ordinary");
+          const ordinaryRecord = ordinary ? privateJson("ordinary-starts", ordinary.startId) : undefined;
+          const identities = added.slice(0, 4).map(row => {
+            const start = privateJson("ordinary-starts", row.startId);
+            return {
+              unit: classifyUnit(row.unit),
+              providerAttemptRecord: privateJson("dependency-provider-attempts", row.startId) ? "present" : "absent",
+              correlationRecord: privateJson("ordinary-correlations", row.startId) ? "present" : "absent",
+              birthMatchesOrdinaryRecord: start && ordinaryRecord && typeof start.creatorPidBirth === "string" && typeof ordinaryRecord.creatorPidBirth === "string"
+                ? start.creatorPidBirth === ordinaryRecord.creatorPidBirth : null,
+              birthMatchesControlSinkChild: start && typeof start.creatorPidBirth === "string" && typeof birth === "string"
+                ? start.creatorPidBirth === birth : null,
+              creatorMatchesOrdinary: ordinary ? row.creatorId === ordinary.creatorId : null,
+              generationRelation: ordinary ? (row.generation > ordinary.generation ? "after_ordinary"
+                : row.generation === ordinary.generation ? "equal" : "before_ordinary") : "unknown",
+              recordWorkspaceMatches: start ? start.workspacePath === workspace : null
+            };
+          });
+          return { count: added.length,
+            units: added.slice(0, 4).map(row => classifyUnit(row.unit)),
+            states: added.slice(0, 4).map(row => classifyState(row.state)),
+            records: added.slice(0, 4).map(row => record(row.startId)),
+            identities, overflow: added.length > 4 };
+        } catch {
+          return { count: -1, units: ["unknown"], states: ["unknown"], records: ["unknown"], identities: [], overflow: false };
+        }
+      })(),
+      childDiagnostic: (() => {
+        try {
+          const value = JSON.parse(readFileSync("/run/TEST-control-sink-diagnostic.json", "utf8")) as Record<string, unknown>;
+          const stages = ["argv_identity", "imports", "inventory", "foreground_request", "ordinary_launch", "spawn_submit", "spawn_returned",
+            "guard", "observe", "observed_ipc",
+            "release", "wait_completion", "foreground_result", "publish", "reader_completion", "consumer_release", "drained_ipc", "disconnect"];
+          const classes = ["clean", "inner_guard_failure", "assertion", "request_unresolved", "launch_invalidated", "input_overflow",
+            "invocation_consumed", "operator_required", "authority_invalid", "activation_invalid", "activation_evidence_invalid",
+            "publication_recovery_required", "activation_stop_incomplete", "activation_authority_required", "owned_unresolved",
+            "descriptor_denied", "stdio_pipe_required", "descriptor_invalid", "frame_invalid", "creator_not_fenced",
+            "custody_stop_incomplete", "fd_boundary_unresolved", "unclassified", "non_error_throw"];
+          return { available: true,
+            stage: typeof value.stage === "string" && stages.includes(value.stage) ? value.stage : "other",
+            exitClass: typeof value.exitClass === "string" && classes.includes(value.exitClass) ? value.exitClass : "other",
+            requestFdCountBefore: Number.isSafeInteger(value.requestFdCountBefore) ? value.requestFdCountBefore : -1,
+            requestFdCountAfter: Number.isSafeInteger(value.requestFdCountAfter) ? value.requestFdCountAfter : -1 };
+        } catch { return { available: false }; }
+      })() };
   }
 }
 
@@ -369,7 +655,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   assert.equal(process.argv[2], "qualify"); assertReadonlyHostOperator();
   const systemBusInfrastructure = await issueActualSystemBusInfrastructure(evidence);
   assert(!existsSync(policy)); directory(policy);
-  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-services"])
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-services"])
     directory(policy + "/" + name);
   const capacity = statfsSync(readonlyStorage, { bigint: true }), storage = directoryIdentity(readonlyStorage);
   assert.notEqual(storage.dev, String(lstatSync("/").dev));
@@ -378,7 +664,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   evidence.readonlyStorage = { ...storage, availableBytes: String(capacity.bavail * capacity.bsize), availableInodes: String(capacity.ffree),
     mountNamespace: readlinkSync("/proc/self/ns/mnt"), mountInfoSha256: digest(boundedProc("/proc/self/mountinfo", 1024 * 1024)) };
   const namespaces = { user: readlinkSync("/proc/self/ns/user"), mnt: readlinkSync("/proc/self/ns/mnt"), pid: readlinkSync("/proc/self/ns/pid") };
-  evidence.runtimeManifestSha256 = installedArtifactDigest();
+  evidence.runtimeManifestSha256 = installedArtifactDigest(OwnedOsScenario.Readonly);
   evidence.installedRuntimeRootPackage = { path: runtime + "/package.json", sha256: fileDigest(runtime + "/package.json"),
     bytes: lstatSync(runtime + "/package.json").size, source: "actual copied runtime-root artifact, no substitute metadata" };
   const jobId = "TEST-readonly-" + randomUUID(), root = readonlyStorage + "/jobs/" + jobId, workspace = root + "/workspace";
@@ -406,7 +692,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   json(runtime + "/codex/TEST-probe.json", { scenario: OwnedOsScenario.Readonly, failSecondReadonlyTurn: true,
     workspace, guestNamespaces: namespaces, inputSha256: digest(input) }, 0o644);
   const args = [runtime + "/dist/worker-codex/codex-goal-cli.js", "run", "--task-id", jobId, "--job-id", jobId,
-    "--job-root", root, "--workspace", workspace, "--prompt", root + "/prompt", "--accounts", "TEST-account", "--auth-root", root + "/auth",
+    "--job-root", root, "--runtime-home-root", root + "/home", "--workspace", workspace, "--prompt", root + "/prompt", "--accounts", "TEST-account", "--auth-root", root + "/auth",
     "--codex-binary", runtime + "/codex/bin/provider.ts", "--model", "TEST-synthetic-model", "--effort", "low",
     "--timeout", "5m", "--max-goal-turns", "1", "--max-attempts", "1", "--continuation-mode", "disabled",
     "--registry-root", root + "/state/registry", "--output", resultPath, "--worker-report-mode", "structured-output"];
@@ -453,7 +739,219 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
   host.verifyReadonlyMaterial(enrolled.identity);
   evidence.kernelGatePhase = "readonly_real_cli_provider_and_drain";
   const foreground = await runHostedRuntimeForeground(node, args, workspace, { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" });
-  assert.equal(hostedForegroundExitCode(foreground), 0); assert(typeof foreground !== "number");
+  const foregroundStatus = hostedForegroundExitCode(foreground);
+  if (foregroundStatus !== 0) {
+    // Closed failure-class facts only: enums, booleans and counts. Each reader
+    // is isolated so one rejected read cannot mask the other classes. The outer
+    // guard keeps this observation from ever changing TEST behavior.
+    try {
+      const fixtureLiterals = ["TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline",
+        "TEST_provider_startup_failed", "TEST_default_executable_identity_failed", "TEST_catalog_protocol_refused",
+        "hosted_custody_runtime_bootstrap_denied", "AssertionError", "EPIPE",
+        "codex_app_server_turn", "hosted_foreground_result_unresolved"];
+      const facts: Record<string, unknown> = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
+        authenticated: typeof foreground !== "number", probePresent: existsSync(workspace + "/TEST-readonly-probe.json") };
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(resultPath, "utf8"));
+        const rawStatus = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { status?: unknown }).status : undefined;
+        facts.resultPresent = true;
+        facts.rawResultStatus = typeof rawStatus === "string" && ["completed", "failed", "partial", "blocked", "cancelled"].includes(rawStatus)
+          ? rawStatus : "unrecognized";
+      } catch (error) { facts.resultPresent = existsSync(resultPath); facts.rawResultRead = closedFailureToken(error); }
+      try {
+        const summary = await readCodexGoalResultSummary(resultPath);
+        facts.resultStatus = summary.status ?? null; facts.foregroundOutputPresent = !!summary.foregroundOutput;
+        facts.outputExitCode = summary.foregroundOutput ? summary.foregroundOutput.exitCode : null;
+      } catch (error) { facts.summaryRead = closedFailureToken(error); }
+      try {
+        const epoch = host.readEpoch();
+        facts.phase = epoch.phase; facts.outerState = epoch.outerRuntime ? epoch.outerRuntime.state : null;
+        facts.completionPresent = epoch.outerRuntime ? readHostedPrivateBytes(completionPath(epoch.outerRuntime), 4096) !== null : null;
+        if (epoch.outerRuntime) try {
+          const shown = spawnSync("/usr/bin/systemctl", ["show", epoch.outerRuntime.unit, "--property=ExecMainCode",
+            "--property=ExecMainStatus", "--property=Result", "--property=ActiveState", "--property=SubState"],
+            { encoding: "utf8", timeout: 5000, maxBuffer: 65536, stdio: ["ignore", "pipe", "pipe"], env: cleanEnv });
+          if (!shown.error && shown.signal === null && shown.status === 0 && shown.stderr === "") {
+            const rows = new Map(shown.stdout.trim().split("\n").map(line => {
+              const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)] as const;
+            }));
+            const code = rows.get("ExecMainCode");
+            facts.unitExecMainCode = code === "0" ? "exited" : code === "1" ? "killed" : code === "2" ? "dumped" : code === undefined ? "absent" : "other";
+            const unitStatus = Number(rows.get("ExecMainStatus"));
+            facts.unitExecMainStatus = Number.isSafeInteger(unitStatus) ? unitStatus : null;
+            const unitResult = rows.get("Result");
+            facts.unitResult = unitResult === undefined ? "absent" : ["success", "exit-code", "signal", "core-dump", "timeout",
+              "watchdog", "oom-kill", "startup-limit", "dependency", "assert", "resources", "protocol"].includes(unitResult) ? unitResult : "other";
+            facts.unitActiveState = rows.get("ActiveState") ?? null; facts.unitSubState = rows.get("SubState") ?? null;
+          } else facts.unitShow = "unavailable";
+        } catch { facts.unitShow = "unavailable"; }
+      } catch (error) { facts.epochRead = closedFailureToken(error); }
+      try {
+        const rows = host.readEpoch().reservations.map(row => ({
+          state: row.state === HostedCustodyReservationState.Reserved ? "reserved" :
+            row.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+          kind: row.unit.startsWith("subscription-runtime-outer-") ? "outer" :
+            row.unit.startsWith("subscription-runtime-hosted-") ? "hosted" :
+            row.unit.startsWith("subscription-runtime-ordinary-") ? "ordinary" : "other" }));
+        facts.reservations = { count: rows.length, rows: rows.slice(0, 8) };
+      } catch (error) { facts.reservations = closedFailureToken(error); }
+      try {
+        const path = workspace + "/TEST-provider-termination.json";
+        facts.providerTermination = existsSync(path) ? "present" : "absent";
+        if (facts.providerTermination === "present") {
+          const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+          const markers = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { markers?: unknown }).markers : undefined;
+          facts.providerTerminationMarkers = Array.isArray(markers) ? ["stdin_eof", "sigterm"].filter(name => markers.includes(name)) : ["unrecognized"];
+        }
+      } catch { facts.providerTermination = "unreadable"; }
+      try {
+        const path = workspace + "/TEST-provider-failure.json";
+        if (!existsSync(path)) facts.providerFailure = "absent";
+        else {
+          const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+          const record = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as { site?: unknown; code?: unknown; assert?: unknown } : {};
+          const site = record.site, code = record.code, startup = record.assert;
+          facts.providerFailure = { site: typeof site === "string" && ["startup", "probe", "protocol", "deadline"].includes(site) ? site : "other",
+            code: Number.isSafeInteger(code) ? code : null,
+            assert: typeof startup === "string" && ["workspace_shape", "cwd_home_identity", "cwd_home_root"].includes(startup) ? startup : null };
+        }
+      } catch { facts.providerFailure = "unreadable"; }
+      try {
+        facts.providerStart = existsSync(workspace + "/TEST-provider-start.json") ? "present" : "absent";
+      } catch { facts.providerStart = "unreadable"; }
+      try {
+        facts.runPath = { launchManifest: existsSync(root + "/state/registry/" + jobId + "/job.json"),
+          controllerOrigin: existsSync(root + "/.controller-state-origin.json"),
+          events: existsSync(root + "/" + jobId + ".events.jsonl"),
+          progress: existsSync(root + "/" + jobId + ".progress.json"),
+          registryDir: existsSync(root + "/state/registry/" + jobId) };
+      } catch { facts.runPath = "unreadable"; }
+      try {
+        const hp = "/var/lib/subscription-runtime-host-policy";
+        facts.hostPolicy = { receiptHistory: existsSync(hp + "/dependency-receipt-history"),
+          sourceBindings: existsSync(hp + "/dependency-source-bindings"),
+          receipts: existsSync(hp + "/dependency-receipts"),
+          readonlyStarts: existsSync(hp + "/readonly-dependency-starts"),
+          readonlyEpoch: existsSync(hp + "/readonly-epoch.json"),
+          checkpointAdmission: existsSync(root + "/.terminal-checkpoint-admission") };
+      } catch { facts.hostPolicy = "unreadable"; }
+      try {
+        facts.probeFiles = { readonlyProbe: existsSync(workspace + "/TEST-readonly-probe.json"),
+          readonlyFailedProbe: existsSync(workspace + "/TEST-readonly-failed-probe.json"),
+          providerProbeFailed: existsSync(workspace + "/TEST-provider-probe-failed.json"),
+          providerProbe1: existsSync(workspace + "/TEST-provider-probe-1.json") };
+      } catch { facts.probeFiles = "unreadable"; }
+      try {
+        const reviewed = workspace + "/reviewed/input.txt";
+        if (!existsSync(reviewed)) facts.reviewedHostAppend = "absent";
+        else {
+          let fd: number | undefined;
+          try { fd = openSync(reviewed, "a"); facts.reviewedHostAppend = "permitted"; }
+          catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            facts.reviewedHostAppend = ["EROFS", "EACCES", "EPERM"].includes(code ?? "") ? code : "other";
+          } finally { if (fd !== undefined) closeSync(fd); }
+        }
+      } catch { facts.reviewedHostAppend = "unreadable"; }
+      try {
+        const outer = host.readEpoch().outerRuntime;
+        facts.foregroundLogsUnit = outer ? "present" : "absent";
+        if (outer) {
+          const logs: Record<string, unknown> = {};
+          for (const kind of ["stdout", "stderr"] as const) {
+            const path = `/var/lib/subscription-runtime-host-policy/foreground-output/${outer.unit}.${kind}`;
+            try {
+              const bytes = readFileSync(path), text = bytes.toString("utf8");
+              const exited = /codex_app_server_exited:(\d+)/.exec(text), rpc = /json_rpc_process_exited:(\d+)/.exec(text);
+              logs[kind] = { present: true, byteLength: Math.min(bytes.length, 1048576), markers: fixtureLiterals.filter(name => text.includes(name)),
+                appServerExitedCode: exited ? Number(exited[1]) : null, jsonRpcExitedCode: rpc ? Number(rpc[1]) : null };
+            } catch (error) { logs[kind] = { present: existsSync(path), read: closedFailureToken(error) }; }
+          }
+          facts.foregroundLogs = logs;
+        }
+      } catch { facts.foregroundLogs = "unreadable"; }
+      try {
+        const outer = host.readEpoch().outerRuntime;
+        if (!outer) facts.stderrShape = "no_unit";
+        else {
+          let text: string | undefined;
+          try { text = readFileSync(`/var/lib/subscription-runtime-host-policy/foreground-output/${outer.unit}.stderr`, "utf8"); }
+          catch (error) { facts.stderrShape = { read: closedFailureToken(error) }; }
+          if (text !== undefined) {
+            const lines = text.split("\n").filter(line => line.length > 0);
+            const shape: Record<string, unknown> = { lineCount: Math.min(lines.length, 16),
+              lineLengths: lines.slice(0, 4).map(line => Math.min(line.length, 4096)) };
+            const trimmed = text.trim();
+            const diagnostic = decodeCodexGoalOriginDiagnostic(trimmed);
+            const prefix = /^\{"reason":"(hosted_[a-z_]+)","locations":/.exec(trimmed);
+            const reason = prefix ? prefix[1] : undefined;
+            if (trimmed === "") shape.kind = "empty";
+            else if (diagnostic) {
+              shape.kind = "origin_diagnostic"; shape.originReason = diagnostic.reason;
+              shape.originLocationCount = diagnostic.locations.length;
+              shape.originModules = [...new Set(diagnostic.locations.map(row => row.module))];
+              const first = diagnostic.locations[0];
+              if (first) shape.originFirst = { module: first.module, format: first.format, line: first.line, column: first.column };
+            } else if (prefix) {
+              shape.kind = "origin_diagnostic_prefix";
+              shape.originReason = reason === "hosted_dependency_current_origin_unresolved" ||
+                reason === "hosted_current_dependency_origin_unresolved" ? reason : "other";
+            } else if (lines.every(line => /^\(node:\d+\)/.test(line))) shape.kind = "node_warning";
+            else if (/^Running as unit: /.test(trimmed)) shape.kind = "running_as_unit";
+            else if (lines.every(line => fixtureLiterals.some(token => line.includes(token)))) shape.kind = "fixture_token";
+            else if (trimmed.startsWith("{") && trimmed.endsWith("}")) shape.kind = "json_like";
+            else if (lines.length === 1) shape.kind = "single_line";
+            else if (lines.length > 1) shape.kind = "multi_line";
+            else shape.kind = "other";
+            // Closed error-family facts only: whitelisted codes, syscalls, path
+            // roots and counts. No raw message bytes ever leave the runner.
+            const fsMatch = /^([A-Z]{2,10}): [a-z -]{4,40}, ([a-z_]{2,12}) \x27([^\x27]*)\x27$/.exec(trimmed);
+            if (fsMatch) {
+              shape.errorClass = "fs_error";
+              shape.fsCode = ["ENOENT", "EROFS", "EACCES", "EPERM", "ENOTDIR", "EEXIST", "EISDIR",
+                "EBUSY", "ENOSPC", "EINVAL"].includes(fsMatch[1]!) ? fsMatch[1] : "other";
+              shape.fsSyscall = ["open", "stat", "lstat", "scandir", "mkdir", "write", "unlink",
+                "rename", "realpath", "read", "access", "chmod"].includes(fsMatch[2]!) ? fsMatch[2] : "other";
+              const target = fsMatch[3]!;
+              shape.fsPathRoot = target.startsWith("/mnt/TEST-retention-readonly-storage") ? "readonly_storage" :
+                target.startsWith("/var/lib/subscription-runtime-host-policy") ? "host_policy" :
+                target.startsWith("/opt/subscription-runtime") ? "runtime" :
+                target.startsWith("/run/") ? "run" : target.startsWith("/etc/") ? "etc" : "other";
+              shape.fsPathLength = Math.min(target.length, 4096);
+              shape.fsLeaf = target === "/var/lib/subscription-runtime-host-policy/dependency-receipt-history" ? "receipt_history" :
+                target === "/var/lib/subscription-runtime-host-policy/dependency-source-bindings" ? "source_bindings" :
+                target === "/var/lib/subscription-runtime-host-policy/dependency-receipts" ? "receipts" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-dependency-starts" ? "readonly_starts" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-epoch.json" ? "readonly_epoch" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-inventory.json" ? "readonly_inventory" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-custody" ? "readonly_custody" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-services" ? "readonly_services" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-revoked" ? "readonly_revoked" : "other";
+            } else if (/^[A-Z][A-Z_]{1,20}: /.test(trimmed)) shape.errorClass = "node_other";
+            else if (/^[a-z][a-z0-9_]{2,60}[:; ]/.test(trimmed)) {
+              shape.errorClass = "token_message";
+              const head = /^[a-z][a-z0-9_]*/.exec(trimmed)![0];
+              shape.tokenFamily = head.startsWith("hosted_") ? "hosted" :
+                head.startsWith("codex_goal") ? "codex_goal" :
+                head.startsWith("dependency_") ? "dependency" :
+                head.startsWith("project_control") ? "project_control" :
+                head.startsWith("controller_") ? "controller" :
+                head.startsWith("scratch") ? "scratch" :
+                head.startsWith("job_storage") ? "job_storage" : "other";
+            } else shape.errorClass = "other";
+            shape.parts = Math.min((trimmed.match(/; /g) ?? []).length, 8);
+            shape.hasPath = trimmed.includes("/");
+            facts.stderrShape = shape;
+          }
+        }
+      } catch { facts.stderrShape = "unreadable"; }
+      evidence.readonlyForegroundFailure = facts;
+    } catch {
+      evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only",
+        status: foregroundStatus, authenticated: typeof foreground !== "number", diagnostics: "unavailable" };
+    }
+  }
+  assert.equal(foregroundStatus, 0); assert(typeof foreground !== "number");
   const retrieved = await readCodexGoalResultSummary(resultPath); assert(retrieved.foregroundOutput);
   assert.equal(retrieved.foregroundOutput.unit, foreground.unit);
   assert.equal(retrieved.foregroundOutput.exitCode, 0);
@@ -576,7 +1074,7 @@ async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void>
 }
 
 async function qualifyLateRelease(commandPath: string, args: readonly string[], workspace: string, env: Record<string, string>,
-  systemBusInfrastructure: SystemBusInfrastructure) {
+  systemBusInfrastructure: SystemBusInfrastructure, evidence: Record<string, unknown>) {
   const store = new HostedInstallationActivationStore();
   const previousStarts = new Set(readHostedInstallationActivation().activation.ordinaryStarts.map(row => row.startId));
   const previousProbes = readdirSync(workspace).filter(name => /^TEST-provider-probe-[123]\.json$/.test(name)).sort();
@@ -588,7 +1086,15 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
   const closed = once(child, "close"), guard = hostedFdLaunch(child);
   child.stdin?.on("error", () => {});
   let pausedMs = 0, requestedMs = 0, denied = false;
+  // Closed-fact TEST diagnostics only: enums, booleans and capped counts. No
+  // payload, id, path or raw error text is recorded and no gate authority
+  // changes here.
+  let releaseErrorClass = "none", releaseCall = 0, releaseCallClass = "none", cleanupReleased: boolean | null = null;
+  const classifyError = (error: unknown): string => error instanceof Error && error.message === "hosted_fd_boundary_unresolved" ? "boundary_unresolved"
+    : error instanceof Error && (error as { code?: unknown }).code === "ERR_ASSERTION" ? "assertion"
+      : error instanceof Error ? "other" : "non_error_throw";
   let typedEmptyArrays: readonly SystemdEmptyArrayFact[] | undefined;
+  const previousProbeCount = readdirSync(workspace).filter(name => /^TEST-provider-probe-[0-9]+\.json$/.test(name)).length;
   try {
     await guard.observe(); // Actual peer/unit/birth proof outside the fence.
     assert(actualUnit);
@@ -599,6 +1105,7 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
     try {
       store.releaseOrdinaryRuntimeFrame((fence, revalidateOwner) => {
         guard.release(fence, Buffer.from(JSON.stringify({ schemaVersion: 1, env })), true, () => {
+          releaseCall += 1; releaseCallClass = releaseCall === 1 ? "first_revalidate" : releaseCall === 2 ? "tool_parent_revalidate" : "budget_revalidate";
           revalidateOwner();
           requestedMs = guard.remainingSetupMs() + 5;
           assert(requestedMs <= 60005);
@@ -609,15 +1116,40 @@ async function qualifyLateRelease(commandPath: string, args: readonly string[], 
           pausedMs = Number(process.hrtime.bigint() - began) / 1_000_000;
         });
       });
-    } catch (error) { assert(error instanceof Error && error.message === "hosted_fd_boundary_unresolved"); denied = true; }
+    } catch (error) {
+      releaseErrorClass = classifyError(error);
+      assert(error instanceof Error && error.message === "hosted_fd_boundary_unresolved"); denied = true;
+    }
     assert(requestedMs > 0 && pausedMs >= requestedMs - 1, "TEST final-release clock boundary was not exercised");
     assert(denied, "TEST expired frame crossed actual final release");
   } finally {
     // Cleanup is the existing exact owned reservation path, never a completion
     // claim or blanket manager/process operation. Uncertainty remains retained.
     guard.invalidate();
-    assert(store.requestOrdinaryDependencyCleanup());
+    // Product denial path (runHostedRuntimeForeground catch): the exact retained
+    // proxy is stopped with SIGTERM. systemd-run --wait reports a stop-killed
+    // unit as a clean wait (its documented contract), so the proxy is terminated
+    // before the owned stop can close it as an apparent success.
+    child.kill("SIGTERM");
+    try { cleanupReleased = store.requestOrdinaryDependencyCleanup(); }
+    catch (error) { cleanupReleased = null; evidence.lateReleaseObservation = { purpose: "TEST_late_release_closed_fact_classification",
+      releaseErrorClass, releaseCallClass, denied, requestedMsCapped: Math.min(Math.round(requestedMs), 60005),
+      pausedMsCapped: Math.min(Math.round(pausedMs), 60005), cleanupErrorClass: classifyError(error) }; throw error; }
+    assert(cleanupReleased);
     const [code, signal] = await boundedWait(closed, 15000);
+    const childExitClass = signal !== null ? "signal" : code === 0 ? "exit0" : "nonzero";
+    const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+    evidence.lateReleaseObservation = { purpose: "TEST_late_release_closed_fact_classification",
+      releaseErrorClass, releaseCallClass, denied, requestedMsCapped: Math.min(Math.round(requestedMs), 60005),
+      pausedMsCapped: Math.min(Math.round(pausedMs), 60005), cleanupReleased, childExitClass,
+      codeCapped: typeof code === "number" ? Math.min(code, 255) : null, signaled: signal !== null,
+      probeAddedCount: Math.min(Math.max(readdirSync(workspace).filter(name => /^TEST-provider-probe-[0-9]+\.json$/.test(name)).length - previousProbeCount, 0), 8),
+      addedRows: added.slice(0, 4).map(row => ({
+        unit: row.unit.startsWith("subscription-runtime-hosted-") ? "hosted" : row.unit.startsWith("subscription-runtime-ordinary-") ? "ordinary" : "other",
+        state: row.state === HostedCustodyReservationState.Reserved ? "reserved" : row.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+        startRecord: (() => { try { lstatSync(`${policy}/ordinary-starts/${row.startId}.json`); return "present"; } catch { return "absent"; } })(),
+        completionRecord: (() => { try { lstatSync(`${policy}/ordinary-completed/${row.startId}.json`); return "present"; } catch { return "absent"; } })() })),
+      addedCount: added.length, addedOverflow: added.length > 4 };
     assert(code !== 0 || signal !== null, "TEST pre-payload deadline launch unexpectedly completed successfully");
   }
   assert.deepEqual(readdirSync(workspace).filter(name => /^TEST-provider-probe-[123]\.json$/.test(name)).sort(), previousProbes);
@@ -1042,7 +1574,7 @@ async function issueActualSystemBusInfrastructure(evidence: Record<string, unkno
   const extraction = JSON.parse(pinBytes.toString("utf8")) as { schemaVersion: number; pins: SystemBusFilePin[] };
   assert.equal(extraction.schemaVersion, 1); assert(Array.isArray(extraction.pins) && extraction.pins.length <= 1024);
   const signed = new Map(extraction.pins.map(pin => {
-    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl", "/usr/bin/python3.12"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
+    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl", "/usr/bin/python3.12", "/usr/bin/git"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
     return [pin.path, pin.sha256] as const;
   }));
   assert.equal(signed.size, extraction.pins.length);
@@ -1247,7 +1779,35 @@ function boundedProc(path: string, max: number): string {
   finally { closeSync(fd); }
 }
 
-function observeOwnedCliFailure(jobId: string, root: string, workspace: string, status: number) {
+function verifyOwnedSyntheticDiagnosticInputs(phase: "fresh_real_cli" | "hot_real_cli", jobId: string, root: string,
+  workspace: string, command: string, args: readonly string[], env: Readonly<Record<string, string | undefined>>): boolean {
+  try {
+    if (process.env.TEST_OS_SCENARIO !== OwnedOsScenario.Dependency || !/^TEST-os-[a-f0-9-]{36}$/.test(jobId) ||
+        root !== policy + "/dependency-test-jobs/jobs/" + jobId || workspace !== root + "/workspace") return false;
+    const read = (path: string, max: number): Buffer => {
+      for (let parent = dirname(path);; parent = dirname(parent)) {
+        const stat = lstatSync(parent); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && !(stat.mode & 0o022));
+        assert.equal(realpathSync(parent), parent); if (parent === "/") break;
+      }
+      const before = lstatSync(path); assert(before.isFile() && !before.isSymbolicLink() && before.uid === 0 && before.nlink === 1 &&
+        !(before.mode & 0o022) && before.size > 0 && before.size <= max);
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        assert(sameSyntheticDiagnosticFile(before, fstatSync(fd)));
+        const bytes = Buffer.alloc(max + 1); let length = 0;
+        while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
+        assert.equal(length, before.size);
+        assert(sameSyntheticDiagnosticFile(before, fstatSync(fd)) && sameSyntheticDiagnosticFile(before, lstatSync(path)));
+        return bytes.subarray(0, length);
+      } finally { closeSync(fd); }
+    };
+    return verifiedSyntheticCliInputs({ scenario: process.env.TEST_OS_SCENARIO, phase, entry: process.argv[1], command,
+      jobId, root, workspace, args, env, providerSha256: digest(read(runtime + "/codex/bin/provider.ts", 32768)),
+      prompt: read(root + "/prompt", 4096), auth: read(root + "/auth/TEST-account/auth.json", 4096) });
+  } catch { return false; }
+}
+function observeOwnedCliFailure(jobId: string, root: string, workspace: string, status: number,
+  trustedSyntheticInputs = false, syntheticStderrVerified = trustedSyntheticInputs) {
   const observation: Record<string, unknown> = { purpose: "TEST_owned_cli_failure_only", status };
   const { installation, activation } = readHostedInstallationActivation();
   assert(activation.ordinaryStarts.length <= 32);
@@ -1283,19 +1843,30 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
           const opened = fstatSync(fd); assert.equal(opened.dev, before.dev); assert.equal(opened.ino, before.ino);
           const tail = Buffer.alloc(Math.min(opened.size, 32768)); const count = readSync(fd, tail, 0, tail.length, Math.max(0, opened.size - tail.length));
           const current = lstatSync(path); assert.equal(current.dev, before.dev); assert.equal(current.ino, before.ino);
+          const sample = { fullBytes: opened.size, offset: Math.max(0, opened.size - tail.length), initialBytes: before.size, currentBytes: current.size };
+          const stable = sameSyntheticDiagnosticFile(before, opened) && sameSyntheticDiagnosticFile(before, current) && sameSyntheticDiagnosticFile(before, fstatSync(fd));
           return { slot, present: true, bytes: opened.size, dev: String(opened.dev), ino: String(opened.ino),
             diagnostic: runtimeDiagnostic(tail.subarray(0, count).toString("utf8")),
-            ...(slot === 1 ? { transientStart: classifyTransientStartFailure(tail.subarray(0, count), {
-              fullBytes: opened.size, offset: Math.max(0, opened.size - tail.length), initialBytes: before.size, currentBytes: current.size,
-            }) } : {}) };
+            ...(slot === 0 && trustedSyntheticInputs && row.unit === `subscription-runtime-ordinary-${row.startId}.service` ? { syntheticStructuredFailure: syntheticStructuredFailure(tail.subarray(0, count), sample,
+              stable, process.env.TEST_SOURCE_SHA ?? "", { jobId, workspace }, "safe_execution_stdout") } : {}),
+            ...(slot === 1 ? { transientStart: classifyTransientStartFailure(tail.subarray(0, count), sample),
+              proxyStderr: classifyOwnedProxyStderr(tail.subarray(0, count), sample),
+              ...(syntheticStderrVerified ? { syntheticStderrDiagnostic: syntheticCliStderrDiagnostic(tail.subarray(0, count), sample,
+                stable, process.env.TEST_SOURCE_SHA ?? "") } : {}) } : {}) };
         } finally { closeSync(fd); }
       } catch (error) { return { slot, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
     });
     return [{ startId: row.startId, reservationState: row.state, startSha256: digest(bytes), completionPresent: completion !== null,
       completionSha256: completion ? digest(completion) : null, showStatus: shown.status, showFailed: !!shown.error, states: fields,
-      journalStatus: journal.status, journalFailed: !!journal.error, journalDiagnostic: runtimeDiagnostic(journal.stdout ?? ""), foregroundLogs }];
+      journalStatus: journal.status, journalFailed: !!journal.error, journalDiagnostic: runtimeDiagnostic(journal.stdout ?? ""), foregroundLogs,
+      ...(trustedSyntheticInputs && row.unit === `subscription-runtime-ordinary-${row.startId}.service` ? {
+        installerObservation: observeOwnedSyntheticInstallerFailure({ startId: row.startId, unit: row.unit,
+          installationId: installation.installationId, bootId: activation.bootId, runtimeSha: installation.runtimeSha,
+          grantSha256: start.grantSha256, workspacePath: workspace,
+          workspaceDev: String(lstatSync(workspace).dev), workspaceIno: String(lstatSync(workspace).ino) }) } : {}) }];
   });
   observation.starts = rows;
+  if (trustedSyntheticInputs) observation.structuredResult = observeSyntheticResultFile({ jobId, workspace }, true, process.env.TEST_SOURCE_SHA ?? "");
   const files = [root + "/state/registry/" + jobId + "/job.json", root + "/" + jobId + ".latest-result.json", root + "/" + jobId + ".log"];
   observation.jobOutputs = files.map((path, index) => {
     try { const stat = lstatSync(path); assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1);
@@ -1307,6 +1878,30 @@ function observeOwnedCliFailure(jobId: string, root: string, workspace: string, 
       finally { closeSync(fd); }
     } catch (error) { return { slot: index, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
   });
+  observation.probeFact = (() => {
+    // Bounded closed deny-site fact written by the failed provider probe:
+    // enum identities and counts only, never path names or contents.
+    try {
+      const before = lstatSync(workspace + "/TEST-provider-probe-failed.json");
+      if (!before.isFile() || before.isSymbolicLink() || before.uid !== 0 || before.nlink !== 1 || before.size <= 0 || before.size > 4096) return { present: false };
+      const fd = openSync(workspace + "/TEST-provider-probe-failed.json", constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096); let length = 0;
+        while (length < buffer.length) { const count = readSync(fd, buffer, length, buffer.length - length, length); if (!count) break; length += count; }
+        const raw: unknown = JSON.parse(buffer.subarray(0, length).toString("utf8"));
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { present: false };
+        const v = raw as Record<string, unknown>;
+        if (Object.keys(v).sort().join(",") !== "entryCount,errno,gid,kind,mode,pathIndex,schemaVersion,size,threw,uid" ||
+            v.schemaVersion !== 1 || typeof v.pathIndex !== "number" || !Number.isInteger(v.pathIndex) || v.pathIndex < 0 || v.pathIndex > 8 ||
+            typeof v.threw !== "boolean" || typeof v.errno !== "string" ||
+            !["ENOENT", "EACCES", "EISDIR", "ELOOP", "EPERM", "ENOTDIR", "EROFS", "other"].includes(v.errno) ||
+            typeof v.kind !== "string" || !["missing", "file", "directory", "symlink", "fifo", "socket", "other"].includes(v.kind) ||
+            ["mode", "uid", "gid", "size", "entryCount"].some(key => typeof v[key] !== "number" || !Number.isInteger(v[key]))) return { present: false };
+        return { present: true, pathIndex: v.pathIndex, threw: v.threw, errno: v.errno, kind: v.kind,
+          mode: v.mode, uid: v.uid, gid: v.gid, size: v.size, entryCount: v.entryCount };
+      } finally { closeSync(fd); }
+    } catch { return { present: false }; }
+  })();
   return observation;
 }
 

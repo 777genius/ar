@@ -4,6 +4,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "
 import { dirname } from "node:path";
 import { SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_QUERY_EXECUTABLE, SystemBusQueryRenderer,
   type SystemBusQueryTool } from "@vioxen/subscription-runtime/core";
+import { AppServerObserverPoint as ObserverPoint, retainObserverFailure } from "../domain/app-server-observer-failure";
 
 /** Measures a real caller's original monotonic allowance; it supplies no proof. */
 export type SystemdObservationRemaining = () => number;
@@ -103,31 +104,41 @@ function command(tool: SystemBusQueryTool, args: readonly string[], remaining: S
   return result.stdout;
 }
 export function assertSystemdManagerOwner(tool: SystemBusQueryTool, remaining: SystemdObservationRemaining): void {
+  const began = process.hrtime.bigint(); let point = ObserverPoint.ArrayPin;
+  try {
   assertPinnedSystemBusQueryTool(tool, remaining);
+  point = ObserverPoint.ManagerRead;
   const result = command(tool, ["call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
     "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], remaining);
   if (result !== "u 1" && result !== "u 1\n") invalid();
-  assertPinnedSystemBusQueryTool(tool, remaining);
+  point = ObserverPoint.ArrayFinalPin; assertPinnedSystemBusQueryTool(tool, remaining);
+  } catch (error) { retainObserverFailure(error, point, Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - began) / 1000000n)))); throw error; }
 }
 /** Factual fixed reads only. Actual callers retain provenance and final fence. */
 export function observeSystemdServiceEmptyArrays(tool: SystemBusQueryTool, unit: string,
   kind: SystemdServiceArrayKind, remaining: SystemdObservationRemaining): readonly SystemdEmptyArrayFact[] {
+  const began = process.hrtime.bigint(); let point = ObserverPoint.ArrayPin;
+  try {
   if (kind === SystemdServiceArrayKind.Infrastructure ? unit !== "dbus.service" :
       kind !== SystemdServiceArrayKind.FdManaged ||
       !/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
   assertPinnedSystemBusQueryTool(tool, remaining);
+  point = ObserverPoint.ArrayUnit;
   const path = command(tool, ["call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
     "org.freedesktop.systemd1.Manager", "GetUnit", "s", unit], remaining);
   const match = /^o "(\/org\/freedesktop\/systemd1\/unit\/[A-Za-z0-9_]{1,2048})"\n?$/.exec(path);
   if (!match) invalid();
+  point = ObserverPoint.ArrayRead;
   const facts = decodeSystemdEmptyArrays(kind, command(tool, ["get-property", "org.freedesktop.systemd1", match[1]!,
     "org.freedesktop.systemd1.Service", ...properties(kind)], remaining));
   if (kind === SystemdServiceArrayKind.FdManaged) {
+    point = ObserverPoint.ArrayPolicy;
     assertSystemdIoUringPolicy(command(tool, ["get-property", "org.freedesktop.systemd1", match[1]!,
       "org.freedesktop.systemd1.Service", "SystemCallFilter", "SystemCallArchitectures", "NoNewPrivileges"], remaining));
   }
-  assertPinnedSystemBusQueryTool(tool, remaining);
+  point = ObserverPoint.ArrayFinalPin; assertPinnedSystemBusQueryTool(tool, remaining);
   return facts;
+  } catch (error) { retainObserverFailure(error, point, Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - began) / 1000000n)))); throw error; }
 }
 
 /** Literal v255 busctl format_cmdline: struct fields flatten, arrays carry

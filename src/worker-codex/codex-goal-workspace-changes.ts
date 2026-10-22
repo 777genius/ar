@@ -1,4 +1,4 @@
-import { resolveManagedDependencyGitContext, runManagedDependencyGitBuffer,
+import { resolveManagedDependencyGitContext, runManagedDependencyGitBuffer, runLegacyHostedDependencyGit,
   managedDependencyGitEnvironment, managedDependencyGitFlags,
   type HostedDependencyRootPurposeContext } from "./managed-dependency-git";
 import { execFile } from "node:child_process";
@@ -34,20 +34,16 @@ export async function changedFilesFromWorkspace(
   // The existing native host route keeps its fixed executable/environment;
   // a boolean never substitutes for the managed dependency purpose context.
   const trustedHost = selection === true;
+  if (typeof selection !== "object") {
+    const legacy = await runLegacyHostedDependencyGit(workspacePath,
+      ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], { timeoutMs: gitStatusTimeoutMs });
+    if (legacy) return { changedFiles: changedFilesFromPorcelain(legacy.stdout) };
+  }
   const context = resolveManagedDependencyGitContext(workspacePath, typeof selection === "boolean" ? undefined : selection);
   if (context !== undefined) {
     const { stdout } = await runManagedDependencyGitBuffer(context,
       ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], { timeoutMs: gitStatusTimeoutMs });
-    const records = stdout.toString("utf8").split("\0").filter(Boolean), changedFiles: string[] = [];
-    for (let index = 0; index < records.length; index++) {
-      const record = records[index]!;
-      if (record.length < 4 || record[2] !== " ") throw new Error("dependency_host_git_status_invalid");
-      changedFiles.push(record.slice(3));
-      if (record.slice(0, 2).includes("R") || record.slice(0, 2).includes("C")) {
-        if (records[++index] === undefined) throw new Error("dependency_host_git_status_invalid");
-      }
-    }
-    return { changedFiles };
+    return { changedFiles: changedFilesFromPorcelain(stdout) };
   }
   try {
     const { stdout } = await execFileAsync(trustedHost ? "/usr/bin/git" : "git", [
@@ -70,6 +66,19 @@ export async function changedFilesFromWorkspace(
       warning: workspaceChangedFilesWarning(error),
     };
   }
+}
+
+function changedFilesFromPorcelain(stdout: Buffer): string[] {
+  const records = stdout.toString("utf8").split("\0").filter(Boolean), changedFiles: string[] = [];
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index]!;
+    if (record.length < 4 || record[2] !== " ") throw new Error("dependency_host_git_status_invalid");
+    changedFiles.push(record.slice(3));
+    if (record.slice(0, 2).includes("R") || record.slice(0, 2).includes("C")) {
+      if (records[++index] === undefined) throw new Error("dependency_host_git_status_invalid");
+    }
+  }
+  return changedFiles;
 }
 
 export function uniqueStrings(values: readonly string[]): readonly string[] {

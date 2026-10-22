@@ -25,8 +25,11 @@ import { readHostedMimoWorkerOrigin } from "./hosted-mimo-worker-origin";
 import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
 import type { PublicResearchSourceReader } from "./app-server/application/public-research-source-port";
 import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hosted-controller-dynamic-tools";
+import type { ProviderCallObserver } from "../provider-usage/provider-call-observation";
 
 export type CodexAppServerExecutionEngineOptions = {
+  /** Fixed engine scope prevents pooled children from mixing invocation telemetry. */
+  readonly usageRelay?: { readonly upstreamBaseUrl: string; readonly model: string; readonly observe: ProviderCallObserver };
   readonly codexBinaryPath: string;
   readonly hostedCodingAuthority?: HostedMimoCodingEngineAuthority;
   readonly childBudget?: ChildExecutionBudget;

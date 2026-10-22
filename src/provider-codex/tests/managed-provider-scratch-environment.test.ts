@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, lstatSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, lstatSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,7 +18,9 @@ vi.mock('node:fs', async original => {
 const owned: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); facts.rootDevice = -1; facts.cgroup = '0::/subscription-runtime-hosted.slice/subscription-runtime-hosted-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.service\n'; for (const root of owned.splice(0)) rmSync(root, { recursive: true }); });
 function fixture(): string {
-  const parent = mkdtempSync(join(tmpdir(), 'managed-provider-env-')); owned.push(parent);
+  // macOS TMPDIR is a /var -> /private/var alias; the boundary verifier
+  // demands canonical paths, so allocate under the resolved temp base.
+  const parent = mkdtempSync(join(realpathSync(tmpdir()), 'managed-provider-env-')); owned.push(parent);
   const root = join(parent, 'jobs', 'TEST'); mkdirSync(join(root, 'tmp'), { recursive: true, mode: 0o700 });
   for (const [key, value] of Object.entries({ SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH: '1',
     SUBSCRIPTION_RUNTIME_JOB_ID: 'TEST', SUBSCRIPTION_RUNTIME_JOB_ROOT: root,

@@ -24,7 +24,7 @@ export { createHostedDependencyToolProfile } from "./hosted-dependency-tool-prof
 import { assertHostedActivationFence, readHostedActivationBytes, decodeHostedActivationBytes,
   type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { readCurrentHostedDependencyOrigin, assertCurrentHostedDependencyOrigin, assertCurrentHostedDependencyAttempt,
-  readRetainedHostedDependencyAttemptFacts, retireCurrentHostedDependencyWarmReady, invalidateCurrentHostedDependencyOrigin, CurrentHostedDependencyOriginKind, isHostedManagedReadonlyOuterRuntime,
+  readRetainedHostedDependencyAttemptFacts, retireCurrentHostedDependencyWarmReady, invalidateCurrentHostedDependencyOrigin, CurrentHostedDependencyOriginKind, isHostedManagedReadonlyOuterRuntime, isCurrentHostedDependencyManagedReadonlyOrigin,
   type CurrentHostedDependencyOrigin, type CurrentHostedDependencyOriginFacts } from "./hosted-current-dependency-origin";
 import { readHostedDependencyBinding, type HostedDependencyBinding } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { observeDependencyTree, observeDependencyTreeWithLocalRegistrySelection, assertDependencyLocalRegistrySelectionAbsent, captureDependencyLocalRootOnlySourceExposure, assertDependencySourceExposureCurrent,
@@ -117,11 +117,18 @@ function captureQualificationData(value:unknown):unknown {
  */
 export async function qualifyHostedDependencyToolClosure(binding: HostedDependencyBinding, attempt: DependencyAttempt, coldHandoff?: HostedDependencyColdHandoff, capturedOrigin?: CurrentHostedDependencyOrigin): Promise<HostedDependencyQualifiedToolEntry | undefined> {
   const context = capturedOrigin ?? withHostedActivationFence(fence => readCurrentHostedDependencyOrigin(fence));
+  const authenticate = (fence: HostedActivationFence) => {
+    const actual = assertCurrentHostedDependencyAttempt(context,fence,DependencyOwnerPhase.ExclusiveMutation);
+    // Legacy ordinary v1 has no tool capability or once-entry admission. Its
+    // no-profile return still requires the actual current origin and owner.
+    return actual.facts.kind === CurrentHostedDependencyOriginKind.Ordinary && actual.binding.version === 1 ? actual :
+      assertCurrentHostedDependencyExecutionAdmission(context,fence);
+  };
   // Actual origin first; caller binding/profile fields never select physical IO.
-  const original=withHostedActivationFence(fence=>assertCurrentHostedDependencyExecutionAdmission(context,fence));
+  const original=withHostedActivationFence(authenticate);
   if(!encode(captureQualificationData(binding)).equals(encode(original.binding)) ||
     !encode(captureQualificationData(attempt)).equals(encode(original.attempt)))fail(DependencyAdmissionFailure.StaleAttempt);
-  withHostedActivationFence(fence=>assertCurrentHostedDependencyExecutionAdmission(context,fence));
+  withHostedActivationFence(authenticate);
   binding=original.binding;attempt=original.attempt;
   const profile=hostedDependencyToolProfile(binding);if(!profile)return;
   const assertExclusive = () => withHostedActivationFence(fence => {
@@ -157,9 +164,12 @@ export async function qualifyHostedDependencyToolClosure(binding: HostedDependen
   try {
   const readonlySources = currentSources(before, receipt);
   const deadline = performance.now() + hostedDependencyObservationLimits.maxDurationMs;
+  assertExclusive();
   const placement = await openHostedDependencyManifestPlacement();
   let manifest: Uint8Array;
-  try { assertExclusive(); manifest = await placement.get(receipt.manifestDigest); assertExclusive(); }
+  // Placement holds private FDs while reading immutable bytes. Reauthenticate
+  // only after its awaited close restores the strict origin descriptor boundary.
+  try { manifest = await placement.get(receipt.manifestDigest); }
   finally { await placement.close(); assertExclusive(); }
   const observationInput = { workspacePath: binding.workspace.canonicalPath, treeName: "node_modules",
     expectedWorkspace: binding.workspace, expectedTree: receipt.tree, limits: { ...hostedDependencyObservationLimits, maxDurationMs: Math.floor(deadline - performance.now()) },
@@ -525,7 +535,11 @@ export function invalidateHostedDependencyQualifiedToolEntry(entry: HostedDepend
  */
 export function readAdmittedHostedDependencyToolConfig(workspacePath: string | undefined,
   entry?: HostedDependencyQualifiedToolEntry): DependencyToolGuestConfig | undefined {
-  if ((!isHostedOrdinaryRuntime() && !isHostedManagedReadonlyOuterRuntime()) || workspacePath === undefined) return undefined;
+  // A managed readonly outer runtime is a dependency origin only when its epoch
+  // selects a dependency workspace; otherwise its start records legitimately do
+  // not exist and the raw origin collector would fault on their protected names.
+  const managed = isHostedManagedReadonlyOuterRuntime() && withHostedActivationFence(fence => isCurrentHostedDependencyManagedReadonlyOrigin(fence));
+  if ((!isHostedOrdinaryRuntime() && !managed) || workspacePath === undefined) return undefined;
   return withHostedActivationFence(fence => {
     if (!entry) {
       const context = readCurrentHostedDependencyOrigin(fence), facts = assertCurrentHostedDependencyOrigin(context,fence);

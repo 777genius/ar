@@ -23,6 +23,7 @@ import { createReadonlyPrivateRecord, readonlyCustodyRoot, readonlyCustodySnapsh
 import { HostedReadonlyEpochStore } from "./hosted-readonly-epoch-store";
 import { completionBytes, completionPath, HostedReadonlyHostKernel, readHostedReadonlyHostInventory, type HostedWaitStatus } from "./hosted-readonly-host-kernel";
 import { assertHostedForegroundResult, type HostedForegroundResult } from "../provider-codex/app-server/adapters/hosted-fd-launch";
+import type { HostedForegroundRequest } from "./hosted-foreground-request-custody";
 
 /** Production composition, deliberately without an injected authority, inventory
  * callback, storage path or process factory. Test substitutes live OS facts at
@@ -109,7 +110,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
     }
     if (failed) throw new Error("hosted_custody_stop_incomplete");
   }
-  runRuntimeLaunch<T>(command: string, args: readonly string[], cwd: string, submit: (launch: { command: string; args: readonly string[] }) => T): T {
+  runRuntimeLaunch<T>(command: string, args: readonly string[], cwd: string, submit: (launch: { command: string; args: readonly string[] }) => T, request?: HostedForegroundRequest): T {
     if (this.runtimeGeneration !== undefined) throw new Error("hosted_custody_runtime_already_submitted");
     return this.serialized(() => {
       let epoch = this.readEpoch();
@@ -120,7 +121,7 @@ export class HostedReadonlySupervisorHost implements HostedCustodySupervisorPort
         this.kernel.assertRuntimeLaunch(epoch, command, args, cwd);
         this.verifyReadonlyMaterial(epoch.identity);
         this.verifyExclusiveInventory();
-        this.verifyDescriptorBoundary();
+        this.kernel.verifyDescriptorBoundary(request ? { request, fence: this.store.publicationFence(), command, args, cwd } : undefined);
         if (isHostedDependencyWorkspace(epoch.identity.workspacePath)) {
           assertHostedReadonlyDependencyReadyPublication(this.store.publicationFence(), epoch);
         }

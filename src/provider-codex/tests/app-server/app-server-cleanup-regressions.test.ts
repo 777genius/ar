@@ -9,7 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine } from "../../codex-app-server-execution-engine";
 import { AppServerSlotPool } from "../../app-server/application/app-server-slot-pool";
-import { AppServerProcessCleanupError } from "../../app-server/application/app-server-process-stopper";
+import { AppServerProcessCleanupError, cleanExitGraceMs } from "../../app-server/application/app-server-process-stopper";
 import { isCodexAppServerBudgetExceededError } from "../../app-server/domain/app-server-errors";
 import { signalCodexAppServerChildGroup } from "../../app-server/adapters/node-app-server-process";
 import { FakeAppServerFactory, type FakeAppServerFactoryOptions } from "../../app-server/testing/fake-app-server";
@@ -185,7 +185,9 @@ it("retains ownership loss observed after retry begins, before escalation, acros
     f.onSignal(signal => {
       if (signal === "SIGTERM") child.emit("error", new Error("synthetic initial observation failure"));
     });
-    await expect(pool.disposeSessionSlot(f.input.session)).rejects.toBeInstanceOf(AppServerProcessCleanupError);
+    const firstDispose = pool.disposeSessionSlot(f.input.session).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(cleanExitGraceMs);
+    expect(await firstDispose).toBeInstanceOf(AppServerProcessCleanupError);
     f.onSignal(() => {});
     const retry = pool.disposeSessionSlot(f.input.session).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(1_000);
@@ -283,7 +285,7 @@ it.each(["run", "prewarm", "resume"] as const)("preserves initialization, initia
     : engine[path](input);
   try {
     const result = invoke(f.input).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10_000 + cleanExitGraceMs);
     const error = await result;
     expect(error).toBeInstanceOf(AggregateError);
     const [startup, retry] = (error as AggregateError).errors;

@@ -72,7 +72,10 @@ async function recoverDeadOwner(lockPath: string): Promise<boolean> {
   ) {
     return false;
   }
-  const currentIdentity = await observedProcessStartIdentity(owner.pid);
+  const currentIdentity = await observedProcessStartIdentity(
+    owner.pid,
+    owner.processStartIdentity,
+  );
   if (currentIdentity === owner.processStartIdentity) return false;
   const fencedPath = `${lockPath}.stale-${
     createHash("sha256").update(observedBytes).digest("hex")
@@ -182,24 +185,59 @@ async function releaseOwnedMaintenanceLock(
 }
 
 async function processStartIdentity(pid: number): Promise<string> {
-  const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="]);
-  const value = stdout.trim();
-  if (!value) throw new Error("consumed_output_ledger_process_identity_unavailable");
-  return value;
+  const psIdentity = await observedPsProcessStartIdentity(pid);
+  if (psIdentity !== undefined) return psIdentity;
+  const procIdentity = await observedProcProcessStartIdentity(pid);
+  if (procIdentity !== undefined) return procIdentity;
+  throw new Error("consumed_output_ledger_process_identity_unavailable");
 }
 
-async function observedProcessStartIdentity(pid: number): Promise<string | undefined> {
+async function observedPsProcessStartIdentity(
+  pid: number,
+): Promise<string | undefined> {
   try {
-    return await processStartIdentity(pid);
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="]);
+    const value = stdout.trim();
+    return value || undefined;
   } catch {
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if (isNodeError(error, "ESRCH")) return undefined;
-      throw new Error("consumed_output_ledger_process_identity_indeterminate");
-    }
+    return undefined;
+  }
+}
+
+async function observedProcProcessStartIdentity(
+  pid: number,
+): Promise<string | undefined> {
+  try {
+    const [statBytes, bootIdBytes] = await Promise.all([
+      readFile(`/proc/${pid}/stat`),
+      readFile("/proc/sys/kernel/random/boot_id"),
+    ]);
+    const stat = statBytes.toString("utf8");
+    const tail = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+    const starttime = tail[19];
+    const bootId = bootIdBytes.toString("utf8").trim();
+    if (!starttime || !bootId) return undefined;
+    return `proc:${bootId}:${starttime}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function observedProcessStartIdentity(
+  pid: number,
+  recorded: string,
+): Promise<string | undefined> {
+  const observed = recorded.startsWith("proc:")
+    ? await observedProcProcessStartIdentity(pid)
+    : await observedPsProcessStartIdentity(pid);
+  if (observed !== undefined) return observed;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (isNodeError(error, "ESRCH")) return undefined;
     throw new Error("consumed_output_ledger_process_identity_indeterminate");
   }
+  throw new Error("consumed_output_ledger_process_identity_indeterminate");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

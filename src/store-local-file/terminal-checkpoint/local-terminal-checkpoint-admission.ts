@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { open, lstat, mkdir, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
+import { closeSync, fsyncSync, openSync, writeFileSync } from "node:fs";
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   assertTerminalCheckpointClaimIdentity,
@@ -164,14 +165,15 @@ async function durableReplaceState(root: string, state: State): Promise<void> {
 }
 
 async function durableWrite(path: string, data: string, exclusive: boolean): Promise<void> {
-  const file = await open(path, exclusive ? "wx" : "w", 0o600);
-  try { await file.writeFile(data); await file.sync(); }
-  finally { await file.close(); }
+  // Concurrent origin checks must never observe our private publication FD.
+  const file = openSync(path, exclusive ? "wx" : "w", 0o600);
+  try { writeFileSync(file, data); fsyncSync(file); }
+  finally { closeSync(file); }
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  const dir = await open(path, "r");
-  try { await dir.sync(); } finally { await dir.close(); }
+  const dir = openSync(path, "r");
+  try { fsyncSync(dir); } finally { closeSync(dir); }
 }
 
 function isCode(error: unknown, code: string): boolean {

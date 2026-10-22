@@ -71,6 +71,13 @@ async function initializeReportWorkspace(current: ReturnType<typeof start>): Pro
 }
 
 describe("external owned MiMo result publication", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    // All Host effects still go through the offline kernel/service fixture;
+    // exercise the Linux launch contract locally without a real Host launch.
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   // RED: turn/completed overwrites a truthful report outcome with done.
   it.each([
     ["done", "review_completed"], ["partial", "continue"], ["blocked", "ask_user"], ["failed", "recover"],
@@ -186,6 +193,25 @@ describe("external owned MiMo result publication", () => {
     expect(host.units.get(current.unit)?.active).toBe(false);
   });
 
+  // RED: the runner wrote its terminal failure outcome before outside service reconciliation.
+  it("lands a thrown owned run on the outcome-free stopped marker until the outside owner finalizes", async () => {
+    const current = start(true);
+    await promisify(execFile)("git", ["-C", current.selected.workspacePath, "init"]);
+    await expect(runCodexGoal(current.config, { createExecutor: () => ({ run: async () => {
+      throw new Error("synthetic owned executor failure");
+    }, dispose: async () => {} }) })).rejects.toThrow("synthetic owned executor failure");
+    const progress = JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8"));
+    expect(progress).toMatchObject({ status: "stopped" });
+    expect(progress).not.toHaveProperty("reason");
+    expect(fs.existsSync(codexGoalOutputPath(current.config))).toBe(false);
+    expect(record(current, "mimo-candidate").result).toMatchObject({ status: "failed", reason: "runner_exception" });
+    enterResearchOperatorScope(current.unit);
+    expect((await finalize(current)).status).toBe("failed");
+    expect(JSON.parse(fs.readFileSync(codexGoalOutputPath(current.config), "utf8")).status).toBe("failed");
+    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("failed");
+    expect(host.units.get(current.unit)?.active).toBe(false);
+  });
+
   // RED: a poisoned progress chain must never replace the staged owned result.
   it("stages and returns the owned result even when the terminal progress write fails", async () => {
     const current = start(true);
@@ -201,13 +227,13 @@ describe("external owned MiMo result publication", () => {
     expect(record(current, "mimo-candidate").result.status).toBe("done");
   });
 
-  // RED: the owned failure branch stages its failure and lands a terminal marker.
-  it("writes a terminal failed marker and stages the owned failure before rethrowing", async () => {
+  // RED: the owned failure branch stages its failure and lands the outcome-free marker.
+  it("stages the owned failure and lands the outcome-free stopped marker before rethrowing", async () => {
     const current = start(true);
     await promisify(execFile)("git", ["-C", current.selected.workspacePath, "init"]);
     await expect(runCodexGoal(current.config, { createExecutor: () => ({
       run: async () => { throw new Error("TEST runner exploded"); }, dispose: async () => {} }) })).rejects.toThrow("TEST runner exploded");
-    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("failed");
+    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("stopped");
     expect(record(current, "mimo-candidate").result.status).toBe("failed");
   });
 
