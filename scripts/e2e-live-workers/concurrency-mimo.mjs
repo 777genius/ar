@@ -7,7 +7,7 @@
 // Usage: MIMO_TOKEN_PLAN_API_KEY=... node scripts/e2e-live-workers/concurrency-mimo.mjs \
 //          [--runs N] [--out DIR] [--include-keyless] [--accounts account-a]
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 
@@ -119,7 +119,8 @@ const keyless = results.find((r) => !r.withKey);
 if (keyless && keyless.status === "completed") {
   problems.push("keyless run unexpectedly completed (must fail closed)");
 }
-if (keyless && /provider_session_invalid/.test(`${keyless.failureMessage ?? ""}`)) {
+const keylessLog = keyless ? readFileSync(join(outDir, "keyless", "launch.log"), "utf8") : "";
+if (keyless && /provider_session_invalid/.test(`${keyless.failureMessage ?? ""}${keylessLog}`)) {
   problems.push("keyless run still reports provider_session_invalid (capacity poisoning risk)");
 }
 
