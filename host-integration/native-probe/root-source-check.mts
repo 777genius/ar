@@ -14,7 +14,9 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 async function run(args: readonly string[]): Promise<void> {
-  const child = spawn(process.execPath, [compiler, ...args], { cwd: workspace, stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin" } });
+  // Pin the heap: the root program peaks at ~2 GB old space, right at the
+  // container-default V8 limit, where GC variance decides pass vs SIGABRT.
+  const child = spawn(process.execPath, ["--max-old-space-size=4096", compiler, ...args], { cwd: workspace, stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin" } });
   let output = "";
   child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); process.stdout.write(chunk); });
   child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); process.stderr.write(chunk); });

@@ -9,8 +9,8 @@ import { dependencyToolPins, type DependencyToolProfile } from "../core/dependen
 // Exact supported registry distributions, sourced from the reviewed root lock.
 // This is additional qualification, never a substitute for the full byte proof.
 const toolDistributionIntegrity = Object.freeze({
-  vite: "sha512-h9bXPmJichP5fLmVQo3PyaGSDE2n3aPuomeAlVRm0JLmt4rY6zmPKd59HYI4LNW8oTK7tlTsuC7l/m7awx9Jcw==",
-  vitest: "sha512-flY6ScbCIt9HThs+C5HS7jvGOB560DJtk/Z15IQROTA6zEy49Nh8T/dofWTQL+n3vswqn87sbJNiuqw1SDp5Ig==",
+  vite: "sha512-z1YpjieJ9g0ebTmQpLBv/oq9E3F9EIlOe+7LahW8SrE3LTiG3udBRUXQOlYXP9b+IC2q2phHeVxj9xGlw34OEQ==",
+  vitest: "sha512-5eWdz2yb3ajxWF3C8C4TjkXl7FGm3n2E/VlazALrQHzK7nYMSGFnCZto0bbPNl77AwkOZVLk0YnBAejUu0NiWA==",
 });
 
 export function assertHostedDependencyToolInstalledPins(workspace: string, profile: DependencyToolProfile, lockBytes: Uint8Array): void {

@@ -2,7 +2,7 @@
 export enum DependencyToolProfileId { ViteVitestConfigFreeV1 = "vite-vitest-config-free-v1" }
 export enum DependencyToolOperation { Optimize = "optimize", Test = "test" }
 export enum DependencyToolTransformCache { Persisted = "persisted", Temporary = "temporary" }
-export const dependencyToolPins = Object.freeze({ vite: "8.0.16", vitest: "4.1.8" });
+export const dependencyToolPins = Object.freeze({ vite: "8.3.5", vitest: "4.1.12" });
 export const dependencyToolGuestConfigPath = "/run/subscription-runtime-n3/tool-profile.json";
 
 export type DependencyToolFile = { readonly path: string; readonly sha256: string };
