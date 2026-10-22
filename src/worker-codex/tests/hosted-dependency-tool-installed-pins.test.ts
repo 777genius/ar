@@ -14,10 +14,10 @@ describe.skipIf(process.platform !== "linux")("fixed dependency tool entry avail
     const workspace = realpathSync(mkdtempSync(join(tmpdir(), "TEST-required-tool-entry-")));
     const tree = join(workspace, "node_modules");
     const packages = {
-      "node_modules/vite": { version: "8.0.16", resolved: "https://registry.npmjs.org/vite/-/vite-8.0.16.tgz",
-        integrity: "sha512-h9bXPmJichP5fLmVQo3PyaGSDE2n3aPuomeAlVRm0JLmt4rY6zmPKd59HYI4LNW8oTK7tlTsuC7l/m7awx9Jcw==" },
-      "node_modules/vitest": { version: "4.1.8", resolved: "https://registry.npmjs.org/vitest/-/vitest-4.1.8.tgz",
-        integrity: "sha512-flY6ScbCIt9HThs+C5HS7jvGOB560DJtk/Z15IQROTA6zEy49Nh8T/dofWTQL+n3vswqn87sbJNiuqw1SDp5Ig==" },
+      "node_modules/vite": { version: "8.3.5", resolved: "https://registry.npmjs.org/vite/-/vite-8.3.5.tgz",
+        integrity: "sha512-z1YpjieJ9g0ebTmQpLBv/oq9E3F9EIlOe+7LahW8SrE3LTiG3udBRUXQOlYXP9b+IC2q2phHeVxj9xGlw34OEQ==" },
+      "node_modules/vitest": { version: "4.1.12", resolved: "https://registry.npmjs.org/vitest/-/vitest-4.1.12.tgz",
+        integrity: "sha512-5eWdz2yb3ajxWF3C8C4TjkXl7FGm3n2E/VlazALrQHzK7nYMSGFnCZto0bbPNl77AwkOZVLk0YnBAejUu0NiWA==" },
     };
     for (const [name, exports] of [
       ["vite", { ".": "./dist/node/index.js" }],

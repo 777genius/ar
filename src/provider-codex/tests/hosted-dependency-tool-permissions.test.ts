@@ -11,7 +11,7 @@ const files = ["helper", "schema", "hook", "hook-policy", "parser", "scan-policy
 files.push({ path: "/opt/subscription-runtime/release/package.json", sha256: "c".repeat(64) });
 const config = parseDependencyToolGuestConfig({ version: 1,
   workspace: { canonicalPath: `${job}/workspace`, dev: "1", ino: "2" }, tree: { dev: "1", ino: "3" },
-  profile: { version: 1, profileId: "vite-vitest-config-free-v1", pins: { vite: "8.0.16", vitest: "4.1.8" },
+  profile: { version: 1, profileId: "vite-vitest-config-free-v1", pins: { vite: "8.3.5", vitest: "4.1.12" },
     testFiles: ["value.test.ts"], optimizerDependencies: ["picocolors"], transformCache: "persisted",
     cache: { canonicalPath: `${job}/tool-cache/vite-vitest-config-free-v1`, dev: "1", ino: "4" },
     node: { path: "/opt/node/bin/node", sha256: "b".repeat(64) }, helper: files[0], readonlyFiles: files } });

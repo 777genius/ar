@@ -329,7 +329,7 @@ test("source package contract keeps legacy and binds selected Positive package b
   const old=structuredClone(current);delete old.dependencies.undici;old.bundledDependencies=old.bundledDependencies.filter(v=>v!=="undici");
   const bytes=Buffer.from(JSON.stringify(old,null,2)+"\n");
   const hash=(value:Buffer|string)=>createHash("sha256").update(value).digest("hex");
-  assert.equal(fullNativeSourcePackageHash(2),"7fdbde9be28aa03e3c935d1eac9bca776796be9fa1142602e21ad25989bef334");
+  assert.equal(fullNativeSourcePackageHash(2),"bb43752d46168ba35c90f1ed69e04d41c7fcd87dcb2fac40c3d0d85fc8f890c6");
   assert.equal(fullNativeSourcePackageHash(2),hash(bytes));
   // The public pin changes only the reviewed metadata from the private package;
   // historical bytes and altered metadata/scripts cannot select this contract.
@@ -337,7 +337,7 @@ test("source package contract keeps legacy and binds selected Positive package b
   assert.equal(contract.license,"Apache-2.0");
   assert.deepEqual(contract.repository,{type:"git",url:"git+https://github.com/777genius/ar.git"});
   const historical={...contract,license:"UNLICENSED",repository:{...contract.repository,url:"git+https://github.com/vioxen/subscription-runtime.git"}};
-  assert.equal(hash(JSON.stringify(historical,null,2)+"\n"),"b30781b69ddf73bf53eb3bb02b073aeba00f4404bd796d485365dbc7dbe872ab");
+  assert.equal(hash(JSON.stringify(historical,null,2)+"\n"),"749e2cd54b9ed481eabb5c17c233f14e234770e7ab6ff295208dfd0ec3ef7422");
   for(const changed of [historical,{...contract,license:"MIT"},{...contract,repository:{...contract.repository,url:"git+https://example.invalid/ar.git"}},
     {...contract,scripts:{...contract.scripts,"build:host-source-contracts":"true"}}])assert.notEqual(fullNativeSourcePackageHash(2),hash(JSON.stringify(changed,null,2)+"\n"));
   for(const value of [undefined,null,0,4,"2","3",{},true])assert.throws(()=>fullNativeSourcePackageHash(value));

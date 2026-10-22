@@ -5,7 +5,7 @@ import { lstat, open, readFile, readdir, readlink, realpath } from "node:fs/prom
 import { isAbsolute, join, relative, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 
-export const pins = { vite: "8.0.16", vitest: "4.1.8", picocolors: "1.1.1" } as const;
+export const pins = { vite: "8.3.5", vitest: "4.1.12", picocolors: "1.1.1" } as const;
 export const profile = "TEST-vite8-vitest4-config-free-v1";
 export const sentinelNames = [".vite", ".vite-temp", ".experimental", ".experimental-vitest-cache", ".cache"];
 export type Registration = {

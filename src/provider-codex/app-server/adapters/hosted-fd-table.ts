@@ -15,7 +15,33 @@ export function hostedFdTable(pid: number): readonly HostedFdFact[] {
       const target = readlinkSync(path), info = readFileSync(`/proc/${pid}/fdinfo/${name}`, "utf8");
       const flags = /^flags:\s+([0-7]{1,12})$/m.exec(info);
       const actual = readFileSync(`/proc/${pid}/fdinfo/${name}`, "utf8");
-      if (!flags || /^flags:\s+([0-7]{1,12})$/m.exec(actual)?.[1] !== flags[1] || target !== readlinkSync(path)) invalid();
+      // An empty fdinfo read is the same vanish as ENOENT below: the kernel
+      // prints nothing when the descriptor is no longer held at read time.
+      if (info === "" || actual === "") {
+        if (pid === process.pid) {
+          try { fstatSync(fd); }
+          catch (closed) {
+            if ((closed as NodeJS.ErrnoException).code === "EBADF") continue;
+            throw closed;
+          }
+          invalid();
+        }
+        try { statSync(directory); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") invalid(); throw error; }
+        continue;
+      }
+      if (!flags) invalid();
+      const actualFlags = /^flags:\s+([0-7]{1,12})$/m.exec(actual);
+      // An unknown fdinfo format in the second read stays fail-closed, not a drop.
+      if (!actualFlags) invalid();
+      // A live process may replace the descriptor under the row's reads; the
+      // torn row is unverifiable and stays unattested. Self churn is a custody break.
+      if (actualFlags[1] !== flags[1] || target !== readlinkSync(path)) {
+        if (pid === process.pid) invalid();
+        try { statSync(directory); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") invalid(); throw error; }
+        continue;
+      }
       // No proc FD is opened for IO, including O_PATH handles to directories.
       const s = pid === process.pid ? fstatSync(fd, { bigint: true }) : statSync(path, { bigint: true });
       facts.push(Object.freeze({ fd, target, flags: Number.parseInt(flags[1]!, 8), dev: String(s.dev), ino: String(s.ino),

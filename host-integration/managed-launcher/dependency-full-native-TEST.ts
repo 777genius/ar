@@ -385,8 +385,8 @@ enum LibcPurpose {H1="h1",PositiveHost="positive_host",PositiveHostSystemdShared
 export function fullNativeSourcePackageHash(schemaVersion:unknown):string {
   if(schemaVersion===1)return "68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29";
   // Current public ar source package: Apache-2.0 and the public repository URL.
-  if(schemaVersion===2)return "7fdbde9be28aa03e3c935d1eac9bca776796be9fa1142602e21ad25989bef334";
-  if(schemaVersion===3)return "4564fe69d53213ce3dcf0ff9afd21e62f661b8073ddc19c06a6ccb1b4c3b8f79";
+  if(schemaVersion===2)return "bb43752d46168ba35c90f1ed69e04d41c7fcd87dcb2fac40c3d0d85fc8f890c6";
+  if(schemaVersion===3)return "ea298fca6ba721e9cb80ef2d75d195d1c5efcd7cab83d7041d6d24dcf76e7fe2";
   return refuse();
 }
 /** Review already passed fullReviewData; this chooses an exact source package, never authority. */
