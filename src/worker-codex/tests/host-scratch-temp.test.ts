@@ -18,6 +18,9 @@ function fixture() {
   const nodes = new Map<string, Info>(["/", "/etc", "/etc/subscription-runtime", "/srv", root, `${root}/runtime-tmp`, `${root}/runtime-caches`, "/home", "/home/codex", "/jobs", "/jobs/a", "/jobs/b"].map((path) => [path, directory()]));
   nodes.set(configPath, { ...directory(0o600), isDirectory: () => false, isFile: () => true });
   let config = JSON.stringify({ schemaVersion: 1, root, uuid });
+  const owners = new Map<string, string>();
+  const alivePids = new Set<number>();
+  const sleeper = { fn: (_ms: number) => {} };
   const mounts = new Map<string, ReturnType<ScratchTempHost["inspectMount"]>>([[root, { target: root, uuid, fsroot: "/" }]]);
   const contents = new Map<string, string[]>();
   const mutations: string[] = [];
@@ -34,7 +37,12 @@ function fixture() {
       if (!info) throw Object.assign(new Error("Missing fixture path"), { code: "ENOENT" });
       return info;
     },
-    read: () => config,
+    read: (path) => {
+      if (path === configPath) return config;
+      const owner = owners.get(path);
+      if (owner === undefined) throw Object.assign(new Error("Missing fixture path"), { code: "ENOENT" });
+      return owner;
+    },
     inspectMount: (path) => mounts.get(path),
     statfs: () => ({ bavail: 10 * 1024 ** 3, bsize: 1 }),
     mkdir(path, mode) { if (nodes.has(path)) throw Object.assign(new Error("Exists"), { code: "EEXIST" }); mutations.push(`mkdir ${path}`); nodes.set(path, directory(mode)); },
@@ -48,8 +56,12 @@ function fixture() {
     },
     makePrivate(target) { mutations.push(`private ${target}`); mounts.set(target, { ...mounts.get(target), isPrivate: true }); },
     unmount(target) { mutations.push(`unmount ${target}`); mounts.delete(target); },
+    write(path, data) { mutations.push(`write ${path}`); owners.set(path, data); },
+    isProcessAlive: (pid) => alivePids.has(pid),
+    sleep: (ms) => sleeper.fn(ms),
   };
-  return { host, nodes, mounts, contents, mutations, directory, namespaces, setConfig: (value: unknown) => { config = JSON.stringify(value); } };
+  return { host, nodes, mounts, contents, mutations, directory, namespaces, owners, alivePids, sleeper,
+    setConfig: (value: unknown) => { config = JSON.stringify(value); } };
 }
 
 // Regressions: portable or trusted managed jobs unexpectedly change their layout.
@@ -224,6 +236,49 @@ test("busy bind mutex fails closed without deleting foreign lock", async () => {
   await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /busy/);
   assert.deepEqual(f.mutations, []);
   assert.ok(f.nodes.has(lock));
+});
+
+// Regression: a crashed binder must not leave the target permanently busy.
+test("a scratch lock left by a dead binder is reclaimed and the bind proceeds", async () => {
+  const f = fixture();
+  const layout = resolveHostScratchTempRoot("/jobs/a", f.host)!;
+  const lock = `${layout.source}.lock`;
+  f.nodes.set(lock, f.directory(0o700));
+  f.owners.set(`${lock}/owner.json`, JSON.stringify({ pid: 424242 }));
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  assert.ok(![...f.nodes.keys()].some(path => path.endsWith(".lock")), "stale lock is removed");
+  assert.ok(f.mutations.some(m => m.startsWith("bind ")), "bind proceeds after reclaim");
+});
+
+// Regression: a sibling binder mid-bind is awaited and its prepared bind is
+// reused instead of failing the concurrent launch.
+test("a live sibling binder is awaited and its prepared bind is reused", async () => {
+  const f = fixture();
+  const layout = resolveHostScratchTempRoot("/jobs/a", f.host)!;
+  const lock = `${layout.source}.lock`;
+  f.nodes.set(lock, f.directory(0o700));
+  f.owners.set(`${lock}/owner.json`, JSON.stringify({ pid: 12345 }));
+  f.alivePids.add(12345);
+  f.sleeper.fn = () => {
+    // The sibling finishes its bind during our wait window.
+    f.nodes.set(layout.source, f.directory(0o701));
+    f.nodes.set("/jobs/a/tmp", f.directory(0o701));
+    f.mounts.set("/jobs/a/tmp", { target: "/jobs/a/tmp", uuid, fsroot: layout.source.slice(root.length), mountId: 77, isPrivate: true });
+  };
+  await prepareHostScratchTemp("/jobs/a", {}, f.host);
+  assert.ok(!f.mutations.some(m => m.startsWith("bind ")), "no second bind of a prepared target");
+  assert.ok(f.nodes.has(lock), "the live sibling keeps its lock");
+});
+
+test("a live sibling binder that never prepares still fails closed busy", async () => {
+  const f = fixture();
+  const layout = resolveHostScratchTempRoot("/jobs/a", f.host)!;
+  const lock = `${layout.source}.lock`;
+  f.nodes.set(lock, f.directory(0o700));
+  f.owners.set(`${lock}/owner.json`, JSON.stringify({ pid: 12345 }));
+  f.alivePids.add(12345);
+  await assert.rejects(prepareHostScratchTemp("/jobs/a", {}, f.host), /busy/);
+  assert.ok(f.nodes.has(lock), "the live lock is not deleted");
 });
 
 test("failed bind verification removes only its own mutex", async () => {

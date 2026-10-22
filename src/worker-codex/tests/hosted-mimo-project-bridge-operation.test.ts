@@ -64,6 +64,20 @@ it("refuses start when create settled with a semantic refusal", async () => {
   const { prompt: _prompt, sourceCommit: _commit, ...control } = request;
   await expect(submitHostedMimoProjectBridge({ ...control, operation: MimoProjectBridgeOperation.Start })).rejects.toThrow("mimo_project_bridge_creation_pending");
 });
+it("closes one transient pending Start with a single bounded retry and never replays a submission", async () => {
+  await submitHostedMimoProjectBridge(request);
+  const { prompt: _prompt, sourceCommit: _commit, ...control } = request;
+  // The racing Create settles while the first Start submission is refused. The
+  // pending refusal is thrown before any file is written, so the one bounded
+  // retry observes the settled Create and submits the Start exactly once.
+  setTimeout(() => { state.files.set(prefix + ".result.json", JSON.stringify({ ok: true, result: { ok: true } })); }, 50);
+  await expect(submitHostedMimoProjectBridge({ ...control, operation: MimoProjectBridgeOperation.Start }))
+    .resolves.toMatchObject({ ok: true, pending: true, operation: MimoProjectBridgeOperation.Start });
+  expect(state.command.mock.calls.filter(row => row[0] === "/usr/bin/systemd-run")).toHaveLength(2);
+  const start = prefix.replace(/\.create$/, ".start");
+  expect(state.files.has(start + ".request.json")).toBe(true);
+  expect(state.files.has(start + ".owner.json")).toBe(true);
+});
 it("checks the service PID and strips private error detail from durable results", async () => {
   await submitHostedMimoProjectBridge(request);
   const owner = JSON.parse(state.files.get(prefix + ".owner.json")!);

@@ -97,15 +97,44 @@ export function operationFailure(error: unknown, operation?: MimoProjectBridgeOp
   if (error.message === "hosted_research_launch_denied" && isResearchDenialObservation(error.cause)) return { ok: false, error: code, cause: error.cause };
   return { ok: false, error: code };
 }
+/** Closed journal name vocabulary: the engine's built-in error names, this
+ * runtime's error class names and the eight typeof tags. Any other value is an
+ * unbounded identifier (a foreign or caller-shaped name may carry private text),
+ * so it never reaches the journal and maps to "unknown". */
+const hostedMimoJournalErrorNames: ReadonlySet<string> = new Set([
+  // Engine built-ins.
+  "Error", "TypeError", "SyntaxError", "RangeError", "ReferenceError", "EvalError", "URIError", "AggregateError",
+  // typeof tags of a non-Error thrown value.
+  "undefined", "object", "boolean", "number", "bigint", "string", "symbol", "function",
+  // This runtime's error classes.
+  "AbortError", "AgentRuntimeTaskBridgeCancelledError", "AgentRuntimeTaskBridgeTimeoutError",
+  "AgentRuntimeTaskCancelledError", "AgentRuntimeTaskProtocolError", "AgentRuntimeTaskTimeoutError",
+  "AgentTaskProtocolError", "AgentTaskTimeoutError", "AppServerAdmissionError",
+  "AppServerExecutionMayHaveStartedError", "AppServerGoalMaxTurnsExceededError", "AppServerOutputValidationError",
+  "AppServerProcessCleanupError", "AppServerProcessCleanupUnresolvedError", "AppServerRequestMayHaveReachedProviderError",
+  "AppServerTurnCheckpointError", "AppServerUsageError", "BoundaryViolationError", "ChildLifetimeError",
+  "ClaudeLogicalThreadConflictError", "ClaudeProviderFailureError", "CodexApiKeyCredentialMissingError",
+  "CodexAppServerOutputLimitError", "CodexAppServerProviderError", "CodexAppServerRateLimitsRejectedError",
+  "CodexAppServerThreadForkError", "CodexAppServerTurnError", "CodexGoalChangedFilesUnavailableError",
+  "CodexModelUnavailableError", "DependencyBootstrapWorkspaceRecoveryError", "DurableHandoffPostStopError",
+  "DurableHandoffStopError", "IntegrationError", "JobStorageCapabilityUnavailableError",
+  "LedgerEpochOrphanWorkspaceBindingRevalidationError", "LogicalThreadBusyError", "LogicalThreadStoreCorruptError",
+  "MimoSnapshotGitFailure", "ProjectControlAdmissionDeniedError", "ProjectControlDeniedError",
+  "ProjectControlSubmissionUncertainError", "ProviderRuntimeUnavailableError", "ProviderRuntimeUnsupportedError",
+  "RuntimeConfigurationError", "RuntimeInvariantError", "SafeExecutionError", "SourceHandoffError",
+  "SubscriptionQueueError", "SubscriptionWorkerError",
+]);
 /** Root-cause diagnostics go to the journal as one bounded stderr line; the
  * published envelope keeps its exact `{ ok, error }` shape and never carries text.
  * Only closed fields cross the boundary: the free-text message may carry private
  * causes (paths, provider payloads) and is never written. */
+export function hostedMimoJournalErrorName(error: unknown): string {
+  const rawName = error instanceof Error ? error.name : typeof error;
+  return hostedMimoJournalErrorNames.has(rawName) ? rawName : "unknown";
+}
 export function logHostedMimoOperationFailure(error: unknown, code: string): void {
   try {
-    const rawName = error instanceof Error ? error.name : typeof error;
-    const name = /^[A-Za-z][A-Za-z0-9_]{0,59}$/.test(rawName) ? rawName : "unknown";
-    process.stderr.write(`mimo_project_bridge_failure code=${code} name=${name}\n`);
+    process.stderr.write(`mimo_project_bridge_failure code=${code} name=${hostedMimoJournalErrorName(error)}\n`);
   } catch {
     // Diagnostics must never affect the operation outcome.
   }

@@ -154,7 +154,9 @@ async function produceFreshDependencyTree(context: CurrentHostedDependencyOrigin
       !sameHostedDependencyKeyInputs(inputs, await readHostedDependencyKeyInputs(binding))) fail(Failure.UnsafeTree);
   withHostedActivationFence(fence=>assertFreshProducer(context,fence,access));
   const blobs = await openHostedDependencyManifestPlacement();
-  try {withHostedActivationFence(fence=>assertFreshProducer(context,fence,access));
+  // Placement owns private directory FDs until close. Persist only immutable
+  // content here; origin/owner admission brackets this interval with no held FDs.
+  try {
     if (await blobs.put(final.canonicalBytes) !== final.digest) fail();
   } finally { await blobs.close(); }
   withHostedActivationFence(fence=>assertFreshProducer(context,fence,access));

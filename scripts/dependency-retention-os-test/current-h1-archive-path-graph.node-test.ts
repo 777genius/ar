@@ -8,7 +8,7 @@ import { FixedGnuMemberKind as K, FixedGnuMemberProfile, type FixedGnuArchiveMem
 import { ToolInputArchitecture, type AcquiredSignedPackage } from "./current-h1-tool-inputs-package.ts";
 import { ciIndexOperationalBytes } from "./current-h1-tool-inputs-ci-index.ts";
 import { assertFixedH1GraphRecordBytes, FixedH1AliasState, FixedH1Disposition, preflightFixedH1ArchiveRole, serializeFixedH1ArchiveRole } from "./current-h1-archive-path-graph-TEST.ts";
-const vector = "d89a9c1fd845ec3123839f3d223e24d3a1a1c02ce36c3bb36637d6902a839d5b", source = "6dd8c978dd0b8a9beb02929c286a4fb6cfb57a6b";
+const vector = "fd9c77fcc36f9862b268684d9aa28c9c8be8764439e3f8d4095cd9c5c557459e", source = "6dd8c978dd0b8a9beb02929c286a4fb6cfb57a6b";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex"), b64 = (s: string) => Buffer.from(s).toString("base64");
 // Exact retained package commitments. All rows below are synthetic DATA only.
 const packages: readonly AcquiredSignedPackage[] = Object.freeze([
@@ -50,7 +50,7 @@ const packages: readonly AcquiredSignedPackage[] = Object.freeze([
     Object.freeze({ "package": "netbase", "version": "6.4", "arch": ToolInputArchitecture.All, "sha256": "8cdbc9c3dca01e660759bf9d840f72e45ac72faf5d19ca1faecacaf6a60c1a87", "size": 13112, "filename": "pool/main/n/netbase/netbase_6.4_all.deb" }),
     Object.freeze({ "package": "python3.12-minimal", "version": "3.12.3-1ubuntu0.17", "arch": ToolInputArchitecture.Amd64, "sha256": "d452689b9660845345a4c3e05e4ad82c082d5474e04031b7aa47f1a6d5610a6e", "size": 2334634, "filename": "pool/main/p/python3.12/python3.12-minimal_3.12.3-1ubuntu0.17_amd64.deb" }),
     Object.freeze({ "package": "readline-common", "version": "8.2-4build1", "arch": ToolInputArchitecture.All, "sha256": "879bfd7f8a9bc4c0f7cdc777cdd8bc6de5f8c4a2ac80c060322a1b22f13504bb", "size": 56484, "filename": "pool/main/r/readline/readline-common_8.2-4build1_all.deb" }),
-    Object.freeze({ "package": "tzdata", "version": "2026c-0ubuntu0.24.04.1", "arch": ToolInputArchitecture.All, "sha256": "ef12c9ef81905b5ac558504b2f8c20da9be5f28861020b3fb5e8b15fb3fae2f6", "size": 279816, "filename": "pool/main/t/tzdata/tzdata_2026c-0ubuntu0.24.04.1_all.deb" }),
+    Object.freeze({ "package": "tzdata", "version": "2026e-0ubuntu0.24.04.1", "arch": ToolInputArchitecture.All, "sha256": "2f6794a7f31753fc947d9ac02ff03ea46510f34864f9d132a93d7b105e3c4447", "size": 282136, "filename": "pool/main/t/tzdata/tzdata_2026e-0ubuntu0.24.04.1_all.deb" }),
     Object.freeze({ "package": "util-linux", "version": "2.39.3-9ubuntu6.6", "arch": ToolInputArchitecture.Amd64, "sha256": "08eb17ba3b83378ed1e73d8335d0ce03b429c0bbeb07e374f536234edab02465", "size": 1128326, "filename": "pool/main/u/util-linux/util-linux_2.39.3-9ubuntu6.6_amd64.deb" }),
     Object.freeze({ "package": "zlib1g", "version": "1:1.3.dfsg-3.1ubuntu2.2", "arch": ToolInputArchitecture.Amd64, "sha256": "84b9cf5752b29c9f92c27cd4c4ba9bbcc70b5ccf9b1b515421a28ae23212e273", "size": 62988, "filename": "pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2.2_amd64.deb" }),
 ]);

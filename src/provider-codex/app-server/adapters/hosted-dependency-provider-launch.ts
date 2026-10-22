@@ -19,6 +19,13 @@ import { abandonHostedDependencyToolPlan, prepareHostedDependencyToolPlan, retai
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 export { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 
+export const hostedDependencyProviderLauncherSupport = Object.freeze([
+  "hosted-process-descriptors.js", "hosted-app-server-launch-frame.js", "hosted-fd-prelude.js",
+  "hosted-blocking-output.js", "managed-provider-scratch-environment.js", "hosted-app-server-launch-frame-decoder.js",
+  "../../hosted-mimo-coding-bootstrap.js",
+] as const);
+export const hostedDependencyProviderLauncherPackageScope = "../.." as const;
+
 /** Called inside the real private provider reservation fence, before enclosure.
  * The guest never reads host authority. No payload-selected mounts or root dirs.
  */
@@ -59,8 +66,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   // Each provider reservation gets a fresh finite root. Existing roots are
   // unresolved effects, not reusable descriptions or silently cleaned state.
   mkdirSync(root, { mode: 0o700 });
-  const launcherSupport = ["hosted-process-descriptors.js", "hosted-app-server-launch-frame.js", "hosted-fd-prelude.js"]
-    .map(name => trusted(`${dirname(launcher)}/${name}`));
+  const launcherSupport = hostedDependencyProviderLauncherSupport.map(name => trusted(join(dirname(launcher), name)));
   const readOnly = new Set<string>(["/usr", ...executableClosure.paths, executable, node, launcher, ...launcherSupport]);
   for (const alias of ["/bin", "/sbin", "/lib", "/lib64"]) {
     let info;
@@ -79,8 +85,9 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     mounts.push(`BindReadOnlyPaths=${source}:${source}:norbind`);
   }
   // This is a finite ESM closure, not a bind of the installed runtime tree.
-  // Package resolution must not depend on a host package.json outside the root.
-  writeFileSync(join(root, dirname(launcher), "package.json"), '{"type":"module"}\n', { flag: "wx", mode: 0o644 });
+  // Its common provider-codex scope also covers the parent coding bootstrap;
+  // package resolution must not depend on host metadata or syntax detection.
+  writeFileSync(join(root, dirname(launcher), hostedDependencyProviderLauncherPackageScope, "package.json"), '{"type":"module"}\n', { flag: "wx", mode: 0o644 });
   // The finite skeleton supplies only parent directories. Host job metadata,
   // encryption keys/state/results are absent, not shared via a broad job bind.
   // ProtectSystem makes these skeleton parents read-only; only leaves write.

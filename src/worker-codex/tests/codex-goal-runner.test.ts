@@ -740,19 +740,19 @@ describe("codex goal runner", () => {
       await mkdir(config.jobRootDir, { recursive: true });
       await mkdir(workspacePath, { recursive: true });
       await writeFile(promptPath, "Do a sandbox task.\n");
-      await execFileAsync("git", ["init"], { cwd: workspacePath });
-      await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "init"], { cwd: workspacePath });
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.email", "test@example.com"], {
         cwd: workspacePath,
       });
-      await execFileAsync("git", ["config", "user.name", "Test User"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.name", "Test User"], {
         cwd: workspacePath,
       });
       await writeFile(join(workspacePath, "tracked.txt"), "before\n");
-      await execFileAsync("git", ["add", "tracked.txt"], { cwd: workspacePath });
-      await execFileAsync("git", ["commit", "-m", "test fixture"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "add", "tracked.txt"], { cwd: workspacePath });
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "commit", "-m", "test fixture"], {
         cwd: workspacePath,
       });
-      const baseCommit = (await execFileAsync("git", ["rev-parse", "HEAD"], {
+      const baseCommit = (await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD"], {
         cwd: workspacePath,
       })).stdout.trim();
 
@@ -827,23 +827,23 @@ describe("codex goal runner", () => {
       await mkdir(config.jobRootDir, { recursive: true });
       await mkdir(workspacePath, { recursive: true });
       await writeFile(promptPath, "Repair the admitted producer output.\n");
-      await execFileAsync("git", ["init"], { cwd: workspacePath });
-      await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "init"], { cwd: workspacePath });
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.email", "test@example.com"], {
         cwd: workspacePath,
       });
-      await execFileAsync("git", ["config", "user.name", "Test User"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.name", "Test User"], {
         cwd: workspacePath,
       });
       await writeFile(join(workspacePath, "packet.md"), "canonical\n");
-      await execFileAsync("git", ["add", "packet.md"], { cwd: workspacePath });
-      await execFileAsync("git", ["commit", "-m", "fixture"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "add", "packet.md"], { cwd: workspacePath });
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "commit", "-m", "fixture"], {
         cwd: workspacePath,
       });
 
       // The broker admits an immutable producer patch as staged input.
       await writeFile(join(workspacePath, "packet.md"), "producer\n");
       await writeFile(join(workspacePath, "new-packet.md"), "producer new\n");
-      await execFileAsync("git", ["add", "packet.md", "new-packet.md"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "add", "packet.md", "new-packet.md"], {
         cwd: workspacePath,
       });
 
@@ -856,7 +856,7 @@ describe("codex goal runner", () => {
               join(workspacePath, "new-packet.md"),
               "producer new\nremediated\n",
             );
-            expect((await execFileAsync("git", ["status", "--short"], {
+            expect((await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "status", "--short"], {
               cwd: workspacePath,
             })).stdout.trim().split("\n")).toEqual([
               "AM new-packet.md",
@@ -910,16 +910,16 @@ describe("codex goal runner", () => {
       await mkdir(config.jobRootDir, { recursive: true });
       await mkdir(workspacePath, { recursive: true });
       await writeFile(promptPath, "Do a sandbox task.\n");
-      await execFileAsync("git", ["init"], { cwd: workspacePath });
-      await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "init"], { cwd: workspacePath });
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.email", "test@example.com"], {
         cwd: workspacePath,
       });
-      await execFileAsync("git", ["config", "user.name", "Test User"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.name", "Test User"], {
         cwd: workspacePath,
       });
       await writeFile(join(workspacePath, "README.md"), "fixture\n");
-      await execFileAsync("git", ["add", "README.md"], { cwd: workspacePath });
-      await execFileAsync("git", ["commit", "-m", "fixture"], {
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "add", "README.md"], { cwd: workspacePath });
+      await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "commit", "-m", "fixture"], {
         cwd: workspacePath,
       });
 

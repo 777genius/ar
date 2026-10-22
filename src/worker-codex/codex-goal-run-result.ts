@@ -17,6 +17,14 @@ export function codexRunnerExceptionFailure(error: unknown): {
   readonly errorCode?: string;
 } {
   for (const item of errorCauseChain(error)) {
+    if (item instanceof Error && (item.message.includes("MALFORMED_TOOL_CALL_STREAM") ||
+        item.message.includes("content_after_tool_call_start"))) {
+      return {
+        reason: "provider_stream_malformed",
+        safeMessage: "Codex provider emitted a malformed tool-call stream.",
+        evidence: "provider stream malformed during tool-call execution",
+      };
+    }
     if (!isSubscriptionWorkerError(item)) continue;
     if (item.code === "subscription_worker_prewarm_failed") {
       return {

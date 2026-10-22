@@ -20,34 +20,42 @@ afterEach(() => {
   process.argv = originalArgv; process.exitCode = originalExitCode;
   vi.restoreAllMocks(); vi.resetAllMocks();
 });
-async function failure(error: unknown, expected: string): Promise<void> {
+async function failure(error: unknown, expected: string, name: string): Promise<void> {
   adapter.reconcileHostedMimoInterruptedCreate.mockRejectedValueOnce(error);
   await import("../hosted-mimo-project-bridge-cli");
   expect(adapter.reconcileHostedMimoInterruptedCreate).toHaveBeenCalledExactlyOnceWith("/TEST/plan.json");
   expect(process.stdout.write).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ ok: false, error: expected }) + "\n");
   // The journal diagnostic carries closed fields only; the exact match also
-  // proves no private cause text reached stderr.
-  const rawName = error instanceof Error ? error.name : typeof error;
-  const name = /^[A-Za-z][A-Za-z0-9_]{0,59}$/.test(rawName) ? rawName : "unknown";
+  // proves no private cause text reached stderr. The name is the closed
+  // vocabulary value or "unknown", never the raw identifier.
   expect(process.stderr.write).toHaveBeenCalledExactlyOnceWith(`mimo_project_bridge_failure code=${expected} name=${name}\n`);
   expect(process.exitCode).toBe(1);
 }
 it("retains the domain reconciliation refusal at the actual CLI boundary", async () => {
-  await failure(new Error(InterruptedProjectCreateErrorCode.ReconciliationRefused), "project_control_interrupted_create_reconciliation_refused");
+  await failure(new Error(InterruptedProjectCreateErrorCode.ReconciliationRefused), "project_control_interrupted_create_reconciliation_refused", "Error");
 });
 it("retains an actual research admission refusal without its private cause", async () => {
   let error: unknown;
   try { researchInvalid("file-deadline"); } catch (caught) { error = caught; }
-  await failure(error, "hosted_research_launch_denied");
+  await failure(error, "hosted_research_launch_denied", "Error");
 });
 it("preserves the existing closed bridge error framing", async () => {
-  await failure(new Error("mimo_project_bridge_operation_invalid"), "mimo_project_bridge_operation_invalid");
+  await failure(new Error("mimo_project_bridge_operation_invalid"), "mimo_project_bridge_operation_invalid", "Error");
 });
 it.each([
-  new Error("TEST_PRIVATE_PATH /private/TEST-secret"),
-  "hosted_research_launch_denied",
-])("keeps unknown, suffixed and untyped failures private: %s", async error => {
-  await failure(error, "mimo_project_bridge_operation_failed");
+  [new Error("TEST_PRIVATE_PATH /private/TEST-secret"), "Error"],
+  ["hosted_research_launch_denied", "string"],
+] as const)("keeps unknown, suffixed and untyped failures private: %s", async (error, name) => {
+  await failure(error, "mimo_project_bridge_operation_failed", name);
+});
+
+it.each([
+  // A caller-shaped identifier is never written; only the closed vocabulary is.
+  [Object.assign(new Error("TEST private token"), { name: "sk_privateToken" }), "unknown"],
+  [Object.assign(new Error("TEST private path"), { name: "TEST_Invented_Lookalike_Error" }), "unknown"],
+  [Object.assign(new Error("TEST private cause"), { name: "SafeExecutionError" }), "SafeExecutionError"],
+] as const)("writes only closed journal error names: %s", async (error, name) => {
+  await failure(error, "mimo_project_bridge_operation_failed", name);
 });
 
 it("refuses generic preparation resume without a trusted original-producer closure adapter", async () => {
@@ -64,7 +72,7 @@ it.each([
   [new Error("hosted_research_launch_denied; TEST-secret"), "hosted_research_launch_denied"],
   [Object.assign(new Error("TEST private missing path"), { code: "ENOENT" }), "mimo_project_bridge_fs_not_found"],
 ])("preserves safe canonical codes without private causes", async (error, code) => {
-  await failure(error, code);
+  await failure(error, code, "Error");
 });
 
 it.each([

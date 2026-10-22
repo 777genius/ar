@@ -1,7 +1,7 @@
 import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, statfsSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, statfsSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { inspectVisibleScratchMount, type ScratchMount } from "./host-scratch-mount.js";
 import { hostedProviderRunsInSeparateUnit, isResearchUnitCgroup } from "../provider-codex/app-server/adapters/node-app-server-process.js";
@@ -37,6 +37,10 @@ export interface ScratchTempHost {
   mkdir(path: string, mode: number): void;
   chmod(path: string, mode: number): void;
   removeLock(path: string): void;
+  /** Lock ownership: writes/reads the owner marker inside a bind-lock directory. */
+  write(path: string, contents: string): void;
+  isProcessAlive(pid: number): boolean;
+  sleep(ms: number): void;
   entries(path: string): readonly string[];
   bind(source: string, target: string): void;
   makePrivate(target: string): void;
@@ -57,6 +61,12 @@ const systemHost: ScratchTempHost = {
   mkdir: (path, mode) => { mkdirSync(path, { mode }); },
   chmod: chmodSync,
   removeLock: rmdirSync,
+  write: (path, contents) => { writeFileSync(path, contents, { mode: 0o600 }); },
+  isProcessAlive: (pid) => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+  },
+  sleep: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); },
   entries: readdirSync,
   bind: (source, target) => { execFileSync("mount", ["--bind", source, target]); },
   makePrivate: (target) => { execFileSync("mount", ["--make-private", target]); },
@@ -235,8 +245,7 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
   if (host.uid !== 0) throw new Error("Root privilege required to prepare scratch bind mount");
   const lock = `${layout.source}.lock`;
   assertHostedOrdinaryEffectPaths([layout.source, lock, target]);
-  try { host.mkdir(lock, 0o700); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Scratch bind target busy"); throw error; }
+  if (!acquireBindLock(lock, checkExisting, host)) return;
   try {
     if (checkExisting()) return;
     if (!optionalInfo(layout.source, host)) host.mkdir(layout.source, 0o701);
@@ -269,6 +278,49 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
       throw error;
     }
   } finally { host.removeLock(lock); }
+}
+const bindLockOwnerFile = (lock: string) => join(lock, "owner.json");
+const bindLockWaitBudgetMs = 10_000;
+const bindLockWaitSliceMs = 50;
+const bindLockMaxReclaims = 3;
+
+function readBindLockOwner(lock: string, host: ScratchTempHost): number | undefined {
+  try {
+    const parsed = JSON.parse(host.read(bindLockOwnerFile(lock))) as { pid?: unknown };
+    return typeof parsed.pid === "number" && Number.isSafeInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
+  } catch { return undefined; }
+}
+
+/** Returns true when this call holds the lock; false when a sibling binder
+ * finished preparing the bind while we waited. A lock without a recognizable
+ * owner is foreign and fails closed untouched. A lock whose recorded owner is
+ * dead was left by a crashed binder and is reclaimed, so one crash cannot
+ * leave the target permanently busy. */
+function acquireBindLock(lock: string, checkExisting: () => boolean, host: ScratchTempHost): boolean {
+  let reclaims = 0;
+  for (let waits = 0; ; ) {
+    try {
+      host.mkdir(lock, 0o700);
+      try { host.write(bindLockOwnerFile(lock), `${JSON.stringify({ pid: process.pid })}\n`); }
+      catch (error) { try { host.removeLock(lock); } catch { /* best effort */ } throw error; }
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if (checkExisting()) return false;
+    const owner = readBindLockOwner(lock, host);
+    if (owner !== undefined && !host.isProcessAlive(owner)) {
+      if (reclaims >= bindLockMaxReclaims) throw new Error("Scratch bind target busy");
+      reclaims += 1;
+      try { host.removeLock(lock); } catch { /* another reclaimer won the race */ }
+      continue;
+    }
+    if (owner === undefined || waits >= bindLockWaitBudgetMs / bindLockWaitSliceMs) {
+      throw new Error("Scratch bind target busy");
+    }
+    waits += 1;
+    host.sleep(bindLockWaitSliceMs);
+  }
 }
 function optionalInfo(path: string, host: ScratchTempHost): Info | undefined {
   try { return host.lstat(path); }

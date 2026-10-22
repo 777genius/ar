@@ -72,7 +72,7 @@ export interface FixedH1ArchiveRoleData {
     readonly physicalRootCreated: false;
     readonly selectedPlanExecutable: false;
 }
-const fixedVector = "d89a9c1fd845ec3123839f3d223e24d3a1a1c02ce36c3bb36637d6902a839d5b", sha = /^[a-f0-9]{64}$/, component = /^[A-Za-z0-9._+%:@=~-]+$/;
+const fixedVector = "fd9c77fcc36f9862b268684d9aa28c9c8be8764439e3f8d4095cd9c5c557459e", sha = /^[a-f0-9]{64}$/, component = /^[A-Za-z0-9._+%:@=~-]+$/;
 const hash = (b: Buffer | string) => createHash("sha256").update(b).digest("hex"), emptySha = hash("");
 function fact(value: unknown, why: FixedH1Hold): asserts value {
     assert(value, "fixed H1 graph DATA HOLD: " + why);

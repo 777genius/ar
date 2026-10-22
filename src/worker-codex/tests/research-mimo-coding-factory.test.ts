@@ -18,7 +18,7 @@ vi.mock("@vioxen/subscription-runtime/core", async importOriginal => ({
 }));
 vi.mock("../research-launch-admission", () => ({ ownedMimoWorkerStart: () => captured.owned ? {
   request: { hostedProfile: captured.coding ? "mimo-coding-v1" : undefined,
-    model: "mimo-v2.6-pro", workspacePath: "/TEST-workspace", codexBinaryPath: "/TEST-codex" },
+    model: codexMimoDefaultModel, workspacePath: "/TEST-workspace", codexBinaryPath: "/TEST-codex" },
 } : undefined }));
 vi.mock("../../provider-codex/app-server/adapters/hosted-host-policy", async importOriginal => ({
   ...await importOriginal<typeof import("../../provider-codex/app-server/adapters/hosted-host-policy")>(),

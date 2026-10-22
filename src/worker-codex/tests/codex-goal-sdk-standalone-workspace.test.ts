@@ -67,7 +67,7 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
       // Physical Source setup is not the Native allocation issuer. Its existing
       // observation port supplies actual bounded Git facts, never a clean DTO
       // or a forged hosted purpose. All public admission/SDK checks remain real.
-      await expect(gitWorkspaceStatus(source)).rejects.toThrow("hosted_dependency_current_origin_unresolved");
+      await expect(gitWorkspaceStatus(source)).rejects.toThrow("dependency_host_git_unsupported");
       const readWorkspaceStatus = await sdkSourceWorkspaceStatusReader(job);
       const observeSource = () => createCodexGoalObservationContext({ readWorkspaceStatus });
       const sourceObservation = vi.spyOn(codexProjectAdmissionDeps, "buildOverviewItems").mockImplementation(inputs => {
@@ -139,7 +139,7 @@ import { assertHostedDependencyPhysicalWorkspace, type HostedDependencyBinding }
       expect(second.ok, secondDiagnostic).toBe(true);
       const retained = await lstat(workspace, { bigint: true }); expect([retained.dev, retained.ino]).toEqual([identity.dev, identity.ino]);
       // The Source reader has not enrolled either canonical path for production IO.
-      await expect(gitWorkspaceStatus(workspace)).rejects.toThrow("hosted_dependency_current_origin_unresolved");
+      await expect(gitWorkspaceStatus(workspace)).rejects.toThrow("dependency_host_git_unsupported");
     } finally { restoreSourceObservation?.(); await client.close(); await server.close(); vi.unstubAllEnvs(); }
   }, 30000);
 });

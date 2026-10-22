@@ -215,12 +215,15 @@ describe("Codex JSON agent driver — MiMo backend through the app-server goal p
         abortSignal: new AbortController().signal,
       });
 
+      // The missing env key must fail closed for this run without claiming an
+      // invalid provider session: that claim poisons the shared account
+      // capacity record (disabled, never rechecked) for every later run.
       expect(result).toMatchObject({
         status: "failed",
         failure: {
-          code: "provider_session_invalid",
+          code: "provider_runtime_unavailable",
           retryable: false,
-          reconnectRequired: true,
+          reconnectRequired: false,
         },
       });
       expect(fakeFactory.spawnCount).toBe(0);

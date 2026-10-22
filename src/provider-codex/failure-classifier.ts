@@ -13,6 +13,8 @@ import { CodexAppServerThreadForkError } from "./app-server/application/app-serv
 import { CodexAppServerProviderError, CodexAppServerErrorKind, codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
 import { CodexModelUnavailableError, isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 import { CodexAppServerRateLimitsRejectedError, isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
+import { appServerLaunchStderrCauseFact } from "./app-server/application/app-server-launch-stderr";
+import { appServerProviderSetupCauseFact } from "./app-server/domain/app-server-provider-setup-observation";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
   const seen = new Set<Error>();
@@ -281,7 +283,13 @@ function codexFailureDetails(
     details.stderrTail = parsed.stderrTail;
   }
   if (message.trim()) {
-    details.rawCause = safeTail(message);
+    const factHop = (source: unknown): string | undefined =>
+      appServerProviderSetupCauseFact(source) ?? appServerLaunchStderrCauseFact(source);
+    // The turn wrapper adds one hop: its own cause is the carrier of the
+    // launch fact, so one more own-data hop stays inside the closed lookup.
+    const launchFact = factHop(error) ??
+      (error instanceof CodexAppServerTurnError ? factHop(error.cause) : undefined);
+    details.rawCause = safeTail(launchFact === undefined ? message : `${message} <- ${launchFact}`);
   }
 
   return Object.keys(details).length === 0 ? undefined : details;

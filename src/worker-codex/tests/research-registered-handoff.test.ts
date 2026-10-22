@@ -105,17 +105,20 @@ async function grantAndRequest() {
   return authorization.request;
 }
 const start = () => startRegisteredResearchLaunch("/TEST-operator/request.json", researchHash(researchRead("/TEST-operator/request.json")));
-describe("explicit registered abort before the first bind (labelled Host fixture)", () => {
+// Exercise the Linux launch contract locally without a real Host launch.
+function mockLinuxLaunchPlatform(artifact = false) {
   const platform = process.platform;
   beforeEach(() => {
-    // All Host effects still go through the existing offline kernel/service
-    // fixture. Exercise the Linux contract locally without a real Host launch.
     Object.defineProperty(process, "platform", { value: "linux" });
-    vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, digest) => {
+    if (artifact) vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, digest) => {
       expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(digest);
     });
   });
   afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+}
+
+describe("explicit registered abort before the first bind (labelled Host fixture)", () => {
+  mockLinuxLaunchPlatform(true);
   async function incomplete() {
     state.mimo = true; await initializeRegisteredFixture(); await grantAndRequest();
     const original = childProcess.spawnSync;
@@ -241,6 +244,7 @@ function mutateReceipt() {
   writeFileSync(local(receiptPath()), JSON.stringify({ ...receipt, status: "admitted" }), { mode: 0o600 });
 }
 describe("registered durable handoff authorization (NEW TEST source fixtures only)", () => {
+  mockLinuxLaunchPlatform();
   it("retains registered prompt authority after sandbox preparation makes only the job root traversable", async () => {
     const authorization = await authorize();
     const before = readFileSync(local(selected().promptPath));
@@ -683,6 +687,7 @@ async function nativeProjectSelection() {
   return { request, ...loaded, reservedLaunch: reservation.launch };
 }
 describe("native project launch authorization", () => {
+  mockLinuxLaunchPlatform();
   // RED: a clone/serialized reservation must never mint native effect authority.
   it("requires the original reservation and consumes its native authorization once without preparing a sink", async () => {
     const selected = await nativeProjectSelection(); rmdirSync(local(sink));
@@ -982,14 +987,7 @@ describe.skipIf(process.platform !== "linux")("registered CodingV1 writer census
 });
 
 describe("qualified preservation recovery (explicit offline Linux Host fixture)", () => {
-  const platform = process.platform;
-  beforeEach(() => {
-    Object.defineProperty(process, "platform", { value: "linux" });
-    vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, digest) => {
-      expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(digest);
-    });
-  });
-  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  mockLinuxLaunchPlatform(true);
   registeredNativeWriterClosureTests({ allocation: async configureScope => { const value = await registeredCodingAllocation(false, true, configureScope); if (!("helper" in value)) throw Error("Expected TEST provider"); return value; }, authorizeCurrentCaller: authorize, scope: () => state.scope!, setScope: scope => { state.scope = scope; } });
   registeredTerminalRepairTests({ candidate: (dirty, status) => registeredMimoCandidate(dirty, true, status), scope: () => state.scope!,
     setScope: scope => { state.scope = scope; }, registry: () => registry, allocation: () => registeredCodingAllocation() });

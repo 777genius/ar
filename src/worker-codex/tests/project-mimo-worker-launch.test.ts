@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexModelBackend, codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import type { CodexGoalLaunchInput } from "../codex-goal-ops";
 const state = vi.hoisted(() => ({ queryCgroup:false, files: new Map<string, Buffer>(),
   authorize: vi.fn(), grant: vi.fn(), start: vi.fn(), current: vi.fn(), status: vi.fn(), service: vi.fn(), process: vi.fn(), cancel: vi.fn(), handoff: vi.fn(), terminal: vi.fn(), finalize: vi.fn() }));
@@ -43,7 +43,7 @@ function launch(jobRootDir = "/TEST-job"): CodexGoalLaunchInput {
   return { config: { jobId: "TEST-child", taskId: "TEST-task", jobRootDir,
     workspacePath: "/TEST-workspace", promptPath: join(jobRootDir, "prompt.md"), authRootDir: "/TEST-auth",
     codexBinaryPath: "/TEST-bin/codex", accounts: [{ name: "account-q" }],
-    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: "mimo-v2.6-pro",
+    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: codexMimoDefaultModel,
     taskTimeoutMs: 60000, maxAccountCycles: 1, prewarmOnStart: false,
     projectAccessScope: { projectId: "TEST-project", isolatedWorkspaceRoot: "/TEST-workspace", authRoot: "/TEST-auth" } },
     cwd: "/TEST-workspace", logPath: join(jobRootDir, "log"), cliCommand: ["node", "cli"] };
@@ -127,7 +127,7 @@ describe("owned native MiMo observation", () => {
     const manifest = { schemaVersion: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       jobId: "TEST-child", taskId: "TEST-task", jobRootDir: observed.jobRoot, workspacePath: observed.jobRoot,
       promptPath: join(observed.jobRoot, "prompt.md"), authRootDir: "/TEST-auth", accounts: ["account-q"],
-      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: "mimo-v2.6-pro", projectAccessScope: scope };
+      modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, model: codexMimoDefaultModel, projectAccessScope: scope };
     for (const [id,value] of [["TEST-child",manifest],[controllerJobId,{ ...manifest,jobId:controllerJobId,accessBoundary:"project_scoped_control" }]] as const) {
       await mkdir(join(registryRootDir,id), { recursive: true });
       await writeFile(join(registryRootDir,id,"job.json"),JSON.stringify(value));

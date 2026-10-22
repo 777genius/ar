@@ -1,4 +1,6 @@
 import { hostedDependencyJobsRoot } from "../hosted-dependency-workspace";
+import { captureManagedDependencyGitContext, requiresManagedDependencyGitRunner } from "../managed-dependency-git";
+import { HostedDependencyGitRoute, readHostedDependencyGitRoute } from "../hosted-dependency-git-route";
 import { registerOrdinaryWriterExtentTests } from "./hosted-ordinary-writer-extent-test-support";
 import { registerOrdinaryAccountRotationTests } from "./hosted-ordinary-account-rotation-test-support";
 import { registerManagedInstallationAdmissionTests, registerManagedInstallationMigrationTests } from "./hosted-managed-installation-admission-test-support";
@@ -33,6 +35,7 @@ import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedO
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", group: "/system.slice/trusted.service",
   spawn: vi.fn(), child: null as unknown, creatorBirth: "789", creatorGroup: "/system.slice/trusted.service", runtimeUnit: "",
+  legacyGitReads: 0, afterLegacyGitRead: undefined as (() => void) | undefined,
   omitEmptyManagerProperties: false, failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", kernelMountInfoSnapshot: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
@@ -148,12 +151,28 @@ vi.mock("node:child_process", async original => {
     const workspace = args.includes("-C") ? args[args.indexOf("-C") + 1] : options?.cwd;
     const currentProcessIdentity = command === "ps" && args.length === 4 && args[0] === "-p" &&
       args[1] === String(process.pid) && args[2] === "-o" && args[3] === "lstart=";
+    if (command === "/usr/bin/git" && typeof workspace === "string" && workspace.startsWith(hostedDependencyJobsRoot + "/")) {
+      if (args[0] !== "--git-dir=" + workspace + "/.git" || args[1] !== "--work-tree=" + workspace ||
+          options?.env?.PATH !== "/nonexistent" || options.env.GIT_CONFIG_GLOBAL !== "/dev/null" ||
+          !args.includes("core.hooksPath=/dev/null") || !args.includes("core.fsmonitor=false")) throw new Error("TEST nonfixed dependency Git");
+      const physical = local(workspace);
+      if (!physical.startsWith(fixture.root + "/")) throw new Error("TEST dependency Git outside fixture");
+      fixture.legacyGitReads++;
+      const rewrite = (value: string | Buffer) => Buffer.isBuffer(value) ? Buffer.from(value.toString("utf8").split(physical).join(workspace)) : value.split(physical).join(workspace);
+      return real.execFile(command, ["--git-dir=" + physical + "/.git", "--work-tree=" + physical, ...args.slice(2)],
+        { ...options, cwd: physical }, (error, stdout, stderr) => {
+          fixture.afterLegacyGitRead?.(); callback(error, rewrite(stdout), rewrite(stderr));
+        });
+    }
     if (!currentProcessIdentity && (command !== "git" || typeof workspace !== "string" ||
         !workspace.startsWith("/dev/shm/TEST-ordinary-extent-"))) throw new Error("unexpected external command");
     return real.execFile(command, args, options ?? {}, callback);
   };
-  return { execFile: Object.assign(execute, { [promisify.custom]: (command: string, args: readonly string[], options?: import("node:child_process").ExecFileOptions) =>
-    new Promise((resolve, reject) => execute(command, args, options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }),
+  return { execFile: Object.assign(execute, { [promisify.custom]: (command: string, args: readonly string[], options?: import("node:child_process").ExecFileOptions) => {
+    let child!: import("node:child_process").ChildProcess;
+    const pending = new Promise((resolve, reject) => { child = execute(command, args, options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr })); });
+    return Object.assign(pending, { child });
+  } }),
   spawn: (...args: unknown[]) => {
     const [command, argv, options] = args as [string, string[], import("node:child_process").SpawnOptions];
     const batch = command === "git" && Array.isArray(argv) && argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch";
@@ -226,6 +245,7 @@ beforeEach(() => {
   writeFileSync(join(fixture.root, "host-activation-mode"), "required\n", { mode: 0o600 });
   fixture.omitEmptyManagerProperties = false; fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  fixture.legacyGitReads = 0; fixture.afterLegacyGitRead = undefined;
   fixture.spawn.mockReset(); fixture.captureAncestry = false; fixture.captureDirectories.clear();
   const child = Object.assign(new EventEmitter(), { stdin: Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() }),
     stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true) });
@@ -684,6 +704,14 @@ describe("real default provider primitive under ordinary activation", () => {
         npm ? "codex-test-npm-qualification" : "codex-full-internet-v1", TEST_BOOTSTRAP_VALUE: "fixture-only" } };
     return { store, input };
   }
+  it.skipIf(process.platform !== "linux")("keeps a genuine ordinary job without a dependency binding unmanaged and refuses protected caller paths", () => {
+    runtime();
+    expect(readHostedDependencyGitRoute(creator().workspacePath).kind).toBe(HostedDependencyGitRoute.Unmanaged);
+    expect(requiresManagedDependencyGitRunner(creator().workspacePath)).toBe(false);
+    expect(captureManagedDependencyGitContext(creator().workspacePath)).toBeUndefined();
+    expect(() => captureManagedDependencyGitContext(hostedDependencyJobsRoot+"/TEST-foreign/workspace")).toThrow();
+    expect(fixture.legacyGitReads).toBe(0);
+  });
   it.each(["app-server", "app-server-goal", "packaged-exec", "plain-exec"] as const)("no-grant Internet preserves supported native engines and refuses legacy sandboxes: %s", async executionEngine => {
     const { input } = runtime();
     const identity = { jobId: creator().jobId, jobRootDir: creator().jobRootDir, workspacePath: creator().workspacePath,

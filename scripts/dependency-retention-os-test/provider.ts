@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { constants, fstatSync, lstatSync, readSync, openSync, closeSync, readFileSync, readlinkSync, realpathSync, readdirSync, writeFileSync, type Stats } from "node:fs";
+import { constants, fstatSync, lstatSync, readSync, openSync, closeSync, readFileSync, readlinkSync, realpathSync, readdirSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { createTestCatalogProtocol } from "./default-codex-catalog-protocol.ts";
@@ -60,7 +60,7 @@ function actualDefaultTestExecutable(): boolean {
 }
 let defaultTestExecutable: boolean;
 try { defaultTestExecutable = actualDefaultTestExecutable(); }
-catch { process.stderr.write("TEST_default_executable_identity_failed\n"); process.exit(70); }
+catch { process.stderr.write("TEST_default_executable_identity_failed\n"); process.exit(71); }
 
 /** Literal finite package files only; no caller pathname or fallback. The
  * fixed executable startup already joins readonly package/bin ancestors. */
@@ -151,7 +151,7 @@ async function fixedTestRefreshProtocol(): Promise<void> {
 }
 if (process.argv[2] === "exec") {
   try { await fixedTestRefreshProtocol(); process.exit(0); }
-  catch { process.stderr.write("TEST_fixed_refresh_protocol_failed\n"); process.exit(70); }
+  catch { process.stderr.write("TEST_fixed_refresh_protocol_failed\n"); process.exit(72); }
 }
 
 /** Synthetic catalog protocol on the real default package, never an account
@@ -218,7 +218,7 @@ async function fixedTestCatalogProtocol(): Promise<void> {
 }
 if (defaultTestExecutable && process.cwd() !== process.env.HOME) {
   try { await fixedTestCatalogProtocol(); process.exit(0); }
-  catch { process.stderr.write("TEST_catalog_protocol_refused\n"); process.exit(70); }
+  catch { process.stderr.write("TEST_catalog_protocol_refused\n"); process.exit(73); }
 }
 
 assert(process.argv.slice(2).includes("app-server"), "TEST provider refuses non app-server mode");
@@ -229,14 +229,41 @@ const providerConfig = defaultTestExecutable
 const config = JSON.parse(readFileSync(providerConfig, "utf8")) as {
   scenario?: "readonly"; failSecondReadonlyTurn?: true; inputSha256?: string; workspace: string; guestNamespaces: Record<"user" | "mnt" | "pid", string> };
 const workspace = config.workspace;
-if (config.scenario === "readonly") assert.match(workspace, /^\/mnt\/TEST-retention-readonly-storage\/jobs\/TEST-readonly-[a-f0-9-]{36}\/workspace$/);
-else assert.match(workspace, /^\/var\/lib\/subscription-runtime-host-policy\/dependency-test-jobs\/jobs\/TEST-os-[a-f0-9-]{36}\/workspace$/);
-assert.equal(process.cwd(), process.env.HOME);
-assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/home/"));
+// One closed reachability marker: the provider began executing its config.
+try { writeFileSync(workspace + "/TEST-provider-start.json", JSON.stringify({ schemaVersion: 1 }) + "\n", { flag: "wx", mode: 0o600 }); } catch { /* Closed exit channel alone survives. */ }
+let startupAssert: "workspace_shape" | "cwd_home_identity" | "cwd_home_root" = "workspace_shape";
+try {
+  if (config.scenario === "readonly") assert.match(workspace, /^\/mnt\/TEST-retention-readonly-storage\/jobs\/TEST-readonly-[a-f0-9-]{36}\/workspace$/);
+  else assert.match(workspace, /^\/var\/lib\/subscription-runtime-host-policy\/dependency-test-jobs\/jobs\/TEST-os-[a-f0-9-]{36}\/workspace$/);
+  startupAssert = "cwd_home_identity";
+  assert.equal(process.cwd(), process.env.HOME);
+  startupAssert = "cwd_home_root";
+  assert(process.cwd().startsWith(workspace.slice(0, -"/workspace".length) + "/home/"));
+} catch { markProviderFailure("startup", 71, startupAssert); process.stderr.write("TEST_provider_startup_failed\n"); process.exit(71); }
 let objective = "TEST dependency read", complete = false, initialized = false, started = false, turned = false;
 const threadId = "TEST-thread", turnId = "TEST-turn";
 function send(value: unknown): void { process.stdout.write(JSON.stringify(value) + "\n"); }
+// Closed per-site exit codes are the only diagnostic channel that survives as exited:NN (71 identity/startup, 72 refresh, 73 catalog, 74 protocol, 75 deadline, 80-84 probe groups, 85+i per-path readable, 110+i unsealed EISDIR, 120+i ELOOP, 130+i EPERM, 140+i ENOTDIR, 150+i EROFS, 160+i other unexpected errno, 94 .git write).
+let probeFailureCode = 80;
+/** One bounded closed fact for an unexpected deny site: enum identities and
+ * counts only, never path names or contents. Best effort; exit code stands. */
+function denyFact(index: number, threw: boolean, errno: string, path: string): void {
+  try {
+    let kind = "missing", mode = -1, uid = -1, gid = -1, size = -1, entryCount = -1;
+    try {
+      const stat = lstatSync(path);
+      kind = stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : stat.isFile() ? "file" :
+        stat.isFIFO() ? "fifo" : stat.isSocket() ? "socket" : "other";
+      mode = stat.mode & 0o7777; uid = stat.uid; gid = stat.gid; size = Number(stat.size);
+      if (kind === "directory") entryCount = readdirSync(path).length;
+    } catch { /* closed negatives stand */ }
+    writeFileSync(workspace + "/TEST-provider-probe-failed.json", JSON.stringify({ schemaVersion: 1, pathIndex: index,
+      threw, errno: ["ENOENT", "EACCES", "EISDIR", "ELOOP", "EPERM", "ENOTDIR", "EROFS"].includes(errno) ? errno : "other",
+      kind, mode, uid, gid, size, entryCount }) + "\n", { flag: "wx", mode: 0o600 });
+  } catch { /* closed exit channel alone survives */ }
+}
 function probe(): boolean {
+  probeFailureCode = 80;
   const ids = { uid: process.getuid!(), euid: process.geteuid!(), gid: process.getgid!(), egid: process.getegid!() };
   assert.deepEqual(ids, { uid: 65532, euid: 65532, gid: 65532, egid: 65532 });
   const status = readFileSync("/proc/self/status", "utf8");
@@ -245,6 +272,7 @@ function probe(): boolean {
   assert.match(status, /^Groups:\s*$/m);
   const uidMap = readFileSync("/proc/self/uid_map", "utf8").trim(), gidMap = readFileSync("/proc/self/gid_map", "utf8").trim();
   assert.match(uidMap, /^65532\s+0\s+1$/); assert.match(gidMap, /^65532\s+0\s+1$/);
+  probeFailureCode = 81;
   const namespaces = { user: readlinkSync("/proc/self/ns/user"), mnt: readlinkSync("/proc/self/ns/mnt"), pid: readlinkSync("/proc/self/ns/pid") };
   for (const kind of ["user", "mnt", "pid"] as const) {
     assert.match(config.guestNamespaces[kind], new RegExp(`^${kind}:\\[\\d+\\]$`));
@@ -252,6 +280,7 @@ function probe(): boolean {
     assert.notEqual(namespaces[kind], config.guestNamespaces[kind], `TEST actual ${kind} namespace isolation required`);
   }
   if (config.scenario === "readonly") {
+    probeFailureCode = 82;
     assert.equal(config.failSecondReadonlyTurn, true);
     const count = readdirSync(workspace).filter(name => /^TEST-readonly(?:-failed)?-probe\.json$/.test(name)).length;
     assert(count === 0 || count === 1, "TEST readonly provider refuses another turn");
@@ -267,22 +296,83 @@ function probe(): boolean {
     // this fixture never writes an envelope, receipt or foreground result.
     return count === 1;
   }
+  probeFailureCode = 83;
   const require = createRequire(workspace + "/package.json");
   assert.equal((require("is-number") as (value: unknown) => boolean)(42), true);
-  for (const path of [workspace.slice(0, -"/workspace".length) + "/key-sentinel",
+  // Per-path codes name the site through the closed exit channel alone:
+  // 85+i = path index i did not throw (readable/visible), 110+i = path index i
+  // threw EISDIR outside the sealed empty anchor rule, 120+i = ELOOP, 130+i =
+  // EPERM, 140+i = ENOTDIR, 150+i = EROFS, 160+i = any other unexpected
+  // errno, 94 = .git/config write was permitted. An unexpected site also
+  // leaves one bounded closed fact file.
+  const denyPaths = [workspace.slice(0, -"/workspace".length) + "/key-sentinel",
     workspace.slice(0, -"/workspace".length) + "/state-sentinel", workspace.slice(0, -"/workspace".length) + "/output-sentinel",
     workspace.slice(0, -"/workspace".length) + "/encryption-key.hex",
     "/var/lib/subscription-runtime-host-policy/privileged-sibling-sentinel", "/root", "/home/runner",
-    "/run/dbus/system_bus_socket", "/run/systemd/private"])
-    assert.throws(() => readFileSync(path), (e: unknown) => ["ENOENT", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? ""));
+    "/run/dbus/system_bus_socket", "/run/systemd/private"];
+  // The sealed root skeleton may present a directory deny site as its empty
+  // anchor; that anchor denies content exactly like a missing path and must
+  // stay root-owned, free of group/other write and free of any entry. A
+  // populated, writable or foreign anchor is a leak and stays fatal.
+  const denyAnchorPaths = new Set(["/root", "/home/runner"]);
+  for (const [index, path] of denyPaths.entries()) {
+    let thrown: unknown, threw = false;
+    try { readFileSync(path); } catch (error) { threw = true; thrown = error; }
+    const errno = (thrown as NodeJS.ErrnoException).code ?? "";
+    let anchor = false;
+    if (threw && errno === "EISDIR" && denyAnchorPaths.has(path)) {
+      try {
+        const info = lstatSync(path);
+        anchor = info.isDirectory() && !info.isSymbolicLink() && info.uid === 65532 && info.gid === 65532 &&
+          (info.mode & 0o022) === 0 && readdirSync(path).length === 0;
+      } catch { anchor = false; }
+    }
+    const denied = threw && (["ENOENT", "EACCES"].includes(errno) || anchor);
+    const band = errno === "EISDIR" ? 110 : errno === "ELOOP" ? 120 : errno === "EPERM" ? 130 :
+      errno === "ENOTDIR" ? 140 : errno === "EROFS" ? 150 : 160;
+    if (!denied) {
+      probeFailureCode = (threw ? band : 85) + index;
+      denyFact(index, threw, errno, path);
+    }
+    assert.ok(threw, "TEST enclosure denial required");
+    assert.equal(denied, true, "TEST enclosure denial required");
+  }
+  probeFailureCode = 94;
   assert.throws(() => { const fd = openSync(workspace + "/.git/config", "a"); closeSync(fd); },
     (e: unknown) => ["EROFS", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? ""));
+  probeFailureCode = 84;
   const count = readdirSync(workspace).filter(name => /^TEST-provider-probe-[1234]\.json$/.test(name)).length;
   assert(count < 4);
   writeFileSync(workspace + `/TEST-provider-probe-${count + 1}.json`, JSON.stringify({ schemaVersion: 1,
     result: "dependency_read_and_actual_enclosure_denial_passed", ids, uidMap, gidMap, namespaces, noNewPrivs: 1, capabilities: "zero" }) + "\n", { flag: "wx", mode: 0o600 });
   return false;
 }
+// Closed termination markers (enum facts only) discriminating a signaled stop
+// from an EOF-driven clean exit. The SIGTERM handler re-raises the default
+// disposition, so the observed exit stays signal-terminated exactly as before.
+let providerTerminationMarkers: string[] = [];
+function markProviderTermination(kind: "stdin_eof" | "sigterm"): void {
+  providerTerminationMarkers = [...new Set([...providerTerminationMarkers, kind])];
+  try {
+    const path = workspace + "/TEST-provider-termination.json";
+    try { unlinkSync(path); } catch { /* First marker. */ }
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1,
+      markers: ["stdin_eof", "sigterm"].filter(name => providerTerminationMarkers.includes(name)) }) + "\n", { mode: 0o600 });
+  } catch { /* Closed exit channel alone survives. */ }
+}
+/** One closed failure marker before a hard provider exit: fixed site enum and
+ * numeric exit code only. Best effort; the exit code stands unchanged. */
+function markProviderFailure(site: "startup" | "probe" | "protocol" | "deadline", code: number,
+  assertName?: "workspace_shape" | "cwd_home_identity" | "cwd_home_root"): void {
+  try {
+    writeFileSync(workspace + "/TEST-provider-failure.json",
+      JSON.stringify({ schemaVersion: 1, site, code, ...(assertName ? { assert: assertName } : {}) }) + "\n", { flag: "wx", mode: 0o600 });
+  } catch { /* Closed exit channel alone survives. */ }
+}
+process.once("SIGTERM", () => {
+  markProviderTermination("sigterm");
+  process.kill(process.pid, "SIGTERM"); // Re-raise default disposition.
+});
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 let requests = 0;
 lines.on("line", line => {
@@ -302,7 +392,11 @@ lines.on("line", line => {
         result = { goal: { threadId, objective, status: "active" } }; break;
       case "thread/goal/get": assert(started); result = { goal: { threadId, objective, status: complete ? "complete" : "active" } }; break;
       case "turn/start": {
-        assert(started && !turned); turned = true; const failed = probe(); complete = !failed;
+        assert(started && !turned); turned = true;
+        let failed: boolean;
+        try { failed = probe(); }
+        catch { markProviderFailure("probe", probeFailureCode); process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(probeFailureCode); }
+        complete = !failed;
         send({ id: request.id, result: { turn: { id: turnId } } });
         send({ method: "turn/started", params: { threadId, turn: { id: turnId } } });
         if (failed) {
@@ -317,7 +411,7 @@ lines.on("line", line => {
       default: throw new Error("TEST unsupported protocol mode");
     }
     send({ id: request.id, result });
-  } catch { process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(70); }
+  } catch { markProviderFailure("protocol", 74); process.stderr.write("TEST_provider_protocol_or_probe_failed\n"); process.exit(74); }
 });
-lines.once("close", () => process.exit(0));
-setTimeout(() => { process.stderr.write("TEST_provider_deadline\n"); process.exit(70); }, 90000).unref();
+lines.once("close", () => { markProviderTermination("stdin_eof"); process.exit(0); });
+setTimeout(() => { markProviderFailure("deadline", 75); process.stderr.write("TEST_provider_deadline\n"); process.exit(75); }, 90000).unref();

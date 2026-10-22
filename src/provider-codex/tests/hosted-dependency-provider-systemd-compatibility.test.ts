@@ -1,12 +1,14 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { hostedDependencyProviderInvocation } from "../app-server/adapters/hosted-dependency-provider-launch";
+import { dirname, join } from "node:path";
+import { hostedDependencyProviderInvocation, hostedDependencyProviderLauncherPackageScope,
+  hostedDependencyProviderLauncherSupport } from "../app-server/adapters/hosted-dependency-provider-launch";
 import type { HostedActivationFence } from "../app-server/adapters/hosted-process-activation";
 
 // Adapter regression only: synthetic admission/filesystem ports never publish
 // private authority or constitute a live qualification. The actual adapter
 // constructs the complete invocation and performs its literal proof itself.
 const fixture = vi.hoisted(() => ({ node: "/opt/TEST/bin/node", launcher: "/opt/TEST/hosted-app-server-launcher.js",
-  mode: "modern", version: "systemd 252 (252.39-1~deb12u2)\n", directories: vi.fn(), inspect: vi.fn() }));
+  mode: "modern", version: "systemd 252 (252.39-1~deb12u2)\n", directories: vi.fn(), writes: vi.fn(), inspect: vi.fn() }));
 const id = "01234567-89ab-cdef-0123-456789abcdef", unit = `subscription-runtime-hosted-${id}.service`;
 const job = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs/TEST-provider", workspace = `${job}/workspace`;
 vi.mock("node:child_process", () => ({ spawnSync: fixture.inspect }));
@@ -17,7 +19,7 @@ vi.mock("node:fs", async original => {
   return { ...actual, realpathSync: (path: string) => path === process.execPath ? fixture.node : path,
     lstatSync: (path: string) => ({ uid: 0, mode: 0o755, nlink: 1, size: 16,
       isSymbolicLink: () => false, isDirectory: () => directory(path), isFile: () => !directory(path) }),
-    mkdirSync: fixture.directories, writeFileSync: vi.fn(), readFileSync: () => Buffer.from("TEST public snapshot"),
+    mkdirSync: fixture.directories, writeFileSync: fixture.writes, readFileSync: () => Buffer.from("TEST public snapshot"),
     openSync: () => 77, fsyncSync: vi.fn(), closeSync: vi.fn() };
 });
 vi.mock("../hosted-codex-permissions", () => ({ hostedCodexExecutableReadClosure: () => ({ paths: ["/usr/bin/codex"] }) }));
@@ -39,11 +41,20 @@ const done = (stdout: string, status = 0, stderr = "") => ({ stdout, status, std
 beforeEach(() => {
   fixture.node = "/opt/TEST/bin/node"; fixture.launcher = "/opt/TEST/hosted-app-server-launcher.js";
   fixture.mode = "modern"; fixture.version = "systemd 252 (252.39-1~deb12u2)\n";
-  fixture.directories.mockClear(); fixture.inspect.mockReset().mockImplementation((_file: string, args: string[]) => {
+  fixture.directories.mockClear(); fixture.writes.mockClear(); fixture.inspect.mockReset().mockImplementation((_file: string, args: string[]) => {
     if (fixture.mode === "modern") return done("  --expand-environment=BOOL\n");
     if (args.includes("--help")) return done("", 1, "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n");
     return done(fixture.version);
   });
+});
+it("mounts every fixed launcher leaf and writes its exact finite ESM scope", () => {
+  const invocation = call(), root = `/var/lib/subscription-runtime-host-policy/dependency-provider-roots/${id}`;
+  for (const relative of hostedDependencyProviderLauncherSupport) {
+    const path = join(dirname(fixture.launcher), relative);
+    expect(invocation.args).toContain(`--property=BindReadOnlyPaths=${path}:${path}:norbind`);
+  }
+  expect(fixture.writes).toHaveBeenCalledWith(join(root, dirname(fixture.launcher), hostedDependencyProviderLauncherPackageScope, "package.json"),
+    '{"type":"module"}\n', { flag: "wx", mode: 0o644 });
 });
 it("stock252 constructs the identical dependency provider invocation except unsupported veto", () => {
   const modern = call(); fixture.mode = "legacy"; const old = call();
