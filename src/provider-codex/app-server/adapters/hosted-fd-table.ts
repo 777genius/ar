@@ -18,8 +18,13 @@ export function hostedFdTable(pid: number): readonly HostedFdFact[] {
       // An empty fdinfo read is the same vanish as ENOENT below: the kernel
       // prints nothing when the descriptor is no longer held at read time.
       if (info === "" || actual === "") {
+        if (pid === process.pid) {
+          try { fstatSync(fd); }
+          catch (closed) { if ((closed as NodeJS.ErrnoException).code === "EBADF") continue; }
+          invalid();
+        }
         try { statSync(directory); }
-        catch { invalid(); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") invalid(); throw error; }
         continue;
       }
       if (!flags || /^flags:\s+([0-7]{1,12})$/m.exec(actual)?.[1] !== flags[1] || target !== readlinkSync(path)) invalid();
