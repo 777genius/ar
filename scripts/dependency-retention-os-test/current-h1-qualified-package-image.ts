@@ -1,7 +1,7 @@
 /** Exact signed image previously qualified by the H1 DATA pipeline.
  * Package availability still requires current authenticated complete indices. */
 import {ToolInputArchitecture,type AcquiredSignedPackage} from "./current-h1-tool-inputs-package.ts";
-export const qualifiedH1PackageVectorSha256="fd9c77fcc36f9862b268684d9aa28c9c8be8764439e3f8d4095cd9c5c557459e";
+export const qualifiedH1PackageVectorSha256="76a701735a773c8a1909ea320a711c7b9f521796c383191c985ac67854024187";
 type QualifiedPackagePin=Readonly<Pick<AcquiredSignedPackage,"package"|"version"|"arch"|"sha256"|"size">>;
 export const qualifiedH1PackagePins:readonly QualifiedPackagePin[]=Object.freeze([
  Object.freeze({"package":"debconf","version":"1.5.86ubuntu1","arch":ToolInputArchitecture.All,"sha256":"bb390da466a7461bfc87aa3e6b7cd145dae84af3e26bf437f2c0c218ba226294","size":124096}),
@@ -21,7 +21,7 @@ export const qualifiedH1PackagePins:readonly QualifiedPackagePin[]=Object.freeze
  Object.freeze({"package":"libgcrypt20","version":"1.10.3-2ubuntu0.2","arch":ToolInputArchitecture.Amd64,"sha256":"957b9eeaa83cf6f2d5d5d76dbb8aa31d3297e6781d8a02fa08dcc897ae650a0b","size":536494}),
  Object.freeze({"package":"libgpg-error0","version":"1.47-3build2.1","arch":ToolInputArchitecture.Amd64,"sha256":"93654ee8180a73a0363f25c51dc673d67cbabcbecd164187b8a2deb54d007aef","size":70092}),
  Object.freeze({"package":"liblz4-1","version":"1.9.4-1build1.1","arch":ToolInputArchitecture.Amd64,"sha256":"319331270d5cc52d5ebffe51c941d7b01b432bc402c2924b557209a64d4ecbad","size":63062}),
- Object.freeze({"package":"liblzma5","version":"5.6.1+really5.4.5-1ubuntu0.3","arch":ToolInputArchitecture.Amd64,"sha256":"d2eabd41ca77d2c2dd9d5d4ef478cccb64ffde6279c47cf4699a857d46785a52","size":127352}),
+ Object.freeze({"package":"liblzma5","version":"5.6.1+really5.4.5-1ubuntu0.4","arch":ToolInputArchitecture.Amd64,"sha256":"5bcf5da2339331e21d3f42a831e82c61c54c6b2f29804010e8d59abd0ae52167","size":127704}),
  Object.freeze({"package":"libmount1","version":"2.39.3-9ubuntu6.6","arch":ToolInputArchitecture.Amd64,"sha256":"8f2c25589f187dacfdc5bb6be2af0aee6c2ba7b4d2edd1ca4b26753469f07aae","size":134082}),
  Object.freeze({"package":"libncursesw6","version":"6.4+20240113-1ubuntu2.2","arch":ToolInputArchitecture.Amd64,"sha256":"579c9488755d1ddd70f66480cafd2f68776f68314d15d9cf4b5449d0de0fc968","size":147816}),
  Object.freeze({"package":"libpam0g","version":"1.5.3-5ubuntu5.7","arch":ToolInputArchitecture.Amd64,"sha256":"1d7f54e77f0455ab5e607cd5e78b576801d8efdc66115e02cf3c6e708d093667","size":68124}),
@@ -33,9 +33,9 @@ export const qualifiedH1PackagePins:readonly QualifiedPackagePin[]=Object.freeze
  Object.freeze({"package":"libsmartcols1","version":"2.39.3-9ubuntu6.6","arch":ToolInputArchitecture.Amd64,"sha256":"84f33a780d27cce20a2cd925e7ce8498daba2dbc614d433548a19fbb2c5dac18","size":66282}),
  Object.freeze({"package":"libsqlite3-0","version":"3.45.1-1ubuntu2.8","arch":ToolInputArchitecture.Amd64,"sha256":"b1190bb72359f5fcc47406aa46065eaf4f1ca208085c51224a52b04bedc0b4bb","size":701602}),
  Object.freeze({"package":"libssl3t64","version":"3.0.13-0ubuntu3.16","arch":ToolInputArchitecture.Amd64,"sha256":"219f43b1cd836a4da550938db5fda93160d269d39a4edcf1f1ce698a470db797","size":1945300}),
- Object.freeze({"package":"libsystemd0","version":"255.4-1ubuntu8.17","arch":ToolInputArchitecture.Amd64,"sha256":"4776d2ac7e21efe2ae31f3f7955a7ccd97277225eecf36910a26faf4544979ae","size":431784}),
+ Object.freeze({"package":"libsystemd0","version":"255.4-1ubuntu8.18","arch":ToolInputArchitecture.Amd64,"sha256":"2da3fa28302cf007075e89cdc3aabe6973916afcd62c3884b86f67b77c73a5b4","size":436342}),
  Object.freeze({"package":"libtinfo6","version":"6.4+20240113-1ubuntu2.2","arch":ToolInputArchitecture.Amd64,"sha256":"b67a6df2bdab61d273eabebd208bb6a3fb12618a390a067e1ee305a409ff03d9","size":108086}),
- Object.freeze({"package":"libudev1","version":"255.4-1ubuntu8.17","arch":ToolInputArchitecture.Amd64,"sha256":"6efea3770f738db2fd43ebdaed3d91ef0cde8aa8387b4803080af473326ebdb0","size":177608}),
+ Object.freeze({"package":"libudev1","version":"255.4-1ubuntu8.18","arch":ToolInputArchitecture.Amd64,"sha256":"6de7321adcc37068f8702fe6826473662df73c36377e00f07f7acfeca2e40d4a","size":177836}),
  Object.freeze({"package":"libuuid1","version":"2.39.3-9ubuntu6.6","arch":ToolInputArchitecture.Amd64,"sha256":"7e2992d3a79fc05514dc5966558ee9c66a7214a47edf2a36017b9e2777528665","size":36596}),
  Object.freeze({"package":"libzstd1","version":"1.5.5+dfsg2-2build1.1","arch":ToolInputArchitecture.Amd64,"sha256":"dfcf25061e07aad7efd3f4f880ba5ad4d4d09ebe7fc8cc77ab6b8a161d6d4727","size":299472}),
  Object.freeze({"package":"media-types","version":"10.1.0","arch":ToolInputArchitecture.All,"sha256":"31bfb7eec55ab6d34a50ba995150e1498d4cb897714085d8025e330d3b529747","size":27474}),
