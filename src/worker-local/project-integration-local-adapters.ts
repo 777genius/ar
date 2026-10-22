@@ -36,7 +36,7 @@ import {
   safeProjectIntegrationOutputTail,
 } from "./project-integration-local-safe-output";
 
-import { LocalFileWorkspaceLockStore } from "@vioxen/subscription-runtime/store-local-file";
+import { type LocalWorkspaceLockDirectoryLifecycle, LocalFileWorkspaceLockStore } from "@vioxen/subscription-runtime/store-local-file";
 import {
   IntegrationAttemptStatus,
   IntegrationError,
@@ -775,13 +775,14 @@ export type LocalWorkspaceIntegrationLockOptions = {
   readonly rootDir: string;
   readonly staleLockMs?: number;
   readonly assertPublicationCurrent?: (paths: readonly string[]) => void;
+  readonly directoryLifecycle?: LocalWorkspaceLockDirectoryLifecycle;
 };
 
 export class LocalWorkspaceIntegrationLock implements WorkspaceLockPort {
   private readonly store: LocalFileWorkspaceLockStore;
 
   constructor(private readonly options: LocalWorkspaceIntegrationLockOptions) {
-    this.store = new LocalFileWorkspaceLockStore(options.rootDir, options.assertPublicationCurrent);
+    this.store = new LocalFileWorkspaceLockStore(options.rootDir, options.assertPublicationCurrent, options.directoryLifecycle);
   }
 
   async acquire(input: {

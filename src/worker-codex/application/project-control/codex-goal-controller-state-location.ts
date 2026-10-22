@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, isAbsolute, resolve } from "node:path";
 import type { CodexGoalJobManifest } from "../../codex-goal-jobs";
 import { durablePublishJsonFile } from "../../project-control-operation-file-store";
-import { recordProtectedCodexGoalJobFirstEffect } from "../../protected-job-birth";
+import { assertOriginalProtectedBirthPublicationDescriptorCurrent, assertOriginalProtectedBirthPublicationPathsCurrent, recordProtectedCodexGoalJobFirstEffect } from "../../protected-job-birth";
 
 const originName = ".controller-state-origin.json";
 const locationName = ".controller-state-location.json";
@@ -82,8 +82,9 @@ export function recordRawGoalStateOrigin(jobRootDir: string): void {
 
 function syncOriginAncestry(jobRootDir: string): void {
   for (let path = jobRootDir;; path = dirname(path)) {
+    assertOriginalProtectedBirthPublicationPathsCurrent([path]);
     const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    try { fsyncSync(fd); } finally { closeSync(fd); }
+    try { assertOriginalProtectedBirthPublicationDescriptorCurrent(path, fd); fsyncSync(fd); } finally { closeSync(fd); }
     if (dirname(path) === path) break;
   }
 }
@@ -108,8 +109,9 @@ export function recordInventoriedRawGoalStateOrigin(launch: Readonly<{ command: 
 /** Creation only, before publishing a new manifest. Existing roots prove nothing. */
 export async function initializeControllerStateOrigin(job: CodexGoalJobManifest, freshJobRoot = false): Promise<void> {
   if (!freshJobRoot) {
+    assertOriginalProtectedBirthPublicationPathsCurrent([dirname(job.jobRootDir)]);
     await mkdir(dirname(job.jobRootDir), { recursive: true });
-    try { await mkdir(job.jobRootDir, { mode: 0o700 }); }
+    try { assertOriginalProtectedBirthPublicationPathsCurrent([job.jobRootDir]); await mkdir(job.jobRootDir, { mode: 0o700 }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
       throw error;

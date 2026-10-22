@@ -35,6 +35,7 @@ export * from "./terminal-checkpoint/domain/terminal-checkpoint-identity";
 export * from "./terminal-checkpoint/domain/terminal-checkpoint-seal";
 export * from "./status-view";
 export * from "./project-control-broker";
+export * from "./project-control/domain/interrupted-project-create";
 export * from "./worker-health";
 export * from "./worker-pool";
 export * from "./hosted-custody";
@@ -50,5 +51,6 @@ export * from "./dependency-environment/domain/dependency-legacy-comparison";
 export * from "./dependency-environment/ports/dependency-legacy-comparison";
 
 export * from "./dependency-environment/ports/dependency-generation-continuity";
+export * from "./dependency-environment/ports/dependency-explicit-reinstallation";
 export * from "./dependency-environment/application/preclaimed-dependency-consumer";
 export * from "./dependency-environment/application/invalidate-dependency-generation";

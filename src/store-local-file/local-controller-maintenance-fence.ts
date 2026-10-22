@@ -135,7 +135,10 @@ async function recoverDeadFence(path: string): Promise<boolean> {
     !Number.isInteger(owner.pid) || owner.pid <= 0 ||
     typeof owner.processStartIdentity !== "string"
   ) return false;
-  const currentIdentity = await observedProcessStartIdentity(owner.pid);
+  const currentIdentity = await observedProcessStartIdentity(
+    owner.pid,
+    owner.processStartIdentity,
+  );
   if (currentIdentity === owner.processStartIdentity) return false;
   const fencedPath = `${path}.stale-${
     createHash("sha256").update(observedBytes).digest("hex")
@@ -176,14 +179,25 @@ async function liveActivityLeaseCount(root: string): Promise<number> {
   let live = 0;
   for (const entry of entries) {
     const path = join(directory, entry);
-    const owner: unknown = JSON.parse(await readFile(path, "utf8"));
+    let owner: unknown;
+    try {
+      owner = JSON.parse(await readFile(path, "utf8"));
+    } catch (error) {
+      // A concurrent release unlinks the lease after this listing; a vanished
+      // lease is not live and must not fail the caller.
+      if (isNodeError(error, "ENOENT")) continue;
+      throw error;
+    }
     if (!isRecord(owner) || typeof owner.pid !== "number" ||
       typeof owner.processStartIdentity !== "string"
     ) {
       live += 1;
       continue;
     }
-    const current = await observedProcessStartIdentity(owner.pid);
+    const current = await observedProcessStartIdentity(
+      owner.pid,
+      owner.processStartIdentity,
+    );
     if (current === owner.processStartIdentity) live += 1;
     else await unlink(path).catch(() => undefined);
   }
@@ -191,24 +205,59 @@ async function liveActivityLeaseCount(root: string): Promise<number> {
 }
 
 async function processStartIdentity(pid: number): Promise<string> {
-  const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="]);
-  const value = stdout.trim();
-  if (!value) throw new Error("controller_maintenance_process_identity_unavailable");
-  return value;
+  const psIdentity = await observedPsProcessStartIdentity(pid);
+  if (psIdentity !== undefined) return psIdentity;
+  const procIdentity = await observedProcProcessStartIdentity(pid);
+  if (procIdentity !== undefined) return procIdentity;
+  throw new Error("controller_maintenance_process_identity_unavailable");
 }
 
-async function observedProcessStartIdentity(pid: number): Promise<string | undefined> {
+async function observedPsProcessStartIdentity(
+  pid: number,
+): Promise<string | undefined> {
   try {
-    return await processStartIdentity(pid);
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="]);
+    const value = stdout.trim();
+    return value || undefined;
   } catch {
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if (isNodeError(error, "ESRCH")) return undefined;
-      throw new Error("controller_maintenance_process_identity_indeterminate");
-    }
+    return undefined;
+  }
+}
+
+async function observedProcProcessStartIdentity(
+  pid: number,
+): Promise<string | undefined> {
+  try {
+    const [statBytes, bootIdBytes] = await Promise.all([
+      readFile(`/proc/${pid}/stat`),
+      readFile("/proc/sys/kernel/random/boot_id"),
+    ]);
+    const stat = statBytes.toString("utf8");
+    const tail = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+    const starttime = tail[19];
+    const bootId = bootIdBytes.toString("utf8").trim();
+    if (!starttime || !bootId) return undefined;
+    return `proc:${bootId}:${starttime}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function observedProcessStartIdentity(
+  pid: number,
+  recorded: string,
+): Promise<string | undefined> {
+  const observed = recorded.startsWith("proc:")
+    ? await observedProcProcessStartIdentity(pid)
+    : await observedPsProcessStartIdentity(pid);
+  if (observed !== undefined) return observed;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (isNodeError(error, "ESRCH")) return undefined;
     throw new Error("controller_maintenance_process_identity_indeterminate");
   }
+  throw new Error("controller_maintenance_process_identity_indeterminate");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

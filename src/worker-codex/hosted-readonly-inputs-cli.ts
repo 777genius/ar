@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { enrollHostedChildSlot } from "./hosted-child-slot-files";
+import { hostedReadonlyOperatorDiagnostic } from "./hosted-readonly-operator-diagnostic";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { HostedCustodyPhase } from "@vioxen/subscription-runtime/worker-core";
@@ -13,9 +14,14 @@ import { hostedReadonlyPolicyRoot, parseHostedReadonlyPolicy, readHostedPrivateB
 import { createReadonlyPrivateRecord, inspectReadonlyInputs, readonlyCustodyRoot,
   readonlyCustodySnapshot, readonlyRevokedRoot, readonlyServiceRoot, withReadonlyCustodyLock } from "./hosted-readonly-custody";
 
+import { HostedDependencyOperatorAction, dispatchHostedDependencyOperatorAction } from "./hosted-dependency-operator-actions";
 const [operation, operand, ...extra] = process.argv.slice(2);
 async function runReadonlyOperator(): Promise<void> {
   assertReadonlyHostOperator();
+  if(Object.values(HostedDependencyOperatorAction).some(action=>action===operation)) {
+    const result=await dispatchHostedDependencyOperatorAction(operation!,process.argv.slice(3));
+    process.stdout.write(JSON.stringify({operation,result})+"\n");return;
+  }
   if (["enroll-child-slot", "install-host", "install-managed-host", "enroll-ordinary", "resume-ordinary", "enter-exclusive", "leave-exclusive", "finish-exclusive", "finish-closed"].includes(operation ?? "")) {
     if (extra.length || (["enroll-ordinary", "enroll-child-slot"].includes(operation!) ? !operand : operand !== undefined)) throw new Error();
     for (const root of ["/var/lib/subscription-runtime-host-policy", "/var/lib/subscription-runtime-host-policy/ordinary-origins",
@@ -96,8 +102,11 @@ async function runReadonlyOperator(): Promise<void> {
   }
 }
 try { await runReadonlyOperator(); }
-catch {
+catch (error) {
+  const diagnostic = hostedReadonlyOperatorDiagnostic(error);
   process.stderr.write("hosted_readonly_operator_action_failed\n");
+  process.stderr.write(diagnostic.reason + "\n");
+  for (const location of diagnostic.locations) process.stderr.write(`/${location.file}:${location.line}:${location.column}\n`);
   process.exitCode = 1;
 }
 function hash(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }

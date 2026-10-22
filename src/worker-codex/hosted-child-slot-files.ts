@@ -3,7 +3,7 @@ import { join, dirname, resolve } from "node:path";
 import { lstatSync, mkdirSync } from "node:fs";
 import { AccessBoundary, HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { ChildExecutionBudget, parseImmutableChildSlot, type ImmutableChildSlot } from "@vioxen/subscription-runtime/core";
-import { assertHostedActivationFence, type HostedActivationFence, decodeHostedActivationBytes, withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { assertHostedActivationFence, type HostedActivationFence, codexMimoDefaultModel, decodeHostedActivationBytes, withHostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { createReadonlyPrivateRecord, readonlySupervisorRoot } from "./hosted-readonly-custody";
 import { readHostedReadonlyHostInventory, type HostedOrdinaryCreator } from "./hosted-readonly-host-kernel";
@@ -79,7 +79,7 @@ function assertSlotBinding(slot: ImmutableChildSlot, creator: HostedOrdinaryCrea
       !fixed("--continuation-mode", "disabled") || !fixed("--max-goal-turns", String(slot.lifetime.maxGoalTurns)) ||
       !fixed("--child-lifetime-json", JSON.stringify(slot.lifetime)) ||
       !fixed("--execution-engine", "app-server-goal") || !fixed("--model-backend", "xiaomi-mimo-token-plan") ||
-      !fixed("--model", "mimo-v2.6-pro") || !fixed("--access-boundary", slot.lifetime.accessBoundary) ||
+      !fixed("--model", codexMimoDefaultModel) || !fixed("--access-boundary", slot.lifetime.accessBoundary) ||
       !fixed("--edit-mode", slot.lifetime.accessBoundary === AccessBoundary.ReadOnly ? "read-only" : "allow-edits") ||
       (slot.lifetime.accessBoundary === AccessBoundary.ReadOnly ? args.includes("--provider-sandbox-mode") : !fixed("--provider-sandbox-mode", "workspace-write")) ||
       !fixed("--project-access-scope-json", JSON.stringify({ projectId: slot.jobId, readRoots: [slot.workspacePath],

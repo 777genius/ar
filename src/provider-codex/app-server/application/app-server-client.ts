@@ -49,7 +49,7 @@ import {
   type TurnState,
 } from "./app-server-turn-state";
 import { waitForAppServerTurn } from "./app-server-turn-waiter";
-import { isCodexAppServerReconnectProgressMessage } from "../protocol/app-server-event-parser";
+import { isCodexAppServerReconnectProgressMessage, isCodexAppServerTurnProgressMethod } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
 import {
   encodeJsonRpcMessage,
@@ -73,6 +73,8 @@ import {
   AppServerRequestMayHaveReachedProviderError,
 } from "../domain/app-server-execution-safety";
 import { codexAppServerProcessArgs } from "./app-server-process-args";
+import { createAppServerLaunchStderrObservation } from "./app-server-launch-stderr";
+import { appServerProviderSetupFailureCause } from "../domain/app-server-provider-setup-observation";
 import { handleAppServerServerRequest } from "./app-server-server-request-handler";
 import { stopAppServerProcess } from "./app-server-process-stopper";
 import { handleAppServerReconnectProgress } from "./app-server-reconnect-handler";
@@ -225,14 +227,15 @@ export class CodexAppServerClient {
     this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
     this.child.stdout.on("data", (chunk) => this.onStdout(String(chunk)));
-    this.child.stderr.on("data", () => {
-      // Keep stderr private. Codex may include environment or auth diagnostics.
+    const launchStderr = createAppServerLaunchStderrObservation(), setupChild = this.child;
+    this.child.stderr.on("data", (chunk) => {
+      // Keep raw stderr private. Retain only an exact fixed bootstrap label.
+      launchStderr.observe(chunk);
     });
     this.child.on("exit", (code, signal) => {
       this.exited = true;
-      this.recordTerminalError(
-        new Error(`codex_app_server_exited:${code ?? signal}`),
-      );
+      const cause = appServerProviderSetupFailureCause(setupChild) ?? launchStderr.snapshotCause();
+      this.recordTerminalError(new Error(`codex_app_server_exited:${code ?? signal}`, cause ? { cause } : undefined));
     });
     this.child.on("error", (error) => {
       this.recordTerminalError(error);
@@ -679,6 +682,7 @@ export class CodexAppServerClient {
     }
 
     if (typeof record.method !== "string") return;
+    if (isCodexAppServerTurnProgressMethod(record.method)) this.clearReconnectGraceForTurn(stringField(params, "turnId"));
     if (record.method === "thread/closed" || record.method === "thread/archived") {
       const threadId = stringField(params, "threadId");
       if (threadId) this.publicResearchTools.closeThread(threadId);
@@ -699,7 +703,6 @@ export class CodexAppServerClient {
     if (record.method === "item/agentMessage/delta") {
       const turnId = stringField(params, "turnId");
       const turn = this.ensureTurn(turnId);
-      clearAppServerReconnectTimer(turn);
       const delta = stringField(params, "delta") ?? "";
       if (appendTurnOutput({
         turn, text: delta, maxOutputBytes: this.options.maxOutputBytes,
@@ -740,9 +743,8 @@ export class CodexAppServerClient {
       const item = readRecord(params?.item);
       if (item?.type === "agentMessage") {
         const text = agentMessageText(item);
-        if (text) {
+        if (text !== null) {
           const turn = this.ensureTurn(turnId);
-          clearAppServerReconnectTimer(turn);
           replaceTurnOutput({
             turn, text, maxOutputBytes: this.options.maxOutputBytes,
             reject: () => this.resolveTurn(turn),
@@ -809,6 +811,11 @@ export class CodexAppServerClient {
       );
       this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
     }
+  }
+
+  private clearReconnectGraceForTurn(turnId: string | null): void {
+    const turn = turnId ? this.findTurn(turnId) : null;
+    if (turn) clearAppServerReconnectTimer(turn);
   }
 
   private deferTurnsForReconnectProgress(

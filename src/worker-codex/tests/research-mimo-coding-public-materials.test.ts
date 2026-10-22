@@ -13,7 +13,7 @@ it("pins an explicit empty system MCP allowlist and the only guest model catalog
 it("advertises only the exact MiMo model with native function exec and shell patch editing without custom tools", () => {
   const catalog = JSON.parse(researchMimoCodingPublicMaterials.find(file => file.target === researchMimoCodingModelCatalogPath)!.bytes);
   expect(catalog.models.map((model: { slug: string }) => model.slug)).toEqual([codexMimoDefaultModel]);
-  expect(catalog.models[0]).toMatchObject({ slug: "mimo-v2.6-pro", shell_type: "unified_exec",
+  expect(catalog.models[0]).toMatchObject({ slug: codexMimoDefaultModel, shell_type: "unified_exec",
     apply_patch_tool_type: null, input_modalities: ["text"], include_apps_usage_instructions: false,
     supported_reasoning_levels: [], experimental_supported_tools: [] });
   expect(JSON.stringify(catalog)).not.toContain('"freeform"');

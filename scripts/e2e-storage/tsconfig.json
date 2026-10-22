@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "baseUrl": "../..", "noEmit": true, "skipLibCheck": false },
+  "include": ["./*.ts", "../../host-integration/bounded-storage/**/*.ts", "../../src/worker-core/storage/**/*.ts", "../../src/store-local-file/storage/**/*.ts"]
+}

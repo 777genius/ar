@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { host, local, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
@@ -5,7 +6,8 @@ import { createHash } from "node:crypto";
 import { researchArtifactDigest, researchFileDigest, researchRead, researchRegisteredPromptBytes } from "../research-launch-files";
 import { researchExecutableDigest } from "../research-launch-host";
 
-beforeEach(setupResearchFixture);
+const allocationParent = (await vi.importActual<typeof import("node:fs")>("node:fs")).realpathSync(tmpdir());
+beforeEach(() => setupResearchFixture({ allocationParent }));
 afterEach(cleanupResearchFixture);
 const sha256 = async (path: string): Promise<string> => {
   const hash = createHash("sha256");
@@ -29,6 +31,38 @@ const elapsedWait = (milliseconds: number): void => {
 };
 
 describe("research byte witnesses (real sized TEST files under substituted root custody)", () => {
+  it("retains warmed witnesses across cold scans and refreshes changed cached signatures", () => {
+    const paths = ["oldest", "survivor", "new"].map(name => "/TEST-artifact/node_modules/TEST-" + name);
+    paths.forEach((path, index) => fs.writeFileSync(local(path), "TEST bytes " + index, { mode: 0o644 }));
+    const options = { ...freshOptions(), cacheEntries: 2 };
+    const expected = paths.map((path, index) => createHash("sha256").update("TEST bytes " + index).digest("hex"));
+    expect(researchFileDigest(paths[0]!, options)).toBe(expected[0]);
+    expect(researchFileDigest(paths[1]!, options)).toBe(expected[1]);
+    expect(researchFileDigest(paths[2]!, options)).toBe(expected[2]);
+    expect([...options.cache.keys()]).toEqual(paths.slice(0, 2));
+    const reads = vi.spyOn(fs, "readSync");
+    expect(researchFileDigest(paths[1]!, options)).toBe(expected[1]);
+    expect(reads).not.toHaveBeenCalled();
+    fs.writeFileSync(local(paths[1]!), "TEST changed bytes", { mode: 0o644 });
+    expect(researchFileDigest(paths[1]!, options)).toBe(createHash("sha256").update("TEST changed bytes").digest("hex"));
+    expect(reads).toHaveBeenCalled(); expect(options.cache.size).toBe(2);
+  });
+  it.each(["existing", "new"])("restores a caller cache already over its bound for a %s path", kind => {
+    const paths = [0, 1, 2, 3, 4].map(index => "/TEST-artifact/node_modules/TEST-bound-" + index);
+    paths.forEach((path, index) => fs.writeFileSync(local(path), "TEST bounded " + index, { mode: 0o644 }));
+    const options = { ...freshOptions(), cacheEntries: 4 };
+    for (const path of paths.slice(0, 4)) researchFileDigest(path, options);
+    options.cacheEntries = 2;
+    const selected = kind === "existing" ? paths[0]! : paths[4]!;
+    const reads = vi.spyOn(fs, "readSync");
+    expect(researchFileDigest(selected, options)).toBe(createHash("sha256").update("TEST bounded " + (kind === "existing" ? 0 : 4)).digest("hex"));
+    expect(options.cache.size).toBe(2);
+    expect([...options.cache.keys()]).toEqual(paths.slice(2, 4));
+    if (kind === "existing") expect(reads).not.toHaveBeenCalled();
+    reads.mockClear();
+    expect(researchFileDigest(paths[3]!, options)).toMatch(/^[a-f0-9]{64}$/);
+    expect(reads).not.toHaveBeenCalled(); expect(options.cache.size).toBe(2);
+  });
   it.each(["executable", "artifact"] as const)("accepts a real byte-read delay beyond the former four-second %s budget", async kind => {
     const path = kind === "executable" ? "/usr/bin/TEST-codex" : "/TEST-artifact/node_modules/TEST-delayed";
     if (kind === "artifact") fs.writeFileSync(local(path), "TEST delayed artifact bytes", { mode: 0o644 });

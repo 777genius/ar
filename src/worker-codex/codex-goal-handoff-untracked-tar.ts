@@ -1,10 +1,14 @@
+import { handoffPreservationBudget, HandoffPreservationRefusalReason } from "./codex-goal-handoff-preservation-budget";
 /** Pure USTAR encoding of already captured and validated untracked bytes.
  * No filesystem, environment, origin, descriptor or callback access. */
 export function buildTar(files: readonly { path: string; bytes: Buffer; mode: number }[]): Buffer {
   const blocks: Buffer[] = [];
+  let totalBytes = 1024;
   for (const file of files) {
     const fields = tarPathFields(file.path);
     if (!fields) throw new Error("handoff_archive_path_unrepresentable");
+    totalBytes += 512 + file.bytes.length + (512 - file.bytes.length % 512) % 512;
+    if (totalBytes > handoffPreservationBudget.packetFileBytes) throw new Error(HandoffPreservationRefusalReason.Total);
     const header = Buffer.alloc(512);
     fields.name.copy(header, 0);
     fields.prefix?.copy(header, 345);

@@ -1,0 +1,686 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/closedJob"
+    },
+    {
+      "$ref": "#/$defs/retiredJob"
+    },
+    {
+      "$ref": "#/$defs/retiredWorkstream"
+    },
+    {
+      "$ref": "#/$defs/receipt"
+    }
+  ],
+  "$defs": {
+    "closedJob": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "subscription-runtime-closed-job"
+        },
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "planSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "runtimeRelease": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "registryRootDir": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "jobId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "worker",
+            "controller"
+          ]
+        },
+        "manifestSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "terminal": {
+          "$ref": "#/$defs/terminalProof"
+        },
+        "bootId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+        },
+        "closedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      },
+      "required": [
+        "schema",
+        "schemaVersion",
+        "planSha256",
+        "runtimeRelease",
+        "registryRootDir",
+        "jobId",
+        "role",
+        "manifestSha256",
+        "terminal",
+        "bootId",
+        "closedAt"
+      ],
+      "additionalProperties": false,
+      "title": "Closed job (terminal.json)"
+    },
+    "terminalProof": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "native-released"
+            },
+            "startId": {
+              "type": "string",
+              "pattern": "^[a-f0-9-]{36}$"
+            },
+            "specSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "lastTerminalSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "kind",
+            "startId",
+            "specSha256",
+            "lastTerminalSha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "runner-disposed"
+            },
+            "eventsPath": {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+            },
+            "lastEventSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "kind",
+            "eventsPath",
+            "lastEventSha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "never-started"
+            },
+            "birth": {
+              "type": "string",
+              "enum": [
+                "released",
+                "absent"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "birth"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "controller-closed"
+            },
+            "writer": {
+              "type": "string",
+              "enum": [
+                "released",
+                "absent"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "writer"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "title": "Explicit runtime proof that a job is terminal"
+    },
+    "retiredJob": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "subscription-runtime-retired-job"
+        },
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "planSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "runtimeRelease": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "layout": {
+          "type": "string",
+          "enum": [
+            "project-workstream",
+            "flat-workstream",
+            "mimo-workstream"
+          ]
+        },
+        "registryRootDir": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "jobId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "worker",
+            "controller"
+          ]
+        },
+        "manifestSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "closedSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "terminal": {
+          "$ref": "#/$defs/terminalProof"
+        },
+        "output": {
+          "$ref": "#/$defs/outputProof"
+        },
+        "workspace": {
+          "$ref": "#/$defs/directoryIdentity"
+        },
+        "deletion": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "const": "workspace"
+                }
+              },
+              "required": [
+                "scope"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "const": "workstream"
+                },
+                "workstreamTombstone": {
+                  "type": "string",
+                  "maxLength": 4096,
+                  "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+                }
+              },
+              "required": [
+                "scope",
+                "workstreamTombstone"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "pins": {
+          "maxItems": 768,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pin"
+          }
+        },
+        "retiredAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      },
+      "required": [
+        "schema",
+        "schemaVersion",
+        "planSha256",
+        "runtimeRelease",
+        "layout",
+        "registryRootDir",
+        "jobId",
+        "role",
+        "manifestSha256",
+        "closedSha256",
+        "terminal",
+        "output",
+        "workspace",
+        "deletion",
+        "pins",
+        "retiredAt"
+      ],
+      "additionalProperties": false,
+      "title": "Retired job tombstone (retired.json)"
+    },
+    "outputProof": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "handoff"
+            },
+            "packetPath": {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+            },
+            "manifestSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "head": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            }
+          },
+          "required": [
+            "kind",
+            "packetPath",
+            "manifestSha256",
+            "head"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "clean"
+            },
+            "head": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            }
+          },
+          "required": [
+            "kind",
+            "head"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "title": "Where the workspace content is preserved"
+    },
+    "directoryIdentity": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "path",
+        "device",
+        "inode"
+      ],
+      "additionalProperties": false,
+      "title": "Directory path with its device and inode"
+    },
+    "pin": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "unmounted",
+            "not-mounted"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "action"
+      ],
+      "additionalProperties": false,
+      "title": "Research pin handled by the retirement"
+    },
+    "retiredWorkstream": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "subscription-runtime-retired-workstream"
+        },
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "planSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "runtimeRelease": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "workstreamId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "machineId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "bindingSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "registryRootDir": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "scratchRoot": {
+          "$ref": "#/$defs/directoryIdentity"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+            },
+            "device": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "inode": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "head": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            },
+            "alternates": {
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "required": [
+            "path",
+            "device",
+            "inode",
+            "head",
+            "alternates"
+          ],
+          "additionalProperties": false
+        },
+        "jobs": {
+          "minItems": 1,
+          "maxItems": 4096,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "worker",
+                  "controller"
+                ]
+              },
+              "tombstoneSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "jobId",
+              "role",
+              "tombstoneSha256"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "unregisteredAttempts": {
+          "maxItems": 4096,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+              },
+              "workspace": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/directoryIdentity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "jobId",
+              "workspace"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "retiredAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      },
+      "required": [
+        "schema",
+        "schemaVersion",
+        "planSha256",
+        "runtimeRelease",
+        "projectId",
+        "workstreamId",
+        "machineId",
+        "bindingSha256",
+        "registryRootDir",
+        "scratchRoot",
+        "source",
+        "jobs",
+        "unregisteredAttempts",
+        "retiredAt"
+      ],
+      "additionalProperties": false,
+      "title": "Retired MiMo workstream tombstone"
+    },
+    "receipt": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "subscription-runtime-job-retirement-receipt"
+        },
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "planSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "runtimeRelease": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "layout": {
+          "type": "string",
+          "enum": [
+            "project-workstream",
+            "flat-workstream",
+            "mimo-workstream"
+          ]
+        },
+        "registryRootDir": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*\\/\\.{1,2}(?:\\/|$))\\/(?:[A-Za-z0-9_.@+-]+\\/)*[A-Za-z0-9_.@+-]+$"
+        },
+        "jobs": {
+          "minItems": 1,
+          "maxItems": 4096,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+              },
+              "closedSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "tombstoneSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "pins": {
+                "maxItems": 768,
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/pin"
+                }
+              }
+            },
+            "required": [
+              "jobId",
+              "closedSha256",
+              "tombstoneSha256",
+              "pins"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "workstreamTombstoneSha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      },
+      "required": [
+        "schema",
+        "schemaVersion",
+        "planSha256",
+        "runtimeRelease",
+        "layout",
+        "registryRootDir",
+        "jobs",
+        "workstreamTombstoneSha256",
+        "completedAt"
+      ],
+      "additionalProperties": false,
+      "title": "Retirement receipt"
+    }
+  },
+  "$id": "https://github.com/vioxen/subscription-runtime/host-integration/job-retirement/v1/schema.json",
+  "title": "subscription-runtime job retirement records, version 1"
+}

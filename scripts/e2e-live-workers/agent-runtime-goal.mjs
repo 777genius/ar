@@ -173,6 +173,8 @@ try {
 
 function seedGitWorkspace() {
   execFileSync("git", ["init", "-q", workspace]);
+  // Fixture sandboxes stay hermetic: user-global hooks must not gate synthetic test commits.
+  execFileSync("git", ["-C", workspace, "config", "core.hooksPath", join(workspace, ".git", "e2e-no-hooks")]);
   execFileSync("git", ["-C", workspace, "config", "user.name", "Agent Runtime E2E"]);
   execFileSync("git", ["-C", workspace, "config", "user.email", "e2e@example.invalid"]);
   execFileSync("git", ["-C", workspace, "config", "commit.gpgsign", "false"]);

@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
-import { assertHostedActivationFence, withHostedActivationFence, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
+import { assertHostedActivationFence, withHostedActivationFence, selectedHostedInstallationRecordName, type HostedActivationFence } from "@vioxen/subscription-runtime/provider-codex";
 import { hostedFdTable } from "../provider-codex/app-server/adapters/hosted-fd-table";
 import { hostedInventoryMaximumBytes } from "../core/host-infrastructure/host-inventory";
 import { assertReadonlyHostOperator } from "./hosted-readonly-authority";
@@ -89,7 +89,7 @@ export function storedRequestPlan(args: readonly string[], cwd: string): StoredP
 export function installedInventory() {
   assertReadonlyHostOperator();
   const origin = readHostedInstallationActivation(), inventory = readHostedReadonlyHostInventory();
-  const bytes = readHostedPrivateBytes(`${readonlySupervisorRoot}/readonly-inventory.json`, hostedInventoryMaximumBytes);
+  const bytes = readHostedPrivateBytes(`${readonlySupervisorRoot}/${selectedHostedInstallationRecordName("readonly-inventory.json")}`, hostedInventoryMaximumBytes);
   if ((inventory.schemaVersion !== 4 && inventory.schemaVersion !== 5) || !bytes || hash(bytes) !== origin.installation.inventorySha256) denied();
   return { ...origin, inventory };
 }

@@ -81,6 +81,7 @@ const exact = new Map<string, ResearchLaunchDiagnostic>([
   [legacy[4], D.ScratchNonempty], [legacy[5], D.ScratchBusy], [legacy[6], D.ScratchUnknownMount], [legacy[7], D.ScratchSourceChanged],
   ["Scratch config must be a root-owned regular file without group/other writes", D.ScratchConfigCustody],
   ["Invalid scratch config", D.ScratchConfigInvalid], ["Invalid scratch schema, root, UUID or legacy map", D.ScratchSchemaInvalid],
+  ["Invalid scratch capacity policy", D.ScratchSchemaInvalid],
   ["Ambiguous scratch mount inspection", D.ScratchMountInspection], ["Scratch mount target, UUID or filesystem root mismatch", D.ScratchMountMismatch],
   ["Scratch requires canonical absolute paths", D.ScratchCanonical], ["Host scratch requires logical jobRoot/tmp; explicit TMPDIR spill rejected", D.ScratchTmpdir],
   ["Root privilege required to prepare scratch bind mount", D.ScratchPrivilege], ["Root privilege required to prepare scratch cache parents", D.ScratchPrivilege],
@@ -92,7 +93,7 @@ const exact = new Map<string, ResearchLaunchDiagnostic>([
     "hosted_test_egress_admission_invalid", "hosted_research_ordinary_admission_required",
     "hosted_permission_profiles_engine_unsupported"].map(message => [message, D.EgressAdmission] as const),
 ]);
-const prefixes = [["Scratch launch requires at least 5 GiB available on ", D.ScratchSpace],
+const prefixes = [["Scratch launch requires at least ", D.ScratchSpace],
   ["Unsafe scratch directory: ", D.ScratchDirectoryUnsafe], ["Unsafe scratch source permissions: ", D.ScratchSourceUnsafe]] as const;
 const errno = [D.ENOENT, D.EACCES, D.EPERM, D.EAGAIN, D.ENOSPC, D.EMFILE, D.ETIMEDOUT] as const;
 function ownData(error: unknown, key: string): unknown {

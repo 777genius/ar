@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "noEmitOnError": true,
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": [
+      "node"
+    ],
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": [
+    "src/core/host-infrastructure/fd-collector-profile.ts",
+    "src/provider-codex/app-server/adapters/hosted-fd-table.ts",
+    "src/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.ts",
+    "src/provider-codex/app-server/adapters/hosted-fd-unit-policy.ts",
+    "src/provider-codex/app-server/adapters/hosted-full-guest-source-inventory.ts",
+    "src/provider-codex/app-server/adapters/hosted-host-policy.ts",
+    "src/provider-codex/app-server/adapters/hosted-project-control-source-catalog.ts",
+    "src/provider-codex/app-server/adapters/hosted-signed-tool-elf.ts"
+  ],
+  "exclude": []
+}

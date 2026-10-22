@@ -5,9 +5,12 @@ import { fileURLToPath } from "node:url";
 import { CodexProviderEgressProfileId } from "@vioxen/subscription-runtime/provider-codex";
 import { assertHostedTestEgressIdentity, parseHostedTestEgressGrant,
   type HostedTestEgressIdentity } from "./hosted-test-egress-contract";
-import { hostedTestEgressGrantRoot } from "./hosted-test-egress-files";
-import { assertHostedReadonlyPolicyBinding, hostedReadonlyPolicyRoot, parseHostedReadonlyPolicy,
+import { hostedTestEgressGrantRoot } from "./hosted-test-egress-paths";
+import { readOriginalHostedDependencyBackingStage } from "./hosted-full-backing-stage";
+import { assertHostedReadonlyPolicyBinding, parseHostedReadonlyPolicy,
   readHostedPrivateBytes, type HostedReadonlyPolicy } from "./hosted-readonly-inputs";
+
+import { hostedReadonlyPolicyRoot } from "./hosted-readonly-policy-path";
 
 const authorityRoot = dirname(hostedReadonlyPolicyRoot);
 // Derived from the module supplying this code, never from cwd, job JSON or env.
@@ -77,11 +80,11 @@ export function readReadonlyReview(policy: HostedReadonlyPolicy): {
   const stageBytes = readHostedPrivateBytes(join(authorityRoot, "codex-readonly-stages",
     readonlyIdentityName(runtimeDirectory)), 4096);
   if (!stageBytes) throw new Error("hosted_readonly_verified_stage_required");
-  const stage = record(decodePrivateJson(stageBytes));
-  if (Object.keys(stage).sort().join(",") !==
-      "runtimeDirectory,runtimeManifestSha256,runtimeSha,schemaVersion" ||
-      stage.schemaVersion !== 1 || stage.runtimeDirectory !== runtimeDirectory ||
-      stage.runtimeSha !== policy.runtimeSha ||
+  let stage: ReturnType<typeof readOriginalHostedDependencyBackingStage>;
+  try { stage = readOriginalHostedDependencyBackingStage(); } catch { invalid(); }
+  // Return/hash only the original bytes that the strict reread validated.
+  if (!stageBytes.equals(Buffer.from(JSON.stringify(stage) + "\n"))) invalid();
+  if (stage.runtimeDirectory !== runtimeDirectory || stage.runtimeSha !== policy.runtimeSha ||
       stage.runtimeManifestSha256 !== policy.runtimeManifestSha256) invalid();
   return { reviewBytes, stageBytes, reviewReference: review.reviewReference, custodyReference: review.custodyReference, corepackShim };
 }

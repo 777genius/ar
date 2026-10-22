@@ -36,7 +36,7 @@ export { assertHostedProcessDescriptors } from "./app-server/adapters/hosted-pro
 export { verifySystemBusInfrastructure } from "./app-server/adapters/system-bus-infrastructure";
 export { verifyPinnedFdCollectorProfile } from "./app-server/adapters/hosted-fd-observation";
 export { withHostedActivationFence, assertHostedActivationFence, assertHostedActivationOperator,
-  readHostedActivationBytes, decodeHostedActivationBytes, requiresHostedProcessAdmission,
+  readHostedActivationBytes, selectedHostedInstallationRecordName, decodeHostedActivationBytes, requiresHostedProcessAdmission,
   assertHostedScopedAdmission, retainHostedScopedCorrelation, retainHostedScopedSubmitter, retainHostedScopedActorChain, observeHostedScopedActorChildren } from "./app-server/adapters/hosted-process-activation";
 export type { HostedActivationFence } from "./app-server/adapters/hosted-process-activation";
 
@@ -52,3 +52,6 @@ export { OpenWorkerLayoutErrorCode, assertHostedOpenWorkerLayout, renderHostedOp
   hostedOpenWorkerExtraDenyDirectories, hostedOpenWorkerForbiddenReadRoots } from "./hosted-open-worker-permissions";
 
 export { prepareHostedMimoCodingEngineAuthority, type HostedMimoCodingEngineAuthority } from "./hosted-mimo-coding-engine-authority";
+export { parseMimoProxyFailureDetails, type MimoProxyFailure } from "./mimo-proxy-failure";
+export { ProviderCallState, ProviderCallProtocol, createProviderCallObservation, type ProviderCallObservation, type ProviderCallObserver } from "../provider-usage/provider-call-observation";
+export { startProviderUsageRelay } from "../provider-usage/provider-usage-relay";

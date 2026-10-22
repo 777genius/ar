@@ -1,3 +1,4 @@
+import type { WorkerAccountRecoveryPreparation } from "./account-capacity/domain/worker-account-task-recovery";
 import type {
   ObservabilityPort,
   ProviderTask,
@@ -53,6 +54,8 @@ export type WorkerSlotAvailability =
   | "disabled";
 
 export type WorkerCapacitySnapshot = {
+  /** Typed one-task passage; the capacity remains honestly unavailable. */
+  readonly recoveryPending?: WorkerAccountRecoveryPreparation;
   readonly availability: WorkerSlotAvailability;
   readonly reason?: string;
   readonly cooldownUntil?: Date;

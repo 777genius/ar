@@ -1,3 +1,4 @@
+import { LocalFileWorkerAccountCapacityStore } from "@vioxen/subscription-runtime/store-local-file";
 import { createHash } from "node:crypto";
 import { readCodexEffectiveSeed, materializeCodexEffectiveSeed } from "./codex-effective-seed";
 import { readdir, readFile } from "node:fs/promises";
@@ -122,6 +123,8 @@ export type CodexGoalAccountSlotStatus = {
  */
 export type CodexGoalAccountStatusInput = {
   readonly authRootDir: string;
+  /** Offline query: no migration, cleanup, refresh or live capacity recheck. */
+  readonly readOnly?: boolean;
   readonly accounts?: readonly string[];
   readonly stateRootDir?: string;
   readonly liveCheck?: boolean;
@@ -154,6 +157,7 @@ export async function listCodexGoalAccountStatuses(
   if ((input.modelBackend ?? CodexModelBackend.OpenAiChatGpt) === CodexModelBackend.XiaomiMimoTokenPlan) {
     return listCodexGoalMimoAccountStatuses(input.mimoAccounts ?? [], input.sourceEnv);
   }
+  if (input.readOnly && input.accountCapacityStore) throw new Error("codex_goal_account_query_store_unsupported");
   const accountMetadata = {
     ...(await readCodexAccountDisplayMetadata(input.authRootDir)),
     ...(input.accountMetadata ?? {}),
@@ -173,7 +177,7 @@ export async function listCodexGoalAccountStatuses(
             .map(([name]) => name),
         ]),
       ].sort((left, right) => left.localeCompare(right));
-  if (input.stateRootDir && !input.accountCapacityStore) {
+  if (!input.readOnly && input.stateRootDir && !input.accountCapacityStore) {
     migrateLegacyCodexAccountCapacity({
       authRootDir: input.authRootDir,
       stateRootDir: input.stateRootDir,
@@ -181,7 +185,7 @@ export async function listCodexGoalAccountStatuses(
     });
   }
   const accountCapacityStore = resolveAccountCapacityStore(input);
-  if (input.recheckDueCapacity && !input.quotaOnlyLiveCheck && accountCapacityStore) {
+  if (!input.readOnly && input.recheckDueCapacity && !input.quotaOnlyLiveCheck && accountCapacityStore) {
     await Promise.all(
       accountNames
         .filter((name) => !accountMetadata[name]?.quarantined)
@@ -204,12 +208,17 @@ export async function listCodexGoalAccountStatuses(
       inspectCodexGoalAccount({
         authRootDir: input.authRootDir,
         name,
+        ...(input.readOnly ? { readOnly: true, ...(input.stateRootDir ? {
+          legacyCapacityStore: new LocalFileWorkerAccountCapacityStore({
+            rootDir: join(input.stateRootDir, "worker-account-capacity"), strictReads: true,
+          }),
+        } : {}) } : {}),
         ...(accountMetadata[name]
           ? { displayMetadata: accountMetadata[name] }
           : {}),
         ...(accountCapacityStore ? { accountCapacityStore } : {}),
-        ...(input.liveCheck ? { liveCheck: input.liveCheck } : {}),
-        ...(input.quotaOnlyLiveCheck ? { quotaOnlyLiveCheck: true } : {}),
+        ...(!input.readOnly && input.liveCheck ? { liveCheck: input.liveCheck } : {}),
+        ...(!input.readOnly && input.quotaOnlyLiveCheck ? { quotaOnlyLiveCheck: true } : {}),
         ...(input.codexBinaryPath
           ? { codexBinaryPath: input.codexBinaryPath }
           : {}),
@@ -221,9 +230,13 @@ export async function listCodexGoalAccountStatuses(
   );
 }
 
+class CodexGoalAccountQueryUnproven extends Error {}
+
 async function inspectCodexGoalAccount(input: {
   readonly authRootDir: string;
   readonly name: string;
+  readonly readOnly?: boolean;
+  readonly legacyCapacityStore?: WorkerAccountCapacityStore;
   readonly displayMetadata?: CodexAccountDisplayMetadata;
   readonly accountCapacityStore?: WorkerAccountCapacityStore;
   readonly liveCheck?: boolean;
@@ -266,6 +279,7 @@ async function inspectCodexGoalAccount(input: {
     });
     let capacity = readAccountCapacity({
       accountName: input.name,
+      ...(input.readOnly ? { strict: true, ...(input.legacyCapacityStore ? { legacyStore: input.legacyCapacityStore } : {}) } : {}),
       ...(input.accountCapacityStore
         ? { store: input.accountCapacityStore }
         : {}),
@@ -414,6 +428,11 @@ async function inspectCodexGoalAccount(input: {
         : "auth.json is readable",
     };
   } catch (error) {
+    if (error instanceof CodexGoalAccountQueryUnproven) return {
+      name: input.name, modelBackend: CodexModelBackend.OpenAiChatGpt, ...display, authJsonPath,
+      status: "quota_unknown", availability: "unknown", schedulerEligible: false,
+      recommendedAction: "inspect", warnings: [], safeMessage: "account capacity query is unproven",
+    };
     const safeMessage = error instanceof Error ? error.message : "auth_invalid";
     return {
       name: input.name,
@@ -751,12 +770,19 @@ function decodeJwtClaims(token: string): Record<string, unknown> | null {
 function readAccountCapacity(input: {
   readonly store?: WorkerAccountCapacityStore;
   readonly accountName: string;
+  readonly strict?: boolean;
+  readonly legacyStore?: WorkerAccountCapacityStore;
 }) {
   if (!input.store) return null;
   try {
     const now = new Date();
     const capacity = input.store.read({ accountId: input.accountName, now });
     if (capacity) return capacity;
+    // Normal status migrates this evidence. A query cannot silently ignore it
+    // or perform that migration; retain uncertainty until explicit settlement.
+    if (input.legacyStore?.readState({ accountId: input.accountName, now })) {
+      throw new CodexGoalAccountQueryUnproven();
+    }
     const state = input.store.readState({
       accountId: input.accountName,
       now,
@@ -772,6 +798,7 @@ function readAccountCapacity(input: {
       ...(state.capacity.details ? { details: state.capacity.details } : {}),
     };
   } catch {
+    if (input.strict) throw new CodexGoalAccountQueryUnproven();
     return null;
   }
 }
@@ -780,7 +807,7 @@ function resolveAccountCapacityStore(
   input: CodexGoalAccountStatusInput,
 ): WorkerAccountCapacityStore | undefined {
   if (input.accountCapacityStore) return input.accountCapacityStore;
-  return codexAccountCapacityStore(input.authRootDir);
+  return codexAccountCapacityStore(input.authRootDir, input.readOnly ? { strictReads: true } : {});
 }
 
 function recordLiveQuotaCapacitySafely(input: {

@@ -35,7 +35,7 @@ describe("registered MiMo finite execution contract", () => {
     const input = fixture();
     expect(() => assertRegisteredResearchExecutionSupported(input)).not.toThrow();
     expect(researchRunConfig(input.request)).toMatchObject({ executionEngine: "app-server", workerReportMode: "structured-output",
-      maxGoalTurns: 8, maxReconnectRetriesPerAccount: 0, safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled" } });
+      maxGoalTurns: 8, maxReconnectRetriesPerAccount: 3, safeExecutionPolicy: { maxAttempts: 1, continuationMode: "disabled" } });
   });
   it.each([{ modelBackend: CodexModelBackend.OpenAiChatGpt }, { model: "gpt-6.1-sol" }, { maxAccountCycles: 2 },
     { prewarmOnStart: true }, { executionEngine: "app-server-goal" }, { workerReportMode: "structured-output" },
@@ -57,7 +57,7 @@ describe("public MiMo worker defaults before project reservation", () => {
   it("uses the same finite defaults in create and stored-launch builders", () => {
     const manifest = jobManifestInputFromArgs(minimal);
     const launch = goalLaunchInputFromRecord(minimal, "/TEST-cwd");
-    for (const value of [manifest, launch.config]) expect(value).toMatchObject({ model: "mimo-v2.6-pro",
+    for (const value of [manifest, launch.config]) expect(value).toMatchObject({ model: codexMimoDefaultModel,
       executionEngine: "app-server", maxAccountCycles: 1, prewarmOnStart: false });
     expect(launch.config.accounts).toEqual([{ name: "account-q" }]);
   });

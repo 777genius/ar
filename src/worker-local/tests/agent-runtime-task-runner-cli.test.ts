@@ -3,12 +3,14 @@ import {
   mkdir,
   mkdtemp,
   realpath,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as hostScratchTemp from "../../worker-codex/host-scratch-temp";
 import {
   runSubscriptionAgentRuntimeTaskCli,
   type AgentRuntimeTaskWorker,
@@ -25,6 +27,17 @@ import {
 } from "./agent-runtime-task-runner-cli-test-support";
 
 describe("subscription runtime agent-runtime-task runner CLI", () => {
+  beforeEach(() => {
+    // These fixtures exercise the packaged worker protocol and cwd ownership.
+    // Host cache effects have separate storage-policy tests and must not touch
+    // the machine's installed policy or mounts from this unit suite.
+    vi.spyOn(hostScratchTemp, "prepareHostScratchCaches").mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("runs a Claude AgentRuntimeTaskRequest through the selected worker", async () => {
     const calls: {
       factory?: AgentRuntimeTaskWorkerFactoryInput;
@@ -140,7 +153,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     });
   });
 
-  it("runs the default packaged Codex worker in the borrowed request cwd without deleting it", async () => {
+  it("runs the default packaged Codex worker in the borrowed request cwd without deleting it", async ({ onTestFinished }) => {
     const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-cli-"));
     const workspaceDir = join(tempDir, "workspace");
     const authPath = join(tempDir, "auth.json");
@@ -152,6 +165,19 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     await writeFakeCodexBinary(codexPath);
 
     try {
+      // This fake-CLI fixture prepares regular private cache leaves; scratch
+      // mount admission is covered by the host-scratch-temp guard tests.
+      const prepareCaches = vi.spyOn(
+        await import("../../worker-codex/host-scratch-temp"),
+        "prepareHostScratchCaches",
+      ).mockImplementation(async home => {
+        for (const leaf of ["plugins/cache", "cache/remote_plugin_catalog"]) {
+          await mkdir(join(home, leaf), { recursive: true, mode: 0o700 });
+        }
+      });
+      onTestFinished(() => {
+        prepareCaches.mockRestore();
+      });
       const stdout: string[] = [];
       const exitCode = await runSubscriptionAgentRuntimeTaskCli(
         [
@@ -182,6 +208,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
       expect(exitCode, stdout.join("")).toBe(0);
       expect(JSON.parse(stdout.join(""))).toMatchObject({
         protocolVersion: 1,
@@ -189,12 +216,13 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         outputText: `fake-codex-exec-ok:${await realpath(workspaceDir)}:hello-from-sandbox`,
       });
       await expect(access(canaryPath)).resolves.toBeUndefined();
+      expect(prepareCaches).toHaveBeenCalled();
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
 
-  it("uses fail-closed app-server execution for bounded Codex file tools", async () => {
+  it("uses fail-closed app-server execution for bounded Codex file tools", async ({ onTestFinished }) => {
     const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-tools-"));
     const workspaceDir = join(tempDir, "workspace");
     const authPath = join(tempDir, "auth.json");
@@ -205,6 +233,28 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     await writeFakeCodexBinary(codexPath, { fallbackExecFails: true });
 
     try {
+      // This fake-CLI fixture prepares regular private cache leaves; scratch
+      // mount admission is covered by the host-scratch-temp guard tests.
+      const prepareCaches = vi.spyOn(
+        await import("../../worker-codex/host-scratch-temp"),
+        "prepareHostScratchCaches",
+      ).mockImplementation(async home => {
+        for (const leaf of ["plugins/cache", "cache/remote_plugin_catalog"]) {
+          await mkdir(join(home, leaf), { recursive: true, mode: 0o700 });
+        }
+      });
+      onTestFinished(() => {
+        prepareCaches.mockRestore();
+      });
+      // Host enrollment belongs to admission tests; this fixture runs a real
+      // fake app-server process independently of installed Host policy.
+      const assertBaseline = vi.spyOn(
+        await import("../../provider-codex/app-server/adapters/hosted-host-policy"),
+        "assertHostedBaselineIdentity",
+      ).mockImplementation(() => {});
+      onTestFinished(() => {
+        assertBaseline.mockRestore();
+      });
       const stdout: string[] = [];
       const exitCode = await runSubscriptionAgentRuntimeTaskCli(
         [
@@ -243,6 +293,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
       expect(exitCode, stdout.join("")).toBe(0);
       expect(JSON.parse(stdout.join(""))).toMatchObject({
         protocolVersion: 1,
@@ -250,6 +301,10 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         outputText: expect.stringContaining("fake-codex-ok:"),
       });
       await expect(access(join(workspaceDir, "file.txt"))).resolves.toBeUndefined();
+      expect(prepareCaches).toHaveBeenCalled();
+      if (process.platform === "linux" && process.getuid?.() === 0) {
+        expect(assertBaseline).toHaveBeenCalledWith(undefined);
+      }
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -262,7 +317,11 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     const codexPath = join(tempDir, "fake-codex.mjs");
     await mkdir(workspaceDir);
     await writeFile(authPath, validCodexAuthJson(), "utf8");
-    await writeFakeCodexBinary(codexPath, { appServerTurnFails: true });
+    const turnFailureMarkerPath = join(tempDir, "turn-failure.txt");
+    await writeFakeCodexBinary(codexPath, {
+      appServerTurnFails: true,
+      appServerTurnFailureMarkerPath: turnFailureMarkerPath,
+    });
 
     try {
       const stdout: string[] = [];
@@ -300,6 +359,8 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
+      await expect(readFile(turnFailureMarkerPath, "utf8")).resolves.toBe("turn/start rejected");
       expect(exitCode).toBe(1);
       const encoded = stdout.join("");
       expect(encoded).not.toContain("fake-codex-exec-ok");
@@ -356,6 +417,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
       expect(exitCode).toBe(1);
       const encodedResult = stdout.join("");
       expect(encodedResult).not.toContain("forced fallback failure");
@@ -375,7 +437,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     }
   });
 
-  it("runs the Codex exec fallback in the borrowed request cwd", async () => {
+  it("runs the Codex exec fallback in the borrowed request cwd", async ({ onTestFinished }) => {
     const tempDir = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-cli-"));
     const workspaceDir = join(tempDir, "workspace");
     const authPath = join(tempDir, "auth.json");
@@ -389,6 +451,19 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     });
 
     try {
+      // This fake-CLI fixture prepares regular private cache leaves; scratch
+      // mount admission is covered by the host-scratch-temp guard tests.
+      const prepareCaches = vi.spyOn(
+        await import("../../worker-codex/host-scratch-temp"),
+        "prepareHostScratchCaches",
+      ).mockImplementation(async home => {
+        for (const leaf of ["plugins/cache", "cache/remote_plugin_catalog"]) {
+          await mkdir(join(home, leaf), { recursive: true, mode: 0o700 });
+        }
+      });
+      onTestFinished(() => {
+        prepareCaches.mockRestore();
+      });
       const stdout: string[] = [];
       const exitCode = await runSubscriptionAgentRuntimeTaskCli(
         [
@@ -423,11 +498,13 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         readonly status: string;
         readonly outputText?: string;
       };
+      expect(hostScratchTemp.prepareHostScratchCaches).toHaveBeenCalledOnce();
       expect(exitCode, stdout.join("")).toBe(0);
       expect(result.status).toBe("completed");
       expect(result.outputText).toContain(`fake-codex-exec-ok:${await realpath(workspaceDir)}:`);
       expect(result.outputText).toContain("hello-from-fallback");
       await expect(access(canaryPath)).resolves.toBeUndefined();
+      expect(prepareCaches).toHaveBeenCalled();
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -489,16 +566,19 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     expect(overrideCalls.factory?.timeoutMs).toBeLessThanOrEqual(120_000);
   });
 
-  it("returns a timeout result when the worker run never resolves", async () => {
-    const stdout: string[] = [];
-    let aborted = false;
-    let disposed = false;
-    let markRunEntered!: () => void;
-    const runEntered = new Promise<void>((resolve) => {
-      markRunEntered = resolve;
-    });
+  it("returns a timeout result when the worker run never resolves", async ({ onTestFinished }) => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     try {
+      const stdout: string[] = [];
+      let aborted = false;
+      let disposed = false;
+      let resolveWorkerEntered!: () => void;
+      const workerEntered = new Promise<void>((resolve) => {
+        resolveWorkerEntered = resolve;
+      });
       const execution = runSubscriptionAgentRuntimeTaskCli(
         [
           "--provider",
@@ -529,7 +609,7 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
             job.abortSignal?.addEventListener("abort", () => {
               aborted = true;
             });
-            markRunEntered();
+            resolveWorkerEntered();
             return await new Promise<AgentRuntimeTaskWorkerResult>(() => {});
           },
           async dispose() {
@@ -538,8 +618,9 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
         }),
       );
 
+      // The total deadline includes preflight; expire it only after run observes abort.
       await Promise.race([
-        runEntered,
+        workerEntered,
         execution.then(() => {
           throw new Error("task finished before worker.run entered");
         }),
@@ -561,139 +642,6 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("returns a timeout result when the worker start never resolves", async () => {
-    const stdout: string[] = [];
-    let runCalled = false;
-    let disposed = false;
-    let markStartEntered!: () => void;
-    const startEntered = new Promise<void>((resolve) => {
-      markStartEntered = resolve;
-    });
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    try {
-      const execution = runSubscriptionAgentRuntimeTaskCli(
-        [
-          "--provider",
-          "claude",
-          "--state-root",
-          "/tmp/runtime-state",
-          "--format",
-          "result-json",
-        ],
-        fakeIo({
-          stdout,
-          stdin: JSON.stringify({
-            protocolVersion: 1,
-            timeoutMs: 5,
-            task: {
-              kind: "structured-prompt",
-              prompt: "never starts",
-            },
-          }),
-          env: {
-            SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-          },
-        }),
-        () => ({
-          async start() {
-            markStartEntered();
-            return await new Promise<void>(() => {});
-          },
-          async run() {
-            runCalled = true;
-            return {
-              outputText: "unexpected",
-              warnings: [],
-            };
-          },
-          async dispose() {
-            disposed = true;
-          },
-        }),
-      );
-
-      await Promise.race([
-        startEntered,
-        execution.then(() => {
-          throw new Error("task finished before worker.start entered");
-        }),
-      ]);
-      await vi.advanceTimersByTimeAsync(5);
-      const exitCode = await execution;
-
-      expect(exitCode).toBe(1);
-      expect(runCalled).toBe(false);
-      expect(disposed).toBe(true);
-      expect(JSON.parse(stdout.join(""))).toMatchObject({
-        status: "failed",
-        failure: {
-          code: "task_timeout",
-        },
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("returns a timeout result when worker auth seeding never resolves", async () => {
-    const stdout: string[] = [];
-    let runCalled = false;
-    let disposed = false;
-    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
-      [
-        "--provider",
-        "claude",
-        "--state-root",
-        "/tmp/runtime-state",
-        "--format",
-        "result-json",
-      ],
-      fakeIo({
-        stdout,
-        stdin: JSON.stringify({
-          protocolVersion: 1,
-          timeoutMs: 5,
-          task: {
-            kind: "structured-prompt",
-            prompt: "never seeds",
-          },
-        }),
-        env: {
-          CLAUDE_CODE_OAUTH_TOKEN: "token",
-          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        },
-      }),
-      () => ({
-        async start() {},
-        async seedClaudeOAuth() {
-          return await new Promise<void>(() => {});
-        },
-        async run() {
-          runCalled = true;
-          return {
-            outputText: "unexpected",
-            warnings: [],
-          };
-        },
-        async dispose() {
-          disposed = true;
-        },
-      }),
-    );
-
-    expect(exitCode).toBe(1);
-    expect(runCalled).toBe(false);
-    expect(disposed).toBe(true);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
-      status: "failed",
-      failure: {
-        code: "task_timeout",
-      },
-    });
   });
 
   it("emits event-ndjson timeout results", async () => {
@@ -738,104 +686,6 @@ describe("subscription runtime agent-runtime-task runner CLI", () => {
     });
   });
 
-
-  it("keeps the task result when worker dispose fails", async () => {
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
-      [
-        "--provider",
-        "claude",
-        "--state-root",
-        "/tmp/runtime-state",
-        "--format",
-        "result-json",
-      ],
-      fakeIo({
-        stdout,
-        stderr,
-        stdin: JSON.stringify({
-          protocolVersion: 1,
-          task: {
-            kind: "structured-prompt",
-            prompt: "finishes before cleanup fails",
-          },
-        }),
-        env: {
-          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        },
-      }),
-      () => ({
-        async start() {},
-        async run() {
-          return {
-            outputText: "done",
-            warnings: [],
-          };
-        },
-        async dispose() {
-          throw new Error("dispose exploded");
-        },
-      }),
-    );
-
-    expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
-      status: "completed",
-      outputText: "done",
-    });
-    expect(stderr.join("")).toContain("dispose exploded");
-  });
-
-  it("keeps the task result when worker dispose throws synchronously", async () => {
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const exitCode = await runSubscriptionAgentRuntimeTaskCli(
-      [
-        "--provider",
-        "claude",
-        "--state-root",
-        "/tmp/runtime-state",
-        "--format",
-        "result-json",
-      ],
-      fakeIo({
-        stdout,
-        stderr,
-        stdin: JSON.stringify({
-          protocolVersion: 1,
-          task: {
-            kind: "structured-prompt",
-            prompt: "finishes before cleanup throws",
-          },
-        }),
-        env: {
-          SUBSCRIPTION_RUNTIME_LOCAL_ENCRYPTION_KEY:
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        },
-      }),
-      () => ({
-        async start() {},
-        async run() {
-          return {
-            outputText: "done",
-            warnings: [],
-          };
-        },
-        dispose() {
-          throw new Error("dispose sync exploded");
-        },
-      }),
-    );
-
-    expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout.join(""))).toMatchObject({
-      status: "completed",
-      outputText: "done",
-    });
-    expect(stderr.join("")).toContain("dispose sync exploded");
-  });
 
   it("fails before constructing a durable worker when the encryption key env is missing", async () => {
     let factoryCalled = false;

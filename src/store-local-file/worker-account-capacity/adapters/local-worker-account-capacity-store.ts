@@ -11,6 +11,8 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ObservabilityPort } from "@vioxen/subscription-runtime/core";
 import {
+  prepareWorkerAccountTaskRecovery,
+  type WorkerAccountRecoveryPreparation,
   WorkerAccountCapacityClaimStatus,
   WorkerAccountCapacityPhase,
   WorkerAccountCapacityRecheckMode,
@@ -38,10 +40,15 @@ import {
   localWorkerAccountCapacityRevisionedStorageVersion as revisionedStorageVersion,
   localWorkerAccountCapacityStorageVersion as storageVersion,
 } from "../domain/local-worker-account-capacity-record-policy";
+import { assertNoRestrictiveLegacyAccountRecords, readLegacyAccountCapacityRecords, type InspectedLegacyAccountRecord } from "./local-worker-account-capacity-legacy-fence";
+import { LocalWorkerAccountTaskRecovery } from "./local-worker-account-task-recovery";
 
 export type LocalFileWorkerAccountCapacityStoreOptions = {
   readonly rootDir: string;
+  /** Query reads preserve malformed evidence and refuse instead of cleaning it. */
+  readonly strictReads?: boolean;
   readonly observability?: ObservabilityPort;
+  readonly restrictiveLegacyAccountIdPrefixes?: readonly string[];
 };
 
 type PersistedWorkerAccountCapacityRecord = {
@@ -85,6 +92,8 @@ type PersistedClaim = {
 export class LocalFileWorkerAccountCapacityStore
   implements WorkerAccountCapacityStore
 {
+  private taskRecoveryFence: (() => void) | undefined;
+
   constructor(
     private readonly options: LocalFileWorkerAccountCapacityStoreOptions,
   ) {}
@@ -114,6 +123,7 @@ export class LocalFileWorkerAccountCapacityStore
     readonly demand?: WorkerRuntimeDemand;
     readonly now: Date;
   }): WorkerAccountCapacityState | null {
+    this.assertLegacyAccountIdentity();
     const accountId = normalizeWorkerAccountId(input.accountId);
     if (!accountId) return null;
     const demand = normalizeWorkerRuntimeDemand(input.demand);
@@ -129,7 +139,7 @@ export class LocalFileWorkerAccountCapacityStore
       : this.readAggregateRecord(accountId, input.now);
     if (!resolved) return null;
     if (resolved.record.accountId !== accountId) {
-      rmSync(resolved.path, { force: true });
+      this.discardInvalidRead(resolved.path);
       return null;
     }
     if (
@@ -138,13 +148,20 @@ export class LocalFileWorkerAccountCapacityStore
       workerRuntimeDemandKey(resolved.record.demand) !==
         workerRuntimeDemandKey(demand)
     ) {
-      rmSync(resolved.path, { force: true });
+      this.discardInvalidRead(resolved.path);
       return null;
     }
     return stateFromResolved(resolved, input.now);
   }
 
   observe(input: WorkerAccountLimitSignal): WorkerAccountCapacityState | null {
+    return this.options.restrictiveLegacyAccountIdPrefixes?.length
+      ? this.withRecordLock(join(this.options.rootDir, "original-task-recovery"), () => this.observeUnlocked(input))
+      : this.observeUnlocked(input);
+  }
+
+  private observeUnlocked(input: WorkerAccountLimitSignal): WorkerAccountCapacityState | null {
+    this.assertLegacyAccountIdentity();
     const accountId = normalizeWorkerAccountId(input.accountId);
     if (!accountId) return null;
     const capacity = normalizeWorkerAccountCapacitySignal(input);
@@ -203,6 +220,7 @@ export class LocalFileWorkerAccountCapacityStore
     readonly ttlMs: number;
     readonly mode: WorkerAccountCapacityRecheckMode;
   }) {
+    this.assertLegacyAccountIdentity();
     if (!this.isManagedRecordPath(input.state.recordId)) {
       return { status: WorkerAccountCapacityClaimStatus.Conflict } as const;
     }
@@ -271,6 +289,7 @@ export class LocalFileWorkerAccountCapacityStore
     readonly observedAt: Date;
     readonly resolution: WorkerAccountCapacityRecheckResolution;
   }) {
+    this.assertLegacyAccountIdentity();
     if (!this.isManagedRecordPath(input.claim.recordId)) {
       return { status: WorkerAccountCapacityResolveStatus.StaleClaim };
     }
@@ -340,6 +359,7 @@ export class LocalFileWorkerAccountCapacityStore
   }
 
   releaseRecheck(input: { readonly claim: WorkerAccountCapacityRecheckClaim }): void {
+    this.assertLegacyAccountIdentity();
     if (!this.isManagedRecordPath(input.claim.recordId)) return;
     this.withRecordLock(input.claim.recordId, () => {
       this.releaseClaimUnlocked(input.claim);
@@ -353,6 +373,7 @@ export class LocalFileWorkerAccountCapacityStore
   }
 
   clear(input: { readonly accountId: string }): void {
+    this.assertLegacyAccountIdentity();
     const accountId = normalizeWorkerAccountId(input.accountId);
     if (!accountId) return;
     rmSync(this.legacyRecordPath(accountId), { force: true });
@@ -368,6 +389,66 @@ export class LocalFileWorkerAccountCapacityStore
       ],
       now,
     );
+  }
+
+  private inspectLegacyRecord(value: unknown, recordPath: string, claim: boolean): InspectedLegacyAccountRecord | null {
+      if (claim && (!isPersistedClaim(value) || value.recordId !== recordPath ||
+          !optionalDate(value.claimedAt) || !optionalDate(value.expiresAt) || Date.parse(value.expiresAt) <= Date.parse(value.claimedAt))) return null;
+      const record = claim && isPersistedClaim(value)
+        ? { accountId: value.accountId, demand: value.demand, capacity: value.previous, updatedAt: value.claimedAt }
+        : parsePersistedRecord(value);
+      if (!record || normalizeWorkerAccountId(record.accountId) !== record.accountId || !optionalDate(record.updatedAt)) return null;
+      const capacity = parsePersistedCapacity(record.capacity, !claim);
+      const demand = normalizeWorkerRuntimeDemand(record.demand);
+      if (!capacity || (record.demand !== undefined && !demand) ||
+          (capacity.details?.accountId !== undefined && capacity.details.accountId !== record.accountId)) return null;
+      return { accountId: record.accountId, demandKey: workerRuntimeDemandKey(demand),
+        restrictive: capacity.availability !== "available" };
+  }
+
+  private assertLegacyAccountIdentity(): void {
+    if (this.taskRecoveryFence) { this.taskRecoveryFence(); return; }
+    const prefixes = this.options.restrictiveLegacyAccountIdPrefixes;
+    if (!prefixes) return;
+    assertNoRestrictiveLegacyAccountRecords(this.options.rootDir, prefixes, this.inspectLegacyRecord.bind(this));
+  }
+
+  prepareTaskRecovery(input: { demand: WorkerRuntimeDemand; now: Date }): WorkerAccountRecoveryPreparation | undefined {
+    return this.originalTaskRecovery().prepareAdmission(input.demand, input.now);
+  }
+
+  originalTaskRecovery(): LocalWorkerAccountTaskRecovery {
+    const snapshot = (demand: WorkerRuntimeDemand, now: Date): WorkerAccountRecoveryPreparation | undefined => {
+      const prefixes = this.options.restrictiveLegacyAccountIdPrefixes;
+      if (!prefixes?.length) return;
+      const records = readLegacyAccountCapacityRecords(this.options.rootDir, this.inspectLegacyRecord.bind(this));
+      const restrictive = records.filter(record => record.restrictive);
+      if (!restrictive.some(record => prefixes.some(prefix => record.accountId.startsWith(prefix)))) return;
+      // One exact old quota revision only; extra/current/unknown restrictions stay closed.
+      if (restrictive.length !== 1 || restrictive[0]!.claim || !prefixes.some(prefix => restrictive[0]!.accountId.startsWith(prefix)))
+        throw new Error("worker_account_capacity_legacy_identity_unresolved");
+      const selected = restrictive[0]!, record = parsePersistedRecord(selected.value);
+      const capacity = record && parsePersistedCapacity(record.capacity);
+      if (!record || !capacity || records.some(row => row.claim && row.path === selected.path))
+        throw new Error("worker_account_capacity_legacy_identity_unresolved");
+      const prepared = prepareWorkerAccountTaskRecovery({
+        state: stateFromResolved({ path: selected.path, record, capacity }, now), recordSha256: selected.sha256,
+        recordSetSha256: hashText(JSON.stringify(records.map(row => [row.path, row.sha256, row.custodySha256]).sort((a, b) => a[0]!.localeCompare(b[0]!)))), demand, now });
+      if (!prepared) throw new Error("worker_account_capacity_legacy_identity_unresolved");
+      return prepared;
+    };
+    return new LocalWorkerAccountTaskRecovery({ rootDir: this.options.rootDir, prepare: snapshot,
+      assertPreparation: preparation => {
+        if (JSON.stringify(snapshot(preparation.demand, new Date())) !== JSON.stringify(preparation))
+          throw new Error("worker_account_task_recovery_revision_changed");
+      },
+      withMutation: effect => this.withRecordLock(join(this.options.rootDir, "original-task-recovery"), effect),
+      scopedStore: assertLegacy => {
+        const view = new LocalFileWorkerAccountCapacityStore(this.options);
+        view.taskRecoveryFence = assertLegacy;
+        return view;
+      },
+    });
   }
 
   private readDemandRecords(accountId: string): readonly ResolvedRecord[] {
@@ -391,12 +472,17 @@ export class LocalFileWorkerAccountCapacityStore
       .filter((entry): entry is ResolvedRecord => entry !== null);
   }
 
+  private discardInvalidRead(path: string): void {
+    if (this.options.strictReads) throw new Error("worker_account_capacity_query_unreadable");
+    rmSync(path, { force: true });
+  }
+
   private readResolvedRecord(path: string): ResolvedRecord | null {
     const record = this.readRecordPath(path);
     if (!record) return null;
     const capacity = parsePersistedCapacity(record.capacity);
     if (!capacity) {
-      rmSync(path, { force: true });
+      this.discardInvalidRead(path);
       return null;
     }
     return { path, record, capacity };
@@ -409,25 +495,17 @@ export class LocalFileWorkerAccountCapacityStore
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") return null;
       if (error instanceof SyntaxError) {
-        rmSync(path, { force: true });
+        this.discardInvalidRead(path);
         return null;
       }
       throw error;
     }
-    if (
-      !isRecord(parsed) ||
-      (parsed.storageVersion !== storageVersion &&
-        parsed.storageVersion !== demandAwareStorageVersion &&
-        parsed.storageVersion !== revisionedStorageVersion) ||
-      typeof parsed.accountId !== "string" ||
-      !isRecord(parsed.capacity) ||
-      typeof parsed.updatedAt !== "string" ||
-      (parsed.revision !== undefined && typeof parsed.revision !== "string")
-    ) {
-      rmSync(path, { force: true });
+    const record = parsePersistedRecord(parsed);
+    if (!record) {
+      this.discardInvalidRead(path);
       return null;
     }
-    return parsed as PersistedWorkerAccountCapacityRecord;
+    return record;
   }
 
   private writeRecord(record: PersistedWorkerAccountCapacityRecord): void {
@@ -453,20 +531,20 @@ export class LocalFileWorkerAccountCapacityStore
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") return null;
       if (error instanceof SyntaxError) {
-        rmSync(path, { force: true });
+        this.discardInvalidRead(path);
         return null;
       }
       throw error;
     }
     if (!isPersistedClaim(parsed)) {
-      rmSync(path, { force: true });
+      this.discardInvalidRead(path);
       return null;
     }
     const previous = parsePersistedCapacity(parsed.previous);
     const claimedAt = optionalDate(parsed.claimedAt);
     const expiresAt = optionalDate(parsed.expiresAt);
     if (!previous || !claimedAt || !expiresAt) {
-      rmSync(path, { force: true });
+      this.discardInvalidRead(path);
       return null;
     }
     return {
@@ -765,8 +843,9 @@ function persistCapacity(
 
 function parsePersistedCapacity(
   value: PersistedWorkerCapacitySnapshot,
+  allowAvailable = false,
 ): WorkerCapacitySnapshot | null {
-  if (!isPersistableWorkerAccountAvailability(value.availability)) return null;
+  if (!isPersistableWorkerAccountAvailability(value.availability) && !(allowAvailable && value.availability === "available")) return null;
   if (value.availability === "disabled" && value.reason !== "provider_session_invalid") return null;
   if (value.reason !== undefined && typeof value.reason !== "string") return null;
   const cooldownUntil = optionalDate(value.cooldownUntil);
@@ -782,6 +861,14 @@ function parsePersistedCapacity(
     ...(lastLimitSignalAt ? { lastLimitSignalAt } : {}),
     ...(details ? { details } : {}),
   };
+}
+
+function parsePersistedRecord(value: unknown): PersistedWorkerAccountCapacityRecord | null {
+  if (!isRecord(value) ||
+      ![storageVersion, demandAwareStorageVersion, revisionedStorageVersion].includes(value.storageVersion as typeof storageVersion) ||
+      typeof value.accountId !== "string" || !isRecord(value.capacity) || typeof value.updatedAt !== "string" ||
+      (value.revision !== undefined && typeof value.revision !== "string")) return null;
+  return value as PersistedWorkerAccountCapacityRecord;
 }
 
 function optionalDate(value: string | undefined): Date | false | null {

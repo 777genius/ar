@@ -1,5 +1,6 @@
 import "./absent-host-readonly-authority-fixture";
 import "./absent-host-scratch-fixture";
+import { codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { AgentRuntimeTool, ChildContinuationMode } from "@vioxen/subscription-runtime/core";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
 import { FileBackendCodexSafeExecutor } from "../file-backend-codex-safe-executor";
@@ -38,7 +39,7 @@ async function fixture(mode: Parameters<typeof createChildForegroundTestProcess>
   });
   const argv = ["run", "--no-tmux", "--registry-root", join(root, "private-registry"), "--job-root", job, "--auth-root", join(job, "capacity"),
     "--workspace", workspace, "--prompt", prompt, "--task-id", "test-child", "--job-id", "test-child",
-    "--accounts", "account-s", "--model-backend", "xiaomi-mimo-token-plan", "--model", "mimo-v2.6-pro",
+    "--accounts", "account-s", "--model-backend", "xiaomi-mimo-token-plan", "--model", codexMimoDefaultModel,
     "--execution-engine", "app-server-goal", "--max-account-cycles", "1", "--max-attempts", "1",
     "--continuation-mode", "disabled", "--max-goal-turns", "2", "--child-lifetime-json", JSON.stringify(lifetime),
     "--edit-mode", "read-only", "--access-boundary", "read_only", "--network-access", "restricted", "--project-access-scope-json", JSON.stringify({ projectId: "test-child", readRoots: [workspace] }),

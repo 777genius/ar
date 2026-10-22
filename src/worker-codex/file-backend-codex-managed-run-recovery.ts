@@ -15,6 +15,7 @@ import type {
   RunnerPort,
   RuntimeWarning,
   SessionEnvelope,
+  SessionExecutionUse,
   SessionStorePort,
   WorkspaceHandle,
 } from "@vioxen/subscription-runtime/core";
@@ -94,6 +95,7 @@ export type FileBackendCodexManagedRunCoordinatorOptions = {
   readonly recordSuccessfulRun: () => void;
   readonly exportAuthJsonFileQuietly: (
     context: "prewarm" | "run",
+    requireAcknowledgement?: boolean,
   ) => Promise<void>;
   readonly runRecoveryJob: (
     job: ManagedRunRecoveryJob,
@@ -130,9 +132,58 @@ export function canRecoverManagedRun(
 }
 
 export class FileBackendCodexManagedRunCoordinator {
+  readonly #cancellingSessions = new Map<string,SessionEnvelope|null>();
+  readonly #terminalResumes = new Map<SessionExecutionUse,{readonly runId:string;readonly session:SessionEnvelope|null;readonly result:Exclude<ProviderTaskResult,{status:"waiting_for_input"}>;pending?:Promise<ProviderTaskResult>}>();
   constructor(
     private readonly options: FileBackendCodexManagedRunCoordinatorOptions,
   ) {}
+
+  hasManagedRunSession(runId: string): boolean {
+    return this.options.agentDriver?.hasManagedRunSession(runId) === true ||
+      [...this.#terminalResumes.values()].some(held => held.runId === runId);
+  }
+
+  /** The worker owns CAS/export; the driver only captures its exact retained session. */
+  async cancelRetainedSessions():Promise<void> {
+    const driver = this.options.agentDriver; if (!driver) return;
+    for (const use of this.#terminalResumes.keys()) {
+      await this.settleTerminalResume(use);
+      if (this.#terminalResumes.has(use)) throw new Error("codex_session_finalization_pending");
+    }
+    for (const runId of driver.retainedManagedRunIds()) {
+      if (!this.#cancellingSessions.has(runId)) {
+        const session = driver.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan ? null : await this.options.sessionStore.read({providerInstanceId:this.options.providerInstanceId,expectedProviderId:"codex",purpose:"run"});
+        if (!session && driver.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) throw new Error("codex_managed_run_session_missing");
+        this.#cancellingSessions.set(runId,session);
+      }
+      const session = this.#cancellingSessions.get(runId)!;
+      const result = await driver.cancelManagedRun({runId,session:session?.artifact ?? null,redactor:this.options.redactor});
+      const persisted = await this.persistResumeSessionUpdate({result,session,runId});
+      if (persisted.warnings.some(warning => ["managed_run_session_update_provider_mismatch","managed_run_session_update_stale_generation","managed_run_session_update_writeback_failed"].includes(warning.code))) throw new Error("codex_managed_run_writeback_pending");
+      await this.options.exportAuthJsonFileQuietly("run",true);
+      await driver.completeManagedRunCancellation(runId);
+      this.#cancellingSessions.delete(runId);
+    }
+  }
+
+  private async settleTerminalResume(use:SessionExecutionUse):Promise<ProviderTaskResult> {
+    const held = this.#terminalResumes.get(use), driver = this.options.agentDriver;
+    if (!held || !driver) throw new Error("codex_terminal_session_missing");
+    if (held.pending) return await held.pending;
+    const pending = (async () => {
+      try {
+        const result = await driver.finalizeTaskSession(use);
+        const persisted = await this.persistResumeSessionUpdate({result,session:held.session,runId:held.runId});
+        if (persisted.warnings.some(warning => ["managed_run_session_update_provider_mismatch","managed_run_session_update_stale_generation","managed_run_session_update_writeback_failed"].includes(warning.code))) throw new Error("codex_session_finalization_pending");
+        await this.options.exportAuthJsonFileQuietly("run",true);
+        await driver.retireTaskSession(use);
+        if (this.#terminalResumes.get(use) !== held) throw new Error("codex_terminal_session_changed");
+        this.#terminalResumes.delete(use); return persisted;
+      } catch { return {...held.result,warnings:[...held.result.warnings,{code:"codex_session_finalization_pending",safeMessage:"Original task session finalization remains pending."}]}; }
+    })();
+    held.pending = pending;
+    try { return await pending; } finally { if (held.pending === pending) delete held.pending; }
+  }
 
   async resume(
     input: FileBackendCodexManagedRunResumeInput,
@@ -146,6 +197,16 @@ export class FileBackendCodexManagedRunCoordinator {
       );
     }
     this.assertResumeHandleMatchesWorker(input.resumeHandle);
+    // A terminal result still owns its exact use even after the driver removes
+    // its waiting cache. Settle that use before considering durable recovery.
+    for (const [use, held] of this.#terminalResumes) {
+      if (held.runId !== input.runId) continue;
+      const result = await this.settleTerminalResume(use);
+      return await this.taskResultToOutput(result, {
+        kind: "resume", input,
+        previousRecord: await this.options.managedRunStore.get({runId: input.runId}),
+      });
+    }
     const abortSignal = input.abortSignal ?? new AbortController().signal;
     const durableRecord = await this.options.managedRunStore.get({
       runId: input.runId,
@@ -169,7 +230,9 @@ export class FileBackendCodexManagedRunCoordinator {
     if (!agentDriver.hasManagedRunSession(input.runId)) {
       return await this.recoverManagedRun({ input, record: durableRecord });
     }
+    const sessionExecutionUse = agentDriver.retainedSessionExecutionUse(input.runId);
     const workspace: WorkspaceHandle = { path: input.resumeHandle.workspacePath };
+    let restartAfterCompletion = false, retainedTerminal = false;
     try {
       const result = await agentDriver.resumeManagedRun({
         session: session?.artifact ?? null,
@@ -188,23 +251,26 @@ export class FileBackendCodexManagedRunCoordinator {
         redactor: this.options.redactor,
         abortSignal,
       });
-      const persisted = await this.persistResumeSessionUpdate({
-        result,
-        session,
-        runId: input.runId,
-      });
-      if (persisted.status === "failed" && canRecoverManagedRun(input, durableRecord)) {
-        return await this.recoverManagedRun({ input, record: durableRecord });
-      }
-      return await this.taskResultToOutput(persisted, {
+      let persisted:ProviderTaskResult;
+      if (sessionExecutionUse && result.status !== "waiting_for_input") {
+        retainedTerminal = true;
+        this.#terminalResumes.set(sessionExecutionUse,{result,session:session ? Object.freeze({...session}) : null,runId:input.runId});
+        persisted = await this.settleTerminalResume(sessionExecutionUse);
+      } else persisted = await this.persistResumeSessionUpdate({result,session,runId:input.runId});
+      restartAfterCompletion = persisted.status === "failed" && !persisted.warnings.some(warning => warning.code === "codex_session_finalization_pending") && canRecoverManagedRun(input,durableRecord);
+      if (!restartAfterCompletion) return await this.taskResultToOutput(persisted, {
         kind: "resume",
         input,
         previousRecord: durableRecord,
       });
     } finally {
-      await workspace.dispose?.();
-      if (!isMimo) await this.options.exportAuthJsonFileQuietly("run");
+      if (!retainedTerminal) {
+        try { await workspace.dispose?.(); if (!isMimo) await this.options.exportAuthJsonFileQuietly("run"); }
+        finally { await sessionExecutionUse?.complete(); }
+      }
     }
+    if (!restartAfterCompletion || !canRecoverManagedRun(input,durableRecord)) throw new Error("managed_resume_restart_unresolved");
+    return await this.recoverManagedRun({input,record:durableRecord});
   }
 
   async taskResultToOutput(
@@ -236,6 +302,7 @@ export class FileBackendCodexManagedRunCoordinator {
         warnings: waiting.warnings,
       };
     }
+    if (result.warnings.some(warning => warning.code === "task_session_finalization_pending" || warning.code === "codex_session_finalization_pending")) throw new SubscriptionWorkerError("subscription_worker_run_failed","Original task session finalization remains pending.",{details:{reason:"session_finalization_pending"}});
     this.options.recordSuccessfulRun();
     return {
       outputText: result.outputText,
@@ -299,7 +366,7 @@ export class FileBackendCodexManagedRunCoordinator {
   }): Promise<ProviderTaskResult> {
     if (
       !input.session ||
-      input.result.status !== "completed" ||
+      input.result.status === "waiting_for_input" ||
       !input.result.sessionUpdate ||
       sameArtifactBytes(input.result.sessionUpdate, input.session.artifact)
     ) {
@@ -320,12 +387,16 @@ export class FileBackendCodexManagedRunCoordinator {
       `${this.options.providerInstanceId}:${input.runId}:${updateHash}`,
     );
     try {
-      const writeback = await this.options.sessionStore.write({
+      const writeInput = Object.freeze({
         providerInstanceId: this.options.providerInstanceId,
         expectedGeneration: input.session.generation,
         nextArtifact: input.result.sessionUpdate,
         idempotencyKey: `managed-run-resume:${writebackKey.slice(0, 32)}`,
         leaseId: `managed-run-resume:${writebackKey.slice(0, 32)}`,
+      });
+      const writeback = await this.options.sessionStore.write(writeInput).catch(error => {
+        if (!this.options.sessionStore.capabilities.supportsIdempotency) throw error;
+        return this.options.sessionStore.write(writeInput);
       });
       if (writeback.status === "stale_generation") {
         return appendWarnings(input.result, [
@@ -441,7 +512,9 @@ export class ManagedRunNativeWebError extends SubscriptionWorkerError {
   constructor(result: Extract<ProviderTaskResult, { readonly status: "failed" }>, nativeWeb: NativeWebEvidence) {
     super("subscription_worker_run_failed", result.failure.safeMessage, {
       ...(result.telemetry?.usage === undefined ? {} : { usage: result.telemetry.usage }),
-      details: { code: result.failure.code, ...(result.failure.details ?? {}) },
+      details: { code: result.failure.code, ...(result.failure.details ?? {}),
+        ...(result.warnings.some(warning => warning.code === "task_session_finalization_pending" || warning.code === "codex_session_finalization_pending") ? {sessionFinalization:"pending"} : {}),
+      },
     });
     this.nativeWeb = parseNativeWebEvidence(nativeWeb);
   }
@@ -461,6 +534,7 @@ export function managedRunFailureToWorkerError(
       details: {
         code: result.failure.code,
         ...(result.failure.details ?? {}),
+        ...(result.warnings.some(warning => warning.code === "task_session_finalization_pending" || warning.code === "codex_session_finalization_pending") ? {sessionFinalization:"pending"} : {}),
       },
     },
   );

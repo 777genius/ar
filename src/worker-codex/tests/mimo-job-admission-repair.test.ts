@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { realpathSync, renameSync } from "node:fs";
+import { lstatSync, realpathSync, renameSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertPreviousAdmissionDeniedStartTerminal, buildRepairedAdmission, exchangeAdmissionDirectories, parseRepairPlan, publishRepairedAdmission, finalizeRetainedAdmissionArchive, relocateAdmissionArchive, verifyAdmissionRepairStartRearmProof } from "../../../host-integration/runtime-admission/mimo-job-admission-repair.mjs";
+import { assertPreviousAdmissionDeniedStartTerminal, buildRepairedAdmission, exchangeAdmissionDirectories, parseRepairPlan, publishRepairedAdmission, finalizeRetainedAdmissionArchive, resolveRetainedAdmissionArchive, relocateAdmissionArchive, verifyAdmissionRepairStartRearmProof } from "../../../host-integration/runtime-admission/mimo-job-admission-repair.mjs";
 import { materializeBuiltinWorkerLaunchSpec } from "../application/project-control/codex-goal-project-builtin-pre-start-admission";
 import { parseWorkerLaunchSpec, parseWorkerLaunchState } from "../application/project-control/worker-launch-spec";
 import { createBuiltinFixture, cleanupProjectPreStartAdmissionFixtures } from "../tests/codex-goal-project-pre-start-admission-fixture";
@@ -116,6 +116,29 @@ describe("never-started admission ownedPaths repair", () => {
       expect(await readFile(join(root, "pre-start-admission", name + ".json"))).toEqual(old);
       expect(await readFile(join(destination, name + ".json"))).toEqual(old);
     }
+  });
+  it("finalizes the actual publisher external archive without moving or rebinding the retained triple", async () => {
+    const input = await fixture(), { root, old, archiveRootDir } = await artifactRoot();
+    const published = await publishRepairedAdmission({ ...input, jobRootDir: root, archiveRootDir, operationSha256,
+      assertCurrent: async () => {}, exchange: (admission, staged) => {
+        // Portable file exchange fixture; the original Linux syscall case remains separate.
+        renameSync(admission, admission + ".TEST-swap"); renameSync(staged, admission); renameSync(admission + ".TEST-swap", staged);
+      } });
+    const paths = resolveRetainedAdmissionArchive(root, archiveRootDir, operationSha256, published.retainedPreviousAdmissionPath);
+    expect(paths.source).toBe(published.retainedPreviousAdmissionPath); expect(paths.destination).toBe(paths.source);
+    expect(() => resolveRetainedAdmissionArchive(root, archiveRootDir, operationSha256, paths.source + ".foreign")).toThrow("retained_archive_binding");
+    const before = lstatSync(paths.source); let checks = 0;
+    const result = await finalizeRetainedAdmissionArchive({ ...paths, priorPlanSha256: operationSha256,
+      priorHashes: { contract: operationSha256, state: operationSha256, receipt: operationSha256 }, proof: { jobId: "job" },
+      assertCurrent: async () => { checks++; }, move: () => { throw new Error("already external archive must not move"); } }) as { jobId: string; receiptPath: string };
+    expect(checks).toBe(2); expect(result.jobId).toBe("job"); expect(result.receiptPath).toBe(join(archiveRootDir, "job.finalization.json"));
+    expect(lstatSync(paths.source).ino).toBe(before.ino); expect(await readdir(root)).toEqual(["pre-start-admission"]);
+    for (const name of ["contract", "state", "receipt"] as const) {
+      expect(await readFile(join(paths.source, name + ".json"))).toEqual(old);
+      expect(JSON.parse((await readFile(join(root, "pre-start-admission", name + ".json"))).toString())).toEqual(input[name]);
+    }
+    await expect(finalizeRetainedAdmissionArchive({ ...paths, priorPlanSha256: operationSha256,
+      priorHashes: { contract: operationSha256, state: operationSha256, receipt: operationSha256 }, proof: { jobId: "job" }, assertCurrent: async () => {} })).rejects.toThrow("EEXIST");
   });
   it("rejects operator plans that request authority/runtime overrides", () => {
     const plan = { schemaVersion: 1, projectId: "project", workstreamId: "stream", machineId: "b".repeat(32), jobId: "worker",

@@ -36,8 +36,8 @@ vi.mock("node:child_process", () => ({
 vi.mock("../hosted-readonly-authority", async original => ({
   ...await original<typeof import("../hosted-readonly-authority")>(), assertReadonlyHostOperator: os.operator,
 }));
-vi.mock("../hosted-readonly-inputs", async original => ({
-  ...await original<typeof import("../hosted-readonly-inputs")>(),
+vi.mock("../../provider-codex/app-server/adapters/hosted-private-physical-inputs", async original => ({
+  ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-private-physical-inputs")>(),
   readHostedPrivateBytes: (path: string) => os.records.get(path) ?? null,
 }));
 vi.mock("@vioxen/subscription-runtime/provider-codex", async original => {
@@ -47,7 +47,11 @@ vi.mock("@vioxen/subscription-runtime/provider-codex", async original => {
   // constructor fallback. Plain throwing functions survive resetAllMocks.
   return { ...Object.fromEntries(Object.entries(actual).map(([name, value]) => [name,
     typeof value === "function" ? function () { throw new Error(`unplanned synthetic provider operation: ${name}`); } : value])),
-  assertHostedProcessDescriptors: os.descriptors };
+  assertHostedProcessDescriptors: os.descriptors,
+  // The kernel's inventory reader is the SELECTED-record reader. These fixtures publish the ORIGINAL fixed inventory only
+  // (no successor selection), which is what the real resolver returns for them; the resolver itself is tested in
+  // `hosted-installation-successor.test.ts`.
+  readHostedActivationBytes: (name: string) => name === "readonly-inventory.json" ? os.records.get(root + "/" + name) ?? null : null };
 });
 // These synthetic legacy inventories have no authenticated FD profile. Keep
 // their real kernel-to-recipe delegation without entering installed host IO.
@@ -106,6 +110,16 @@ describe("host kernel from explicit synthetic OS facts", () => {
     os.files.set("/proc/123/stat", "123 (supervisor) " + [...Array(19).fill("0"), "456"].join(" "));
     os.show.set("trusted.service", show("foreign.service", "/system.slice/trusted.service", "123"));
     expect(() => new HostedReadonlyHostKernel().session()).toThrow("evidence_invalid");
+  });
+  // Binding (a10 F2): drop the early candidate guard in `verifyExclusiveInventory` (assert the edit applied) and the operator check
+  // below runs, or the candidate is verified as a selected world; drop the constructor guard and the first expectation stops refusing.
+  it("never verifies a successor CANDIDATE as if it were selected, and never takes predecessor pins without a candidate", () => {
+    const pins = { installationId: "synthetic-installation", installationSha256: "a".repeat(64), inventorySha256: "b".repeat(64), activationSha256: "c".repeat(64), activationGeneration: 1 };
+    expect(() => new HostedReadonlyHostKernel(undefined, pins)).toThrow("evidence_invalid");
+    const candidate = { schemaVersion: 5 } as unknown as ConstructorParameters<typeof HostedReadonlyHostKernel>[0];
+    expect(() => new HostedReadonlyHostKernel(candidate).verifyExclusiveInventory({ held: true })).toThrow("evidence_invalid");
+    expect(os.operator).not.toHaveBeenCalled(); // refused before the first live observation
+    expect(os.systemctl).not.toHaveBeenCalled();
   });
   it("binds an ordinary runtime to actual creator birth, boot and exact unit membership", () => {
     const unit = `subscription-runtime-ordinary-${startId}.service`;

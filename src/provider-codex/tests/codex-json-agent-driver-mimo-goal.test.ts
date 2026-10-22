@@ -1,8 +1,8 @@
 import { access, readFile } from "node:fs/promises";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import {
   CodexAppServerExecutionEngine,
@@ -11,6 +11,11 @@ import {
 } from "../index";
 import { FakeAppServerFactory } from "../app-server/testing/fake-app-server";
 import { StaticRunner } from "./codex-provider-test-support";
+import { HostedMimoCodingProxyOwner } from "../hosted-mimo-coding-proxy-material";
+import * as mimoOrigin from "../hosted-mimo-worker-origin";
+import { HostedMimoProfile } from "../hosted-mimo-profile";
+import { AppServerExecutionLifetime } from "../app-server/application/app-server-child-lifetime";
+import { codexExecutionFailure } from "../codex-json-execution-engine";
 
 /**
  * Proves the MiMo backend runs the first-class goal path
@@ -22,7 +27,36 @@ import { StaticRunner } from "./codex-provider-test-support";
  * for the MiMo backend.
  */
 describe("Codex JSON agent driver — MiMo backend through the app-server goal path", () => {
+  it("adds proxy-owned start facts only to failure details and ignores an observation failure", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "TEST-mimo-proxy-failure-details-"));
+    const original = new Error("TEST existing provider failure"), facts = {
+      mimoProxyStartUpstreamHttpFailureCount: "2", mimoProxyStartLastUpstreamStatus: "503" };
+    const observation = vi.spyOn(HostedMimoCodingProxyOwner.prototype, "failureDetails");
+    try {
+      for (const failObservation of [false, true]) {
+        if (failObservation) observation.mockImplementation(() => { throw Error("TEST private diagnostic failure"); });
+        else observation.mockReturnValue(facts);
+        const factory = new FakeAppServerFactory(), driver = new CodexJsonAgentDriver({
+          engine: new CodexAppServerExecutionEngine({ codexBinaryPath: "/TEST/never-start", modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+            processFactory: factory.create, goalMode: true, cleanThreadPrewarm: false }),
+          modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, sourceEnv: { MIMO_TEST_KEY: "TEST-proxy-facts-fake-key" }, mimoApiKeyEnvVarName: "MIMO_TEST_KEY" });
+        const redactor = new DefaultRedactor();
+        try {
+          const result = await driver.runTask({ session: null, task: { kind: "structured-prompt", prompt: "TEST no provider call" },
+            workspace: { path: workspace }, runner: new StaticRunner(""), redactor, abortSignal: new AbortController().signal,
+            onTaskStarted: () => { throw original; } });
+          const expected = codexExecutionFailure(original, redactor);
+          expect(result.status).toBe("failed");
+          if (result.status !== "failed") throw Error("TEST expected failed result");
+          expect(result.failure).toEqual(failObservation ? expected.failure : { ...expected.failure,
+            details: { ...expected.failure.details, ...facts } });
+          expect(factory.spawnCount).toBe(0);
+        } finally { await driver.dispose(); }
+      }
+    } finally { observation.mockRestore(); await rm(workspace, { recursive: true, force: true }); }
+  });
   it("runs goal mode for the MiMo backend with session: null, injecting the API key via env and never touching auth.json", async () => {
+    const observation = vi.spyOn(HostedMimoCodingProxyOwner.prototype, "failureDetails").mockImplementation(() => { throw Error("TEST success must not read failure diagnostics"); });
     const workspace = await mkdtemp(join(tmpdir(), "codex-mimo-app-goal-test-"));
     const fakeFactory = new FakeAppServerFactory();
     // The driver deletes its temp CODEX_HOME as soon as runTask() returns, so
@@ -98,6 +132,7 @@ describe("Codex JSON agent driver — MiMo backend through the app-server goal p
         outputText:
           "app-server output:finish the benchmark goal with full instructions",
       });
+      expect(result).not.toHaveProperty("failure"); expect(observation).not.toHaveBeenCalled();
       // Went through the real goal protocol, exactly like the ChatGPT path.
       expect(fakeFactory.requests.map((request) => request.method)).toEqual(
         expect.arrayContaining([
@@ -144,6 +179,7 @@ describe("Codex JSON agent driver — MiMo backend through the app-server goal p
       // API key, never a ChatGPT OAuth session artifact.
       expect(await authJsonExistsPromise).toBe(false);
     } finally {
+      observation.mockRestore();
       await driver.dispose();
     }
   });
@@ -179,12 +215,15 @@ describe("Codex JSON agent driver — MiMo backend through the app-server goal p
         abortSignal: new AbortController().signal,
       });
 
+      // The missing env key must fail closed for this run without claiming an
+      // invalid provider session: that claim poisons the shared account
+      // capacity record (disabled, never rechecked) for every later run.
       expect(result).toMatchObject({
         status: "failed",
         failure: {
-          code: "provider_session_invalid",
+          code: "provider_runtime_unavailable",
           retryable: false,
-          reconnectRequired: true,
+          reconnectRequired: false,
         },
       });
       expect(fakeFactory.spawnCount).toBe(0);
@@ -192,4 +231,32 @@ describe("Codex JSON agent driver — MiMo backend through the app-server goal p
       await driver.dispose();
     }
   });
+});
+
+
+it("passes the source-only recovery binder before hosted Coding materialization and exposes its retained proof", async () => {
+  const lifetime = new AppServerExecutionLifetime({ deadlineEpochMs: Date.now() + 10000, maxGoalTurns: 1,
+    binding: { allocationId: "TEST", incarnationId: "TEST-recovery-binding" } });
+  const origin = {} as mimoOrigin.HostedMimoCodingWorkerOrigin;
+  const profile = vi.spyOn(mimoOrigin, "readHostedMimoWorkerProfileOrigin").mockReturnValue({ profile: HostedMimoProfile.CodingV1, origin });
+  const acquire = vi.spyOn(HostedMimoCodingProxyOwner.prototype, "acquire").mockRejectedValue(Error("TEST recovery binding denied"));
+  const proof = Object.freeze({ credentialFingerprint: "a".repeat(64), requestedModel: "mimo-v2.6-pro",
+    requestSha256: "b".repeat(64), responseIdSha256: "c".repeat(64), completedResponses: 2,
+    assertCurrent() {}, assertDisposed() {} });
+  const observation = vi.spyOn(HostedMimoCodingProxyOwner.prototype, "capacityRecoveryProof").mockReturnValue(proof);
+  const bind = vi.fn(async () => () => {}), factory = new FakeAppServerFactory();
+  const engine = new CodexAppServerExecutionEngine({ codexBinaryPath: "/TEST/never-start", processFactory: factory.create,
+    modelBackend: CodexModelBackend.XiaomiMimoTokenPlan, goalMode: true, nativeToolSurface: "disabled",
+    executionLifetime: lifetime, maxGoalTurns: 1, cleanThreadPrewarm: false });
+  const driver = new CodexJsonAgentDriver({ engine, executionLifetime: lifetime, modelBackend: CodexModelBackend.XiaomiMimoTokenPlan,
+    sourceEnv: { SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" }, bindMimoCapacityRecoveryCredential: bind });
+  try {
+    const result = await driver.runTask({ session: null, task: { kind: "structured-prompt", prompt: "TEST no provider call" },
+      workspace: { path: "/TEST/never-open" }, runner: new StaticRunner(""), redactor: new DefaultRedactor(),
+      abortSignal: new AbortController().signal });
+    expect(result.status).toBe("failed");
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ origin, lifetime, bindCapacityRecoveryCredential: bind }));
+    expect(factory.spawnCount).toBe(0);
+    expect(driver.capacityRecoveryProof()).toBe(proof);
+  } finally { await driver.dispose(); observation.mockRestore(); acquire.mockRestore(); profile.mockRestore(); }
 });

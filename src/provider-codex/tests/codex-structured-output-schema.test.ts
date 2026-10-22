@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { codexStructuredOutputFailureDetails, prepareCodexStructuredOutputSchema } from "../codex-structured-output-schema";
+import { classifyCodexFailure } from "../failure-classifier";
 import {
   codexOutputSchemaPayload,
   normalizeCodexStructuredOutputForSchema,
@@ -101,6 +103,87 @@ const hibModuleResultSchema = {
   required: ["resultSchemaVersion", "findings", "summary"],
   additionalProperties: false,
 } as const;
+
+describe("source-issued rejected JSON root observations", () => {
+  const schema = { type: "object", additionalProperties: false, required: ["outcome", "evidence", "blockers", "nextActionHint", "summary"],
+    properties: { outcome: { type: "string", enum: ["done"] }, evidence: { type: "array", items: { type: "string" } },
+      blockers: { type: "array", items: { type: "string" } }, nextActionHint: { type: "string" }, summary: { type: "string" } } };
+  const valid = { outcome: "done", evidence: [], blockers: [], nextActionHint: "review_completed", summary: "TEST" };
+  function rejected(value: unknown, selectedSchema = schema): unknown {
+    try { prepareCodexStructuredOutputSchema(selectedSchema).normalize(value); }
+    catch (error) { return error; }
+    throw new Error("Expected strict rejection");
+  }
+
+  it("distinguishes complete keys with extras from missing/wrong expected field types without retaining names or values", () => {
+    const error = rejected({ ...valid, PRIVATE_KEY: "PRIVATE_VALUE" });
+    expect(classifyCodexFailure(error)).toMatchObject({ code: "provider_output_invalid", retryable: true, reconnectRequired: false,
+      details: { rawCause: "codex_structured_output_invalid:$:additionalProperties", structuredOutputRootKind: "object",
+        structuredOutputExpectedKeyCount: "5", structuredOutputExpectedKeyPresenceBits: "31",
+        structuredOutputExpectedFieldTypeValidBits: "31", structuredOutputExtraRootKeyCount: "1" } });
+    expect(JSON.stringify(error)).toBe("{}");
+    expect(JSON.stringify(classifyCodexFailure(error))).not.toMatch(/PRIVATE_KEY|PRIVATE_VALUE/);
+    expect(codexStructuredOutputFailureDetails(rejected({ outcome: "done", evidence: 42, summary: [], PRIVATE_KEY: "PRIVATE_VALUE" })))
+      .toMatchObject({ structuredOutputExpectedKeyPresenceBits: "26", structuredOutputExpectedFieldTypeValidBits: "8", structuredOutputExtraRootKeyCount: "1" });
+  });
+
+  it.each([[null, "null"], [[], "array"], ["PRIVATE_VALUE", "string"], [42, "number"], [true, "boolean"], [undefined, "unknown"]])
+    ("reports only root kind for rejected non-object %j", (value, kind) => {
+      expect(codexStructuredOutputFailureDetails(rejected(value))).toEqual({ structuredOutputRootKind: kind,
+        structuredOutputExpectedKeyCount: "5", structuredOutputExpectedKeyPresenceBits: "0", structuredOutputExpectedFieldTypeValidBits: "0" });
+    });
+
+  it("does not confuse JSON type validity with array-item or enum validity", () => {
+    const details = codexStructuredOutputFailureDetails(rejected({ ...valid, evidence: [42], outcome: "PRIVATE_ENUM" }));
+    expect(details).toMatchObject({ structuredOutputExpectedKeyPresenceBits: "31", structuredOutputExpectedFieldTypeValidBits: "31",
+      structuredOutputExtraRootKeyCount: "0" });
+    expect(JSON.stringify(details)).not.toContain("PRIVATE_ENUM");
+  });
+
+  it("observes selected raw root presence before optional-null provider normalization", () => {
+    const plan = prepareCodexStructuredOutputSchema({ type: "object", additionalProperties: false,
+      properties: { optional: { type: "string" } } });
+    let error: unknown;
+    try { plan.normalize({ optional: null, PRIVATE_EXTRA: "PRIVATE_VALUE" }); } catch (cause) { error = cause; }
+    expect(codexStructuredOutputFailureDetails(error)).toEqual({ structuredOutputRootKind: "object",
+      structuredOutputExpectedKeyCount: "1", structuredOutputExpectedKeyPresenceBits: "1",
+      structuredOutputExpectedFieldTypeValidBits: "0", structuredOutputExtraRootKeyCount: "1" });
+    expect(plan.normalize({ optional: null })).toEqual({});
+  });
+
+  it("does not accept forged, copied or accessor-based diagnostics", () => {
+    const issued = rejected({ ...valid, extra: true }) as Error;
+    const forged = Object.assign(new Error(issued.message), { details: { structuredOutputExtraRootKeyCount: "123" } });
+    expect(codexStructuredOutputFailureDetails(forged)).toBeUndefined();
+    const hostile = new Proxy({}, { get() { throw new Error("PRIVATE_GETTER"); } });
+    expect(codexStructuredOutputFailureDetails(hostile)).toBeUndefined();
+    const value = { ...valid, extra: true };
+    let reads = 0;
+    Object.defineProperty(value, "summary", { enumerable: true, get: () => { reads++; return "PRIVATE_GETTER_VALUE"; } });
+    expect(codexStructuredOutputFailureDetails(rejected(value))).toBeUndefined();
+    expect(reads).toBe(1); // Existing normalization reads it once; diagnostics never invoke it again.
+  });
+
+  it("omits observations beyond bounds and preserves the original rejection if optional projection faults", () => {
+    const properties = Object.fromEntries(Array.from({ length: 17 }, (_, index) => [String(index), { type: "string" }]));
+    const wide = { type: "object", properties, additionalProperties: false };
+    let error: unknown;
+    try { prepareCodexStructuredOutputSchema(wide).normalize({ PRIVATE_KEY: "PRIVATE_VALUE" }); } catch (cause) { error = cause; }
+    expect(classifyCodexFailure(error).code).toBe("provider_output_invalid");
+    expect(codexStructuredOutputFailureDetails(error)).toBeUndefined();
+    const value = { ...valid, extra: true }, original = Object.getOwnPropertyDescriptors;
+    const spy = vi.spyOn(Object, "getOwnPropertyDescriptors").mockImplementation(input => {
+      if (input === value) throw new Error("PRIVATE_PROJECTION_FAILURE");
+      return original(input);
+    });
+    try {
+      expect(classifyCodexFailure(rejected(value))).toMatchObject({ code: "provider_output_invalid", retryable: true,
+        details: { rawCause: "codex_structured_output_invalid:$:additionalProperties" } });
+      expect(codexStructuredOutputFailureDetails(rejected(value))).toBeUndefined();
+    } finally { spy.mockRestore(); }
+    expect(prepareCodexStructuredOutputSchema(schema).normalize(valid)).toEqual(valid);
+  });
+});
 
 describe("Codex strict structured-output schema adapter", () => {
   it("recursively requires every object property without mutating provider schema identity", () => {

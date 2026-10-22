@@ -1,3 +1,4 @@
+import { releaseCurrentHostedReadonlyDependencySourceOwner } from "./hosted-current-dependency-origin";
 import { sameDependencyProtectedReference } from "@vioxen/subscription-runtime/core";
 import { HostedActivationPhase, parseHostedActivation, type HostedCustodyEpoch } from "@vioxen/subscription-runtime/worker-core";
 import { LocalDependencyOwnerStore } from "../store-local-file/dependency-environment/local-dependency-owner-store";
@@ -25,6 +26,9 @@ export function assertHostedReadonlyDependencyReadyPublication(fence: HostedActi
   // root/ancestor lease identities now, not only immutable lease bytes/history.
   new HostedReadonlySupervisorHost().verifyReadonlyMaterial(next.identity);
   if (activation.installationId !== material.evidence.installation.installationId || !material.ready.receipt.installKey) invalid();
+  // The old exact R attempt closes before any Ready publication or owner-store
+  // descriptors. Enrolled structural custody is preserved, never reissued.
+  releaseCurrentHostedReadonlyDependencySourceOwner(fence);
   const store = LocalDependencyOwnerStore.open({ rootPath: hostedDependencyOwnerRoot, maxRecordBytes: 16384 });
   try {
     const owner = store.read(material.evidence.workspace);

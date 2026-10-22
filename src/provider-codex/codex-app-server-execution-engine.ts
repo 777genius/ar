@@ -1,3 +1,4 @@
+import { AppServerSessionCleanupError, AppServerSessionCleanupPhase } from "./app-server/application/app-server-session-cleanup-error";
 import { AppServerExecutionLifetime, bindAppServerSessionLifetime } from "./app-server/application/app-server-child-lifetime";
 export { AppServerExecutionLifetime, AppServerExecutionReadiness, type AppServerExecutionBinding, type AppServerExecutionReadyEvent } from "./app-server/application/app-server-child-lifetime";
 import { parseAppServerOutputWithUsage } from "./app-server/application/app-server-structured-output";
@@ -80,6 +81,7 @@ import {
 import { appServerEngineCapabilities, appServerWireOutputSchema, resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
 import { CodexModelBackend } from "./codex-model-backend";
 import { codexProviderEgressPolicy } from "./codex-provider-egress-policy";
+import { CodexUsageRelay } from "./provider-usage-relay-config";
 export type {
   CodexAppServerChildProcess,
   CodexAppServerProcessFactory,
@@ -104,6 +106,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   private readonly executionProfile: ResolvedCodexExecutionProfile;
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
+  private readonly usageRelay: CodexUsageRelay | undefined;
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
     const captured = { ...options };
     this.options = { ...captured, ...(captured.providerEgressPolicy ? {
@@ -111,7 +114,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     } : {}) };
     options = this.options;
     this.executionLifetime = resolveAppServerEngineLifetime(options);
+    this.usageRelay = options.usageRelay ? new CodexUsageRelay({ ...options.usageRelay, timeoutMs: options.timeoutMs ?? defaultTimeoutMs }) : undefined;
     this.modelBackend = options.modelBackend ?? CodexModelBackend.OpenAiChatGpt;
+    if (options.usageRelay && (options.hostedPermissionProfiles || options.hostedCodingAuthority || options.childBudget || options.executionLifetime)) throw new Error("usage_relay_hosted_profile_unsupported");
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
     }
@@ -138,7 +143,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       ...(this.options.providerEgressPolicy ? { providerEgressPolicy: this.options.providerEgressPolicy } : {}),
       ...(options.publicSourceReader ? { publicSourceReader: options.publicSourceReader } : {}),
       ...(options.hostedPermissionProfiles === undefined ? {} : { hostedPermissionProfiles: options.hostedPermissionProfiles }),
-      processFactory: options.processFactory ?? spawnCodexAppServerProcess,
+      processFactory: this.usageRelay ? this.usageRelay.wrapProcessFactory(this.modelBackend, options.processFactory ?? spawnCodexAppServerProcess) : options.processFactory ?? spawnCodexAppServerProcess,
       signalChildProcess: signalCodexAppServerChildGroup,
       runStore: this.runStore,
       ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
@@ -176,6 +181,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     });
   }
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
+    if (this.usageRelay) await this.usageRelay.prepare(input.model);
     this.options.childBudget?.beginInvocation();
     const returned = new AppServerReturnedEvidence();
     const pending = this.runInvocation(input, returned);
@@ -202,7 +208,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       error = returned.retain(error);
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       this.executionLifetime?.close(error);
-      await this.disposeFailedSession(input.session, error, "codex_app_server_run_cleanup_failed");
+      await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Run);
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
@@ -229,6 +235,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       readonly previousCheckpoint?: string;
     },
   ): Promise<CodexLogicalThreadExecutionResult> {
+    if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     return await runCodexAppServerLogicalThreadWithSlot(input, {
@@ -266,6 +273,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionResult> {
+    if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     const schemaPlan = prepareCodexOutputSchemaPlan(input.outputSchema);
@@ -276,7 +284,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       if (!isManagedRunResumeValidationError(error)) {
-        await this.disposeFailedSession(input.session, error, "codex_app_server_resume_cleanup_failed");
+        await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Resume);
       }
       throw error;
     }
@@ -284,7 +292,8 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
 
   async dispose(): Promise<void> {
     this.executionLifetime?.close();
-    await this.slotPool.dispose();
+    try { await this.slotPool.dispose(); }
+    finally { await this.usageRelay?.close(); }
     await this.options.fallback?.dispose?.();
   }
   async prewarm(input: {
@@ -298,6 +307,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     readonly warmupPrompt?: string;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionPrewarmResult> {
+    if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.executionLifetime) throw new Error("child_prewarm_denied");
     try {
       const slot = await this.slotPool.ensureSlot(input);
@@ -350,14 +360,14 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       };
     } catch (error) {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
-      await this.disposeFailedSession(input.session, error, "codex_app_server_prewarm_cleanup_failed");
+      await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Prewarm);
       throw error;
     }
   }
 
-  private async disposeFailedSession(session: CodexMaterializedSession, error: unknown, message: string): Promise<void> {
+  private async disposeFailedSession(session: CodexMaterializedSession, error: unknown, phase: AppServerSessionCleanupPhase): Promise<void> {
     try { await this.slotPool.disposeSessionSlot(session); }
-    catch (cleanupError) { throw new AggregateError([error, cleanupError], message); }
+    catch (cleanupError) { throw new AppServerSessionCleanupError(error, cleanupError, phase); }
   }
   private async runViaAppServer(input: CodexExecutionInput,
     schemaPlan: CodexStructuredOutputSchemaPlan | undefined, returned: AppServerReturnedEvidence): Promise<CodexExecutionResult> {

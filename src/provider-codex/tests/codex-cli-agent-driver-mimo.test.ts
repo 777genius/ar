@@ -118,9 +118,17 @@ describe("CodexCliAgentDriver MiMo backend", () => {
       });
 
       expect(result.status).toBe("failed");
+      // A missing env key is a local configuration gap, not a dead provider
+      // session: provider_session_invalid would disable the shared account
+      // capacity record (disabled, never rechecked) for every later run, and
+      // a reconnect cannot fix a missing env var.
       expect(result).toMatchObject({
         status: "failed",
-        failure: { retryable: false, reconnectRequired: true },
+        failure: {
+          code: "provider_runtime_unavailable",
+          retryable: false,
+          reconnectRequired: false,
+        },
       });
       if (result.status === "failed") {
         expect(result.failure.safeMessage).toContain(codexMimoApiKeyEnvVarDefault);

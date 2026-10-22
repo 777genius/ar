@@ -25,7 +25,7 @@ vi.mock("node:fs", async original => {
 });
 vi.mock("../research-launch-host", () => ({ assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn() }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: vi.fn() }));
-vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: z.any() }));
+vi.mock("../application/project-control/worker-launch-spec", async original => ({ ...await original<object>(), workerLaunchAdmissionSchema: z.any() }));
 vi.mock("../codex-goal-mcp-project-control-deps", async original => ({ ...await original<object>(),
   loadProjectControlController: async () => ({ scope: { projectId: "test-project", allowedAccountIds: ["account-q"] } }) }));
 // Inject the terminal job-creation effect; retain the real manifest mapping.
@@ -92,8 +92,8 @@ describe("registered MiMo Create reasoning reaches the admitted job", () => {
   it("rejects unsupported reasoning and operation overrides before any creation or transport", async () => {
     const tool = tools.get("codex_goal_project_create_job")!;
     for (const reasoningEffort of ["max", "ultra", "enabled", "NONE", ""]) {
-      expect(await tool.invoke(z.object(tool.schema).parse({ mimoProjectId: route.projectId, mimoWorkstreamId: route.workstreamId,
-        jobId: "test-invalid", promptBody: "TEST", sourceCommit: "b".repeat(40), confirmCreate: true, reasoningEffort }))).toHaveProperty("isError", true);
+      expect(z.object(tool.schema).safeParse({ mimoProjectId: route.projectId, mimoWorkstreamId: route.workstreamId,
+        jobId: "test-invalid", promptBody: "TEST", sourceCommit: "b".repeat(40), confirmCreate: true, reasoningEffort }).success).toBe(false);
     }
     await expect(delegateMimoProjectOperation(MimoProjectBridgeOperation.Status, { mimoProjectId: route.projectId,
       mimoWorkstreamId: route.workstreamId, jobId: "test-control", reasoningEffort: "none" })).rejects.toThrow("override_denied");

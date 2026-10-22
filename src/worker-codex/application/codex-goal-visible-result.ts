@@ -1,7 +1,12 @@
+import type { MimoProxyFailure } from "@vioxen/subscription-runtime/provider-codex";
+import type { CodexGoalAvailabilityFailure } from "./codex-goal-availability-failure";
+
 type CodexGoalVisibleResultInput = {
   readonly exists?: boolean | undefined;
   readonly status?: string | undefined;
   readonly reason?: string | undefined;
+  readonly proxyFailure?: MimoProxyFailure | undefined;
+  readonly availabilityFailure?: CodexGoalAvailabilityFailure | undefined;
   readonly updatedAt?: string | undefined;
   readonly progress: {
     readonly status?: string | undefined;
@@ -14,6 +19,8 @@ export type CodexGoalVisibleResult = {
   readonly exists?: boolean;
   readonly status?: string;
   readonly reason?: string;
+  readonly proxyFailure?: MimoProxyFailure;
+  readonly availabilityFailure?: CodexGoalAvailabilityFailure;
   readonly updatedAt?: string;
   readonly warning?: string;
 };
@@ -57,6 +64,8 @@ export function resolveVisibleCodexGoalResult(
     ...(input.exists === undefined ? {} : { exists: input.exists }),
     ...(input.status === undefined ? {} : { status: input.status }),
     ...(input.reason === undefined ? {} : { reason: input.reason }),
+    ...(input.exists !== false && input.proxyFailure ? { proxyFailure: input.proxyFailure } : {}),
+    ...(input.exists !== false && input.availabilityFailure ? { availabilityFailure: input.availabilityFailure } : {}),
     ...(input.updatedAt === undefined ? {} : { updatedAt: input.updatedAt }),
   };
 }

@@ -37,12 +37,15 @@ function fixture() {
     "managed-launcher/hosted-host-policy.mjs", helper];
   const required = ["dist/worker-codex/hosted-ordinary-installation-qualification.js",
     "dist/worker-codex/hosted-ordinary-installation-qualification-guest.js", "dist/worker-codex/hosted-installation-activation.js",
-    "dist/worker-codex/hosted-ordinary-installation-census.js", "dist/core/host-infrastructure/host-inventory.js",
+    "dist/worker-codex/hosted-ordinary-installation-census.js", "dist/worker-codex/hosted-ordinary-installation-history.js",
+    "dist/core/host-infrastructure/host-inventory.js", "dist/core/host-infrastructure/host-installation-successor.js",
     "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js",
-    ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-prelude", "hosted-process-activation",
+    ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-unit-lifecycle", "hosted-fd-unit-policy", "hosted-fd-prelude", "hosted-process-activation",
       "hosted-process-descriptors", "hosted-dependency-tool-plan", "hosted-blocking-output", "managed-provider-scratch-environment",
-      "system-bus-infrastructure", "systemd-service-arrays"]
+      "system-bus-infrastructure", "systemd-service-arrays", "elf-closure"]
       .map(name => `dist/provider-codex/app-server/adapters/${name}.js`),
+    ...["hosted-ordinary-installation-source-scope", "hosted-runtime-stage-curator", "hosted-fd-collector-profile-issuer", "hosted-runtime-issuer-cli"]
+      .map(name => `dist/worker-codex/${name}.js`),
     ...copied.map(path => "host-integration/" + path)];
   const bytes = (path: string) => Buffer.from("owned candidate " + path + "\n");
   for (const path of required) put(artifact + "/" + path, bytes(path));
@@ -75,6 +78,8 @@ function fixture() {
 describe("ordinary installed helper closure", () => {
   // Omitting the imported helper from the measured manifest previously passed.
   it.each(["host-integration/" + helper,
+    "dist/provider-codex/app-server/adapters/hosted-fd-unit-lifecycle.js",
+    "dist/provider-codex/app-server/adapters/hosted-fd-unit-policy.js",
     "dist/provider-codex/app-server/adapters/hosted-blocking-output.js",
     "dist/provider-codex/app-server/adapters/managed-provider-scratch-environment.js"])
     ("requires %s in the measured candidate source", required => {

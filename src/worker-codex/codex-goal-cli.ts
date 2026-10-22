@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { cliGoalPaths, cliInspectionPaths, parseMcpResources, parseMcpResource,
   type McpResourcesCommand, type McpResourceCommand } from "./codex-goal-cli-storage";
+import { codexGoalOriginDiagnostic } from "./codex-goal-origin-diagnostic";
 import { resolveCodexGoalJobRegistryRoot } from "./codex-goal-jobs";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { mapManagedGoalLayout } from "./managed-goal-admission";
@@ -85,6 +86,7 @@ import {
 import {
   projectControlGenericScopeDenial,
   projectControlGenericToolDenial,
+  registeredBrokeredProjectLaunchAllowed,
 } from "./project-control-scope-guard";
 import {
   runProjectControlOperationFile,
@@ -382,7 +384,8 @@ export async function runCodexGoalCli(
     if (io === defaultIo && unverifiedHostedForegroundSink()) return 70;
     if (isBrokenPipeError(error)) return 0;
     try {
-      io.writeStderr(`${error instanceof Error ? error.message : "codex goal failed"}\n`);
+      const originDiagnostic = codexGoalOriginDiagnostic(error);
+      io.writeStderr(`${originDiagnostic ? JSON.stringify(originDiagnostic) : error instanceof Error ? error.message : "codex goal failed"}\n`);
     } catch (stderrError) {
       if (isBrokenPipeError(stderrError)) return 0;
       throw stderrError;
@@ -512,6 +515,16 @@ export async function upsertRunCommandManifest(command: RunCommand) {
 
 async function assertRunCommandProjectControlAllowed(command: RunCommand): Promise<void> {
   const jobId = command.config.jobId ?? command.config.taskId;
+  if (
+    command.registryRootDir !== undefined &&
+    await registeredBrokeredProjectLaunchAllowed({
+      registryRootDir: command.registryRootDir,
+      jobId,
+      config: command.config,
+    })
+  ) {
+    return;
+  }
   const denial = command.registryRootDir === undefined
     ? projectControlGenericToolDenial({
         accessBoundary: command.config.accessBoundary,

@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { createHash } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
@@ -9,6 +10,7 @@ import { decodeHostedInventoryBytes } from "../../../core/host-infrastructure/ho
 import { hostedFdTable } from "./hosted-fd-table";
 import { assertHostedFdProcess, HostedFdLaunchKind } from "./hosted-fd-child";
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
+import { selectedHostedInstallationRecordName } from "./hosted-process-activation"; // call-time use only (module cycle with the activation reader)
 
 const root = "/var/lib/subscription-runtime-host-policy";
 const encode = (v: unknown) => Buffer.from(JSON.stringify(v) + "\n");
@@ -111,7 +113,8 @@ export function openHostedRetainedToolFiles(context: Readonly<{ unit: string; pa
   const snapshots: Leaf[] = [], leaves: Leaf[] = [];
   let scope: HostedRetainedToolFiles | undefined;
   try {
-    for (const name of names) { const leaf = openLeaf(join(root, name), 4 * 1024 * 1024); snapshots.push(leaf); closeSync(leaf.fd); }
+    // The installation and inventory are the SELECTED records (original fixed files, or the versioned successor copies).
+    for (const name of names) { const leaf = openLeaf(join(root, name === "host-installation.json" || name === "readonly-inventory.json" ? selectedHostedInstallationRecordName(name) : name), 4 * 1024 * 1024); snapshots.push(leaf); closeSync(leaf.fd); }
     const installation = json(snapshots[0]!.bytes), inventory = decodeHostedInventoryBytes(snapshots[1]!.bytes) as Record<string, unknown>, binding = json(snapshots[3]!.bytes),
       parent = json(snapshots[4]!.bytes), provider = json(snapshots[5]!.bytes), relation = json(snapshots[6]!.bytes);
     const pin = inventory.collectorProfile as { path?: unknown; sha256?: unknown } | undefined;
@@ -124,7 +127,7 @@ export function openHostedRetainedToolFiles(context: Readonly<{ unit: string; pa
         provider.creatorId !== parent.creatorId || provider.grantSha256 !== binding.grantDigest ||
         parent.installationId !== binding.installationId || parent.grantSha256 !== binding.grantDigest ||
         parent.controlGroup !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${parent.unit}` ||
-        readFileSync("/proc/self/cgroup", "utf8").trim() !== `0::${parent.controlGroup}` ||
+        observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8")) !== `0::${parent.controlGroup}` ||
         relation.parentStartId !== context.parentStartId || relation.providerStartId !== id || relation.unit !== context.unit ||
         relation.startDigest !== hash(snapshots[5]!.bytes)) fail();
     const record = openLeaf(join(root, dependencyToolQualificationRecordName(context.parentStartId)), 65536); leaves.push(record);
@@ -143,7 +146,7 @@ export function openHostedRetainedToolFiles(context: Readonly<{ unit: string; pa
     if (!capsule.bytes.equals(encode(dependencyToolGuestConfig(q)))) fail();
     scope = Object.freeze({});
     scopes.set(scope, { unit: context.unit, parentStartId: context.parentStartId, root: providerRoot,
-      parentBirth: selfBirth(), group: readFileSync("/proc/self/cgroup", "utf8").trim(),
+      parentBirth: selfBirth(), group: observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8")),
       namespace: readlinkSync("/proc/self/ns/mnt"), leaves: Object.freeze(leaves), snapshots: Object.freeze(snapshots), revoked: false });
     assertHostedRetainedToolDescriptors(scope);
     return Object.freeze({ scope, qualification: q, capsulePath });
@@ -160,7 +163,7 @@ export function assertHostedRetainedToolDescriptors(scope: HostedRetainedToolFil
       const stat = fstatSync(fd);
       if (!stat.isFIFO() && !stat.isSocket()) throw new Error("hosted_custody_stdio_pipe_required");
     }
-    if (s.parentBirth !== selfBirth() || s.group !== readFileSync("/proc/self/cgroup", "utf8").trim() ||
+    if (s.parentBirth !== selfBirth() || s.group !== observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8")) ||
         s.namespace !== readlinkSync("/proc/self/ns/mnt")) fail();
     for (const leaf of s.leaves) assertLeaf(leaf);
     for (const old of s.snapshots) {

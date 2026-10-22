@@ -16,11 +16,12 @@ import { assertRegisteredResearchHandoffCurrent, assertRegisteredResearchHandoff
 import { annotateResearchMaterialFailure, ResearchMaterialRole } from "./research-launch-diagnostics";
 import { assertResearchProviderAssemblyContext, type ResearchProviderAssemblyRoot } from "./research-provider-root";
 import { assertResearchProjectLaunchBindingCurrent } from "./research-project-launch-authorization";
-import { researchAdmissionObservation, ResearchAdmissionFailureStage } from "./research-launch-admission-diagnostics";
+import { researchAdmissionObservation, researchAdmissionMeasure, ResearchAdmissionFailureStage, type ResearchAdmissionTiming, type ResearchAuthorityTimingObservers } from "./research-launch-admission-diagnostics";
 
 const mimoWorkerFactories = new WeakMap<CodexAppServerProcessFactory, ResearchStartSpec>();
-const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
-const projectAuthorityWitnesses = new Map<string, { readonly bytes: Buffer; readonly spec: string; readonly assertAuthorityBytes: () => void }>();
+const factoryGuards = new WeakMap<CodexAppServerProcessFactory, () => ResearchAdmissionTiming | void>();
+const factoryRetainedGuards = new WeakMap<CodexAppServerProcessFactory, () => void>();
+const projectAuthorityWitnesses = new Map<string, { readonly bytes: Buffer; readonly spec: string; readonly assertAuthorityBytes: (observeScalarWitness?: (elapsedMs: number) => void, observeTargetQuery?: (elapsedMs: number) => void) => void }>();
 export const installedResearchRuntimeDirectory = (): string => fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 export const researchJobAuthority = (jobId: string): string => join(researchAuthorityRoot, researchName(researchId(jobId)));
 export function researchCurrentStart(jobId: string): { directory: string; spec: ResearchStartSpec; bytes: Buffer } {
@@ -60,12 +61,12 @@ export async function prepareResearchProjectLaunchAuthority(jobId: string, start
   assertAuthorityBytes();
   projectAuthorityWitnesses.set(initial.directory, { bytes: Buffer.from(initial.bytes), spec: JSON.stringify(initial.spec), assertAuthorityBytes });
 }
-function assertResearchProjectLaunchAuthorityBytes(spec: ResearchStartSpec): void {
+function assertResearchProjectLaunchAuthorityBytes(spec: ResearchStartSpec, observe?: ResearchAuthorityTimingObservers): void {
   if (!spec.projectLaunchBinding && !spec.registeredHandoff) return;
   const current = researchCurrentStart(spec.request.jobId), witness = projectAuthorityWitnesses.get(current.directory);
   if (!witness || !current.bytes.equals(witness.bytes) || witness.spec !== JSON.stringify(spec)) researchInvalid();
   if (spec.projectLaunchBinding) assertResearchProjectGrantNotRevoked(spec.request.jobId, spec.grantSha256);
-  witness.assertAuthorityBytes();
+  witness.assertAuthorityBytes(observe?.scalarWitness, observe?.scalarTargetQuery);
 }
 /** Registered workers keep their exact scoped receipt live in each trusted
  * process. A new process prepares a reader; it inherits no decision or permit. */
@@ -106,7 +107,7 @@ export function readResearchStartBinding(directory: string): ResearchStartBindin
 }
 /** Mutable authority and pinned identities remain current even while the
  * confined launcher is inert. This never traverses executable/artifact bytes. */
-function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () => void = assertResearchInitialRoot): void {
+function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () => void = assertResearchInitialRoot, observe?: ResearchAuthorityTimingObservers): void {
   assertRoot(); assertResearchSharedHost();
   researchCustody(spec.request.authRootDir);
   const grantBytes = researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json"));
@@ -123,14 +124,14 @@ function assertResearchStartAuthority(spec: ResearchStartSpec, assertRoot: () =>
   const pins = join(researchJobAuthority(spec.request.jobId), "starts", spec.startId, "pins");
   assertResearchDirectory(spec.jobDirectory, join(pins, "job"));
   assertResearchDirectory(spec.workspaceDirectory, join(pins, "workspace"));
-  assertRegisteredResearchHandoffPin(spec, join(pins, ".."));
-  assertResearchProjectLaunchAuthorityBytes(spec);
+  assertRegisteredResearchHandoffPin(spec, join(pins, ".."), observe?.pairedPin, observe?.pairedTargetQuery);
+  assertResearchProjectLaunchAuthorityBytes(spec, observe);
   if (!researchRead(join(researchJobAuthority(spec.request.jobId), "grant.json")).equals(grantBytes)) researchInvalid();
 }
-function assertResearchMaterialBytes(spec: ResearchStartSpec): void {
+function assertResearchMaterialBytes(spec: ResearchStartSpec, observe?: (role: ResearchMaterialRole, elapsedMs: number) => void): void {
   if (spec.runtimeDirectory !== installedResearchRuntimeDirectory()) researchInvalid();
   const assertDigest = (role: Exclude<ResearchMaterialRole, ResearchMaterialRole.Unknown>, read: () => string, expected: string): void => {
-    try { if (read() !== expected) researchInvalid(); }
+    try { if ((observe ? researchAdmissionMeasure(read, elapsed => observe(role, elapsed)) : read()) !== expected) researchInvalid(); }
     catch (error) { throw annotateResearchMaterialFailure(error, role); }
   };
   assertDigest(ResearchMaterialRole.RuntimeArtifact, () => researchArtifactDigest(spec.runtimeDirectory), spec.artifactSha256);
@@ -150,22 +151,25 @@ export function assertResearchProviderStartMaterial(root: ResearchProviderAssemb
 }
 /** Blocking Host observations can overlap a separate operator's revoke/cancel.
  * Recheck only mutable documents and pinned identities at the effect boundary. */
-function assertResearchCurrentAuthorityBytes(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
-  assertResearchProjectLaunchAuthorityBytes(initial.spec);
+function assertResearchCurrentAuthorityBytes(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false, observe?: ResearchAuthorityTimingObservers): void {
+  assertResearchProjectLaunchAuthorityBytes(initial.spec, observe);
+  assertResearchCurrentStartBytes(jobId, initial, bindingBytes, allowClosing);
+}
+function assertResearchCurrentStartBytes(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
   const fresh = researchCurrentStart(jobId);
   if ((!allowClosing && existsSync(join(initial.directory, "closing.json"))) || fresh.directory !== initial.directory || !fresh.bytes.equals(initial.bytes) ||
       (bindingBytes !== undefined && !researchRead(join(initial.directory, "binding.json")).equals(bindingBytes)) ||
       researchHash(researchRead(join(researchJobAuthority(jobId), "grant.json"))) !== initial.spec.grantSha256) researchInvalid();
 }
-export function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false): void {
-  assertResearchCurrentAuthorityInternal(jobId, initial, bindingBytes, allowClosing, assertResearchInitialRoot);
+export function assertResearchCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes?: Buffer, allowClosing = false, observe?: ResearchAuthorityTimingObservers): void {
+  assertResearchCurrentAuthorityInternal(jobId, initial, bindingBytes, allowClosing, assertResearchInitialRoot, observe);
 }
 function assertResearchCurrentAuthorityInternal(jobId: string, initial: ReturnType<typeof researchCurrentStart>, bindingBytes: Buffer | undefined,
-  allowClosing: boolean, assertRoot: () => void): void {
-  assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing);
-  assertResearchStartAuthority(initial.spec, assertRoot);
+  allowClosing: boolean, assertRoot: () => void, observe?: ResearchAuthorityTimingObservers): void {
+  assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing, observe);
+  assertResearchStartAuthority(initial.spec, assertRoot, observe);
   // No blocking observations follow the final mutable authority read.
-  assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing);
+  assertResearchCurrentAuthorityBytes(jobId, initial, bindingBytes, allowClosing, observe);
 }
 export function assertResearchProviderCurrentAuthority(jobId: string, initial: ReturnType<typeof researchCurrentStart>,
   root: ResearchProviderAssemblyRoot, bindingBytes?: Buffer): void {
@@ -230,7 +234,7 @@ function registeredResearchHandoffGuard(jobId: string, startId: string, allowClo
   };
 }
 export function captureResearchRuntime(identity: HostedTestEgressIdentity, ownerPid = process.pid): {
-  readonly spec: ResearchStartSpec; readonly directory: string; readonly profileId: CodexProviderEgressProfileId; readonly assertCurrent: () => void;
+  readonly spec: ResearchStartSpec; readonly directory: string; readonly profileId: CodexProviderEgressProfileId; readonly assertCurrent: () => ResearchAdmissionTiming | void;
   readonly assertAuthorityCurrent: () => void; readonly assertInertAuthorityCurrent: () => void;
 } {
   assertResearchInitialRoot(); assertResearchSharedHost();
@@ -242,34 +246,90 @@ export function captureResearchRuntime(identity: HostedTestEgressIdentity, owner
   // The confined startup holds bootstrap/auth while systemd may be busy
   // constructing its namespace. Poll fresh authority and kernel identity here;
   // this check grants no effect permission and deliberately avoids the manager.
-  const assertInertAuthorityCurrent = (): void => {
-    assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
+  const assertProcessCurrent = (): void => {
     const current = researchProcessIdentity(ownerPid);
     if (JSON.stringify(current) !== JSON.stringify(binding.process) ||
         researchProcessIdentity().controlGroup !== current.controlGroup) researchInvalid();
+  };
+  const assertInertAuthorityCurrent = (): void => {
+    assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
+    assertProcessCurrent();
     assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes);
   };
-  const assertAuthorityCurrent = (): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
-    assertInertAuthorityCurrent();
-    const service = researchServiceIdentity(spec.unit);
+  const assertServiceCurrent = (observeService?: (elapsedMs: number) => void): void => {
+    const service = observeService ? researchAdmissionMeasure(() => researchServiceIdentity(spec.unit), observeService) : researchServiceIdentity(spec.unit);
     assertResearchServiceOwner(binding.process, service, researchDescription(identity.jobId, researchHash(initial.bytes)));
     if (JSON.stringify(service) !== JSON.stringify(binding.service)) researchInvalid();
+  };
+  const checkAuthorityCurrent = (): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
     assertInertAuthorityCurrent();
+    assertServiceCurrent();
+    assertInertAuthorityCurrent();
+  });
+  const assertAuthorityCurrent = (): void => checkAuthorityCurrent();
+  // Read-only service observation needs current native bytes/process identity,
+  // not four nested complete mount assertions. Retain one complete assertion
+  // after it, then reread native bytes/process after its blocking mount queries.
+  // This private composition grants nothing until the whole fence succeeds.
+  const checkAdmissionAuthorityCurrent = (observeService: (elapsedMs: number) => void, authorityTimings: ResearchAuthorityTimingObservers): void => observe(ResearchAdmissionFailureStage.AuthorityCurrent, () => {
+    assertResearchCurrentStartBytes(identity.jobId, initial, bindingBytes);
+    assertProcessCurrent();
+    assertServiceCurrent(observeService);
+    assertProcessCurrent();
+    assertResearchCurrentAuthority(identity.jobId, initial, bindingBytes, false, authorityTimings);
+    assertProcessCurrent();
+    assertResearchCurrentStartBytes(identity.jobId, initial, bindingBytes);
   });
   // Full effect guards retain their existing meaning. Recheck mutable authority
   // after a slow byte walk as well, immediately before the caller's effect.
-  const assertCurrent = (): void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
-    assertAuthorityCurrent();
-    assertResearchMaterialBytes(spec);
-    assertAuthorityCurrent();
+  const assertCurrent = (): ResearchAdmissionTiming | void => observe(ResearchAdmissionFailureStage.MaterialCurrent, () => {
+    let admissionAuthorityElapsedMs = 0, admissionArtifactElapsedMs = 0, admissionExecutableElapsedMs = 0, samples = 0;
+    let admissionAuthorityServiceElapsedMs = 0, serviceSamples = 0;
+    let admissionAuthorityScalarWitnessElapsedMs = 0, scalarSamples = 0, admissionAuthorityPairedPinElapsedMs = 0, pairSamples = 0;
+    let admissionAuthorityScalarTargetQueryElapsedMs = 0, scalarQuerySamples = 0, admissionAuthorityPairedTargetQueryElapsedMs = 0, pairQuerySamples = 0;
+    const authorityTimings: ResearchAuthorityTimingObservers = {
+      scalarWitness: elapsed => { admissionAuthorityScalarWitnessElapsedMs += elapsed; scalarSamples++; },
+      pairedPin: elapsed => { admissionAuthorityPairedPinElapsedMs += elapsed; pairSamples++; },
+      scalarTargetQuery: elapsed => { admissionAuthorityScalarTargetQueryElapsedMs += elapsed; scalarQuerySamples++; },
+      pairedTargetQuery: elapsed => { admissionAuthorityPairedTargetQueryElapsedMs += elapsed; pairQuerySamples++; },
+    };
+    const authority = (): void => { researchAdmissionMeasure(() => checkAdmissionAuthorityCurrent(elapsed => {
+      admissionAuthorityServiceElapsedMs += elapsed; serviceSamples++;
+    }, authorityTimings), elapsed => { admissionAuthorityElapsedMs += elapsed; samples++; }); };
+    authority();
+    assertResearchMaterialBytes(spec, (role, elapsed) => {
+      if (role === ResearchMaterialRole.RuntimeArtifact) admissionArtifactElapsedMs += elapsed;
+      else admissionExecutableElapsedMs += elapsed;
+      samples++;
+    });
+    authority();
+    const scalarComplete = spec.registeredHandoff && scalarSamples === 6 && Number.isFinite(admissionAuthorityScalarWitnessElapsedMs) &&
+      admissionAuthorityScalarWitnessElapsedMs <= admissionAuthorityElapsedMs;
+    const pairComplete = spec.registeredHandoff && pairSamples === 2 && Number.isFinite(admissionAuthorityPairedPinElapsedMs) &&
+      admissionAuthorityPairedPinElapsedMs <= admissionAuthorityElapsedMs;
+    if (samples === 5) return Object.freeze({ admissionAuthorityElapsedMs, admissionArtifactElapsedMs,
+      admissionExecutableElapsedMs, ...(serviceSamples === 2 && Number.isFinite(admissionAuthorityServiceElapsedMs) &&
+        admissionAuthorityServiceElapsedMs <= admissionAuthorityElapsedMs ? { admissionAuthorityServiceElapsedMs } : {}),
+      ...(scalarComplete ? { admissionAuthorityScalarWitnessElapsedMs } : {}),
+      ...(pairComplete ? { admissionAuthorityPairedPinElapsedMs } : {}),
+      ...(scalarComplete && scalarQuerySamples === 6 && Number.isFinite(admissionAuthorityScalarTargetQueryElapsedMs) &&
+        admissionAuthorityScalarTargetQueryElapsedMs >= 0 && admissionAuthorityScalarTargetQueryElapsedMs <= admissionAuthorityScalarWitnessElapsedMs
+        ? { admissionAuthorityScalarTargetQueryElapsedMs } : {}),
+      ...(pairComplete && pairQuerySamples === 2 && Number.isFinite(admissionAuthorityPairedTargetQueryElapsedMs) &&
+        admissionAuthorityPairedTargetQueryElapsedMs >= 0 && admissionAuthorityPairedTargetQueryElapsedMs <= admissionAuthorityPairedPinElapsedMs
+        ? { admissionAuthorityPairedTargetQueryElapsedMs } : {}) });
   });
   const profileId = parseResearchGrant(researchJson(researchRead(join(researchJobAuthority(identity.jobId), "grant.json")))).profileId;
   assertCurrent();
   return Object.freeze({ spec, directory: initial.directory, profileId, assertCurrent, assertAuthorityCurrent, assertInertAuthorityCurrent });
 }
 
-export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFactory | undefined): (() => void) | undefined {
+export function researchProviderAdmissionGuard(factory: CodexAppServerProcessFactory | undefined): (() => ResearchAdmissionTiming | void) | undefined {
   return factory ? factoryGuards.get(factory) : undefined;
+}
+/** Source-issued process/authority fence; never hashes material or queries systemd. */
+export function researchProviderRetainedAuthorityGuard(factory: CodexAppServerProcessFactory | undefined): (() => void) | undefined {
+  return factory ? factoryRetainedGuards.get(factory) : undefined;
 }
 export function admitResearchRuntime(identity: HostedTestEgressIdentity): CodexProviderEgressProfileId | undefined {
   if (!researchUnitFromCurrentProcess()) return undefined;
@@ -298,6 +358,7 @@ export function admitResearchProcessFactory(identity: HostedTestEgressIdentity):
     signal: (unit, signal) => signalResearchProvider(captured.directory, unit, signal),
   });
   factoryGuards.set(factory, captured.assertCurrent);
+  factoryRetainedGuards.set(factory, captured.assertInertAuthorityCurrent);
   if (captured.spec.request.modelBackend === CodexModelBackend.XiaomiMimoTokenPlan) mimoWorkerFactories.set(factory, captured.spec);
   return factory;
 }

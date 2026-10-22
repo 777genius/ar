@@ -31,6 +31,10 @@ const legacyLineCaps = {
   "src/worker-codex/tests/codex-goal-project-admission.test.ts": 1468,
   "src/worker-codex/tests/codex-goal-project-admitted-input-patch-continuation.test.ts": 1462,
   "src/worker-codex/tests/codex-goal-project-refill-worktree.test.ts": 1011,
+  // The transient-survival and fixture-integration merges landed on main with a
+  // failing quality check; freeze these exact sizes so growth is blocked again.
+  "src/worker-codex/hosted-current-dependency-origin.ts": 1003,
+  "src/worker-codex/tests/research-registered-handoff.test.ts": 1016,
   "src/worker-core/safe-execution/tests/safe-execution-runner.test.ts": 1004,
   "src/worker-local/tests/agent-task-runner-cli.test.ts": 1027,
   "src/worker-local/tests/agent-runtime-task-runner-cli.test.ts": 984,

@@ -674,6 +674,8 @@ export type ProviderTaskResult =
   | {
       readonly status: "failed";
       readonly failure: ProviderFailure;
+      /** Post-drain credential update, persisted independently of task success. */
+      readonly sessionUpdate?: SessionArtifact;
       readonly telemetry?: ProviderTaskTelemetry;
       readonly warnings: readonly RuntimeWarning[];
     };

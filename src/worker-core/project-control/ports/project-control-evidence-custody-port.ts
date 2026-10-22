@@ -18,6 +18,8 @@ export type ImmutableEvidenceFile = {
   readonly sha256: string;
   readonly length: number;
   readonly bytes: Uint8Array;
+  /** Permission bits (mode & 0o777) read from the same held descriptor as the bytes. */
+  readonly mode: number;
 };
 
 export type EvidenceDirectoryEntry = {
@@ -51,7 +53,7 @@ export interface ProjectControlCustodyBootstrapCertification {
   close(): Promise<void>;
 }
 
-export type ImmutablePatchEvidence = Omit<ImmutableEvidenceFile, "bytes"> & {
+export type ImmutablePatchEvidence = Omit<ImmutableEvidenceFile, "bytes" | "mode"> & {
   readonly commits: readonly string[];
   readonly baseCommits: readonly string[];
   readonly changedPathPairs: readonly (readonly [string, string])[];
@@ -68,6 +70,12 @@ export interface ProjectControlEvidenceCustodyPort {
   }): Promise<ProjectControlCustodyBootstrapCertification>;
   canonicalDirectory(path: string, allowMissing?: boolean): Promise<string>;
   readImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile>;
+  /**
+   * Like readImmutableFile, but a missing leaf yields undefined. Absence is accepted
+   * only beneath a held, canonical, non-symlink ancestor chain; a missing, dangling
+   * or aliased parent, or a symlink leaf, refuses instead of reading as absent.
+   */
+  readOptionalImmutableFile(path: string, maxBytes: number): Promise<ImmutableEvidenceFile | undefined>;
   inspectImmutablePatch(path: string, maxBytes: number): Promise<ImmutablePatchEvidence>;
   pathKind(path: string): Promise<EvidencePathKind>;
   openDirectoryForInspection(path: string): Promise<EvidenceDirectoryInspection>;

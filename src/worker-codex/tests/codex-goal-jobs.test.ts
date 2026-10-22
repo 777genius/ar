@@ -59,8 +59,11 @@ describe("codex goal job registry", () => {
       const stored = await readCodexGoalJob({ registryRootDir: join(root, "registry"), jobId: manifest.jobId });
       expect(stored.durableHandoffRootDir).toBe(intent === "explicit" ? join(root, "explicit-sink")
         : intent === "legacy" ? join(root, "registry", "durable-handoffs") : undefined);
-      expect(stored.maxGoalTurns).toBe(8);
-      expect(stored.safeExecutionPolicy?.continuationMode).toBe("disabled");
+      expect(stored.maxGoalTurns).toBe(intent === undefined ? undefined : 8);
+      expect(stored.safeExecutionPolicy?.continuationMode).toBe(intent === undefined ? undefined : "disabled");
+      if (intent === undefined) {
+        expect(stored.safeExecutionPolicy).toBeUndefined();
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("updates ordinary account provenance and rejects unknown-origin replacement of marked pools", async () => {

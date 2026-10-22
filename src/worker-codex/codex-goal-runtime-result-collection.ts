@@ -12,6 +12,7 @@ import { assertDirtyTerminalHandoffAvailable, terminalCodexGoalHandoffEvidence,
   terminalCodexGoalHandoffResultDetails, tryMaterializeTerminalCodexGoalHandoff,
   type TerminalHandoffPublicationAuthority } from "./codex-goal-terminal-handoff-materialization";
 import { changedFilesFromSafeExecutionResult, changedFilesFromWorkspace, uniqueStrings } from "./codex-goal-workspace-changes";
+import { WorkspaceChangedFilesWarning, boundedChangedFiles, boundedChangedFilesNotes } from "./codex-goal-changed-files-report";
 
 // Collection availability is a diagnostic fact, never execution authority.
 enum WorkspaceChangesCollectionState { Available = "available", Unknown = "unknown" }
@@ -28,7 +29,7 @@ async function collectWorkspaceChanges(workspacePath: string): Promise<Workspace
     // The unchanged guarded reader has refused. Never retry or materialize from
     // this Unknown observation; [] carries no claim that the workspace is clean.
     return { state: WorkspaceChangesCollectionState.Unknown, changedFiles: [],
-      warning: "workspace_changed_files_unavailable", failure: { error } };
+      warning: WorkspaceChangedFilesWarning.Unavailable, failure: { error } };
   }
 }
 function workspaceCollectionDetails(workspace: WorkspaceChangesCollection): Readonly<Record<string, string>> {
@@ -74,7 +75,7 @@ export async function codexRuntimeResultInput(input: {
       }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   if (!input.deferHandoff && workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(workspace.changedFiles, handoff, artifacts);
-  const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
+  const reported = boundedChangedFiles(handoff?.changedPaths ?? changedFiles), notes = boundedChangedFilesNotes(reported);
   const nativeWeb = nativeWebFromSafeExecutionResult(input.result);
   const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
   const details = runtimeResultDetails({
@@ -91,10 +92,11 @@ export async function codexRuntimeResultInput(input: {
     runId: input.config.jobId ?? input.config.taskId,
     taskId: input.config.taskId,
     reason,
-    changedFiles: exactChangedFiles,
+    changedFiles: reported.changedFiles,
     evidence: [
       ...runtimeEvidenceFromSafeExecutionResult(input.result),
       ...(workspace.warning ? [workspace.warning] : []),
+      ...notes.evidence,
       ...artifacts.map((artifact) => `patch_preserved:${artifact.path ?? ""}`),
       ...terminalCodexGoalHandoffEvidence(handoff),
       ...(workspace.state === WorkspaceChangesCollectionState.Unknown || changedFiles.length > 0 && artifacts.length === 0
@@ -110,7 +112,7 @@ export async function codexRuntimeResultInput(input: {
     }),
     ...(workerReport === undefined ? {} : { workerReport }),
     ...(artifacts.length === 0 ? {} : { artifacts }),
-    details: { ...(details ?? {}), executionGeneration: input.executionGeneration,
+    details: { ...(details ?? {}), ...notes.details, executionGeneration: input.executionGeneration,
       attemptNumber: String(input.result.attempts.at(-1)?.attemptNumber ?? 0) },
   };
 }
@@ -136,7 +138,7 @@ export async function codexExceptionRuntimeResultInput(input: {
       }, input.publicationAuthority);
   const artifacts = handoff?.artifacts ?? [];
   if (!input.deferHandoff && workspace.state === WorkspaceChangesCollectionState.Available) assertDirtyTerminalHandoffAvailable(changedFiles, handoff, artifacts);
-  const exactChangedFiles = handoff?.changedPaths ?? changedFiles;
+  const reported = boundedChangedFiles(handoff?.changedPaths ?? changedFiles), notes = boundedChangedFilesNotes(reported);
   const nativeWeb = nativeWebFromManagedError(input.error);
   const nativeWebDetails = nativeWeb === undefined ? {} : { nativeWeb };
   const details = runtimeResultDetails({
@@ -157,10 +159,11 @@ export async function codexExceptionRuntimeResultInput(input: {
     runId: input.config.jobId ?? input.config.taskId,
     taskId: input.config.taskId,
     reason: failure.reason,
-    changedFiles: exactChangedFiles,
+    changedFiles: reported.changedFiles,
     evidence: [
       failure.evidence,
       ...(workspace.warning ? [workspace.warning] : []),
+      ...notes.evidence,
       ...artifacts.map((artifact) => `patch_preserved:${artifact.path ?? ""}`),
       ...terminalCodexGoalHandoffEvidence(handoff),
       ...(workspace.state === WorkspaceChangesCollectionState.Unknown || changedFiles.length > 0 && artifacts.length === 0
@@ -170,6 +173,6 @@ export async function codexExceptionRuntimeResultInput(input: {
     blockers: [failure.reason],
     nextAction: changedFiles.length > 0 ? "preserve_patch" : "recover",
     ...(artifacts.length === 0 ? {} : { artifacts }),
-    details: { ...(details ?? {}), executionGeneration: input.executionGeneration },
+    details: { ...(details ?? {}), ...notes.details, executionGeneration: input.executionGeneration },
   };
 }

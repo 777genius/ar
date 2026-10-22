@@ -49,6 +49,7 @@ export async function writeFakeCodexBinary(
   path: string,
   input: {
     readonly appServerTurnFails?: boolean;
+    readonly appServerTurnFailureMarkerPath?: string;
     readonly fallbackExecFails?: boolean;
   } = {},
 ): Promise<void> {
@@ -56,8 +57,10 @@ export async function writeFakeCodexBinary(
     path,
     `#!/usr/bin/env node
 import readline from "node:readline";
+import { writeFileSync } from "node:fs";
 
 const appServerTurnFails = ${JSON.stringify(Boolean(input.appServerTurnFails))};
+const appServerTurnFailureMarkerPath = ${JSON.stringify(input.appServerTurnFailureMarkerPath ?? null)};
 const fallbackExecFails = ${JSON.stringify(Boolean(input.fallbackExecFails))};
 
 if (process.argv[2] === "exec") {
@@ -122,6 +125,9 @@ function runAppServer() {
     }
     if (request.method === "turn/start") {
       if (appServerTurnFails) {
+        if (appServerTurnFailureMarkerPath !== null) {
+          writeFileSync(appServerTurnFailureMarkerPath, "turn/start rejected", { flag: "wx", mode: 0o600 });
+        }
         write({
           id: request.id,
           error: { message: "forced app-server turn failure" },

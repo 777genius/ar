@@ -1,17 +1,38 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { AccessBoundary, HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { ChildContinuationMode, parseChildLifetime } from "@vioxen/subscription-runtime/core";
+import { codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { AgentRuntimeTool } from "@vioxen/subscription-runtime/core";
 import { CodexModelBackend, CodexProviderEgressProfileId, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
-const facts = vi.hoisted(() => ({ root: "", creators: [] as unknown[], phase: "CLOSED" }));
-// Synthetic host ownership only; real private bytes, modes, links and no-follow I/O remain observable.
+const facts = vi.hoisted(() => ({ root: "", creators: [] as unknown[], phase: "CLOSED", directories: new Map<number, string>() }));
+// Synthetic host ownership and procfs directory-FD lookup only; real private
+// bytes, modes, links, inode comparisons and no-follow I/O remain observable.
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
+  const anchored = (path: string) => {
+    const match = /^\/proc\/self\/fd\/(\d+)(?:\/([^/]+))?$/.exec(path);
+    if (!match) return path;
+    const parent = facts.directories.get(Number(match[1]));
+    if (!parent || !parent.startsWith(facts.root + "/")) throw new Error("unplanned synthetic directory FD");
+    return match[2] ? join(parent, match[2]) : parent;
+  };
   return { ...fs,
+    openSync: (path: string, flags: number, mode?: number) => {
+      const local = anchored(path), fd = fs.openSync(local, flags, mode);
+      if (fs.fstatSync(fd).isDirectory()) facts.directories.set(fd, local);
+      return fd;
+    },
+    closeSync: (fd: number) => { facts.directories.delete(fd); fs.closeSync(fd); },
+    statSync: (path: string) => {
+      const match = /^\/proc\/self\/fd\/(\d+)$/.exec(path);
+      if (!match) return fs.statSync(path);
+      anchored(path); // Require an actually opened directory owned by this fixture.
+      return fs.fstatSync(Number(match[1]));
+    },
     lstatSync: (path: string) => {
       const stat = fs.lstatSync(path);
       const ancestor = facts.root.startsWith(path.endsWith("/") ? path : path + "/");
@@ -36,7 +57,7 @@ vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
   ...await original<typeof import("@vioxen/subscription-runtime/provider-codex")>(), assertHostedActivationFence: () => undefined,
 }));
 
-facts.root = mkdtempSync(join(tmpdir(), "pr3-TEST-slot-inventory-"));
+facts.root = realpathSync(mkdtempSync(join(tmpdir(), "pr3-TEST-slot-inventory-")));
 for (const name of ["child-slots", "grants", "private-prompts"]) mkdirSync(join(facts.root, name), { mode: 0o700 });
 const { enrollHostedChildSlot, readHostedChildSlot, childSlotName } = await import("../hosted-child-slot-files");
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -55,7 +76,7 @@ function fixture() {
     "--workspace", workspacePath, "--job-root", jobRootDir, "--job-id", jobId, "--task-id", jobId,
     "--auth-root", join(jobRootDir, "capacity"), "--codex-binary", "/test/pinned-codex", "--accounts", "account-s", "--max-account-cycles", "1",
     "--max-attempts", "1", "--continuation-mode", "disabled", "--max-goal-turns", "2", "--child-lifetime-json", JSON.stringify(lifetime), "--execution-engine", "app-server-goal",
-    "--model-backend", "xiaomi-mimo-token-plan", "--model", "mimo-v2.6-pro", "--access-boundary", "read_only",
+    "--model-backend", "xiaomi-mimo-token-plan", "--model", codexMimoDefaultModel, "--access-boundary", "read_only",
     "--edit-mode", "read-only", "--project-access-scope-json", JSON.stringify({ projectId: jobId, readRoots: [workspacePath] })] };
   const slot = { schemaVersion: 1, slotId: "finite-slot-1", creatorId: "test-creator", jobId, jobRootDir, workspacePath, promptPath,
     sourceSha: "a".repeat(40), artifactSha: "b".repeat(40), grantSha256: digest(grantBytes), launch, lifetime };

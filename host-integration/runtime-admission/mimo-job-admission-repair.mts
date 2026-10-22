@@ -166,6 +166,13 @@ export function relocateAdmissionArchive(source: string, destination: string): v
     parents.forEach((path, index) => { const stat = lstatSync(path); check(stat.dev === roots[index]!.dev && stat.ino === roots[index]!.ino, "archive_parent_changed"); });
   } finally { fds.forEach(fd => closeSync(fd)); }
 }
+export function resolveRetainedAdmissionArchive(jobRootDir: string, archiveRootDir: string,
+  priorPlanSha256: string, retainedPreviousAdmissionPath: unknown): { source: string; destination: string } {
+  const legacySource = join(jobRootDir, ".admission-repair-" + priorPlanSha256);
+  const destination = join(archiveRootDir, basename(jobRootDir) + "." + priorPlanSha256);
+  check(retainedPreviousAdmissionPath === legacySource || retainedPreviousAdmissionPath === destination, "retained_archive_binding");
+  return { source: retainedPreviousAdmissionPath, destination };
+}
 export async function finalizeRetainedAdmissionArchive(input: {
   readonly source: string; readonly destination: string; readonly priorPlanSha256: string;
   readonly priorHashes: Readonly<{ contract: string; state: string; receipt: string }>;
@@ -174,16 +181,20 @@ export async function finalizeRetainedAdmissionArchive(input: {
 }): Promise<unknown> {
   await input.assertCurrent();
   const identity = directoryIdentity(input.source);
-  check(!existsSync(input.destination), "archive_destination_exists");
+  const jobId = input.proof?.jobId ?? basename(dirname(input.source));
+  check(typeof jobId === "string" && id.test(jobId), "archive_job_identity");
+  const alreadyExternal = input.source === input.destination;
+  if (alreadyExternal) check(basename(input.source) === jobId + "." + input.priorPlanSha256, "retained_archive_binding");
+  else check(!existsSync(input.destination), "archive_destination_exists");
   await input.assertCurrent();
   check(isDeepStrictEqual(directoryIdentity(input.source), identity), "archive_directory_changed");
-  (input.move ?? relocateAdmissionArchive)(input.source, input.destination);
-  check(!existsSync(input.source) && directoryIdentity(input.destination).device === identity.device && directoryIdentity(input.destination).inode === identity.inode, "archive_move_uncertain");
+  if (!alreadyExternal) (input.move ?? relocateAdmissionArchive)(input.source, input.destination);
+  check((alreadyExternal || !existsSync(input.source)) && directoryIdentity(input.destination).device === identity.device && directoryIdentity(input.destination).inode === identity.inode, "archive_move_uncertain");
   const receipt = { schemaVersion: 1, priorPlanSha256: input.priorPlanSha256, priorHashes: input.priorHashes,
     originalSource: input.source, archivePath: input.destination, archiveDirectory: { ...identity, path: input.destination }, ...input.proof };
-  const receiptPath = join(dirname(input.destination), basename(dirname(input.source)) + ".finalization.json");
+  const receiptPath = join(dirname(input.destination), jobId + ".finalization.json");
   createFile(receiptPath, jsonBytes(receipt)); syncDirectory(dirname(receiptPath));
-  return { ok: true, jobId: basename(dirname(input.source)), archivePath: input.destination, receiptPath,
+  return { ok: true, jobId, archivePath: input.destination, receiptPath,
     receiptSha256: hash(jsonBytes(receipt)), previousStart: input.proof?.previousStart ?? null };
 }
 
@@ -267,9 +278,8 @@ async function operateHostedMimoJobAdmission(planPath: string | RepairPlan, expe
               files.researchCustody(archiveRootDir, true);
               if (finalization) {
                 const priorPlanSha256 = hash(JSON.stringify(finalization.priorPlan));
-                const source = join(job.jobRootDir, ".admission-repair-" + priorPlanSha256);
-                const destination = join(archiveRootDir, job.jobId + "." + priorPlanSha256);
-                check(finalization.priorResult.retainedPreviousAdmissionPath === source, "retained_archive_binding");
+                const { source, destination } = resolveRetainedAdmissionArchive(job.jobRootDir, archiveRootDir,
+                  priorPlanSha256, finalization.priorResult.retainedPreviousAdmissionPath);
                 const pins = { contract: finalization.priorPlan.expectedContractSha256,
                   state: finalization.priorPlan.expectedStateSha256, receipt: finalization.priorPlan.expectedReceiptSha256 };
                 const assertArchiveCurrent = async (): Promise<void> => {

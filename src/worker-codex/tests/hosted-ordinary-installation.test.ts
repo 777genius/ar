@@ -1,6 +1,9 @@
+import { hostedDependencyJobsRoot } from "../hosted-dependency-workspace";
+import { captureManagedDependencyGitContext, requiresManagedDependencyGitRunner } from "../managed-dependency-git";
+import { HostedDependencyGitRoute, readHostedDependencyGitRoute } from "../hosted-dependency-git-route";
 import { registerOrdinaryWriterExtentTests } from "./hosted-ordinary-writer-extent-test-support";
 import { registerOrdinaryAccountRotationTests } from "./hosted-ordinary-account-rotation-test-support";
-import { registerManagedInstallationAdmissionTests } from "./hosted-managed-installation-admission-test-support";
+import { registerManagedInstallationAdmissionTests, registerManagedInstallationMigrationTests } from "./hosted-managed-installation-admission-test-support";
 import { registerDependencyConsumerAdmissionTests } from "./hosted-dependency-consumer-admission-test-support";
 import { registerManifestPlacementInstallationTests } from "./hosted-manifest-placement-installation-test-support";
 import { registerKeyedCorrelationTests, registerChildForegroundDeadlineTests } from "./hosted-child-foreground-deadline-test-support";
@@ -32,7 +35,8 @@ import { HostedInstallationActivationStore, readHostedOrdinaryBirth, readHostedO
 // synthetic /proc, systemd and private filesystem facts replace the actual host.
 const fixture = vi.hoisted(() => ({ root: "", boot: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", group: "/system.slice/trusted.service",
   spawn: vi.fn(), child: null as unknown, creatorBirth: "789", creatorGroup: "/system.slice/trusted.service", runtimeUnit: "",
-  failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
+  legacyGitReads: 0, afterLegacyGitRead: undefined as (() => void) | undefined,
+  omitEmptyManagerProperties: false, failRename: "", unsafeDescriptor: false, enabled: "trusted.service enabled enabled\n", jobs: "", stopFailed: false, populated: false, manifestMountInfo: "", kernelMountInfoSnapshot: "", captureAncestry: false, captureDirectories: new Map<number, string>(), stops: [] as string[], onStop: undefined as (() => void) | undefined }));
 const root = "/var/lib/subscription-runtime-host-policy";
 const stages = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages";
 const manifestScratch = "/mnt/TEST-private-manifests";
@@ -64,24 +68,30 @@ function local(path: string): string {
 vi.mock("node:fs", async original => {
   const real = await original<typeof import("node:fs")>();
   const { installationFileOperations } = await import("./hosted-ordinary-installation-fs-test-support");
+  const { createOrdinaryReadFileSyncProjection } = await import("./hosted-ordinary-read-file-test-projection");
+  const projectedReadFileSync = createOrdinaryReadFileSyncProjection(real, fixture, local);
+  const kernelMountInfoPath = (): string => {
+    if (!real.existsSync(fixture.kernelMountInfoSnapshot)) {
+      const maximum = 8 * 1024 * 1024, fd = real.openSync("/proc/self/mountinfo", real.constants.O_RDONLY);
+      const chunks: Buffer[] = [], buffer = Buffer.alloc(1024 * 1024); let total = 0;
+      try {
+        for (;;) {
+          const n = real.readSync(fd, buffer, 0, Math.min(buffer.length, maximum + 1 - total), null);
+          if (n === 0) break;
+          total += n;
+          if (total > maximum) throw new Error("TEST kernel mount DATA exceeds original reader bound");
+          chunks.push(Buffer.from(buffer.subarray(0, n)));
+        }
+      } finally { real.closeSync(fd); }
+      real.writeFileSync(fixture.kernelMountInfoSnapshot, Buffer.concat(chunks, total), { flag: "wx", mode: 0o400 });
+    }
+    return fixture.kernelMountInfoSnapshot;
+  };
   return { ...real,
     ...installationFileOperations(real, local),
-    readFileSync: (path: string | number, options: Parameters<typeof real.readFileSync>[1]) => {
-      if (typeof path === "number") return real.readFileSync(path, options);
-      if (path === "/proc/self/uid_map") return "0 0 4294967295\n";
-      if (path === "/proc/sys/kernel/random/boot_id") return fixture.boot;
-      if (path === "/etc/machine-id") return "a".repeat(32);
-      if (path === "/proc/self/cgroup") return `0::${fixture.group}\n`;
-      if (path === "/proc/123/stat") return "123 (supervisor) " + [...Array(19).fill("0"), "456"].join(" ");
-      if (path === `/proc/${process.pid}/stat`) return `${process.pid} (dispatcher) ` + [...Array(19).fill("0"), fixture.creatorBirth].join(" ");
-      if (path === `/proc/${process.pid}/cgroup`) return `0::${fixture.creatorGroup}\n`;
-      if (path === "/proc/self/mountinfo") {
-        const text = fixture.manifestMountInfo || "1 0 8:1 / / rw - ext4 /dev/TEST rw\n";
-        return options === "utf8" ? text : Buffer.from(text);
-      }
-      if (path.startsWith("/sys/fs/cgroup") && path.endsWith("/cgroup.events")) return `populated ${fixture.populated ? 1 : 0}\n`;
-      if (path.startsWith("/sys/fs/cgroup") && path.endsWith("/cgroup.procs")) return path.includes("trusted.service") ? "123\n" : "";
-      return real.readFileSync(local(path), options);
+    readFileSync: (path: Parameters<typeof real.readFileSync>[0], options: Parameters<typeof real.readFileSync>[1]) => {
+      if (path === "/proc/self/mountinfo" && fixture.kernelMountInfoSnapshot) return real.readFileSync(kernelMountInfoPath(), options);
+      return projectedReadFileSync(path, options);
     },
     readdirSync: (path: string, options: Parameters<typeof real.readdirSync>[1]) => {
       if (path === "/proc/self/fd") return fixture.unsafeDescriptor ? ["0", "1", "2", "99"] : ["0", "1", "2"];
@@ -93,12 +103,13 @@ vi.mock("node:fs", async original => {
     realpathSync: (path: string) => {
       const physical = local(path), actual = real.realpathSync(physical); return physical !== path && actual === physical ? path : actual;
     },
-    statfsSync: (path: string, options?: { bigint?: boolean }) => path === "/proc/self/fd"
-      ? real.statfsSync(path, options?.bigint ? { bigint: true } : undefined)
+    statfsSync: (path: string, options?: { bigint?: boolean }) => fixture.kernelMountInfoSnapshot || path === "/proc/self/fd"
+      ? real.statfsSync(local(path), options?.bigint ? { bigint: true } : undefined)
       : { type: options?.bigint ? 0xef53n : 0xef53 },
     lstatSync: (path: string, options?: { bigint?: boolean }) => Object.assign(real.lstatSync(local(path), options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
     fstatSync: (fd: number, options?: { bigint?: boolean }) => fd <= 2 ? { isFIFO: () => true, isSocket: () => false } : fd === 99 ?
       { isFile: () => true, isDirectory: () => false } : Object.assign(real.fstatSync(fd, options as { bigint: true }), { uid: options?.bigint ? 0n : 0, gid: options?.bigint ? 0n : 0 }),
+    openSync: (path: string, flags: number, mode: number) => real.openSync(path === "/proc/self/mountinfo" && fixture.kernelMountInfoSnapshot ? kernelMountInfoPath() : local(path), flags, mode),
     renameSync: (from: string, to: string) => {
       if (fixture.failRename && from.endsWith(fixture.failRename)) throw new Error("synthetic publication interruption");
       real.renameSync(local(from), local(to));
@@ -140,12 +151,28 @@ vi.mock("node:child_process", async original => {
     const workspace = args.includes("-C") ? args[args.indexOf("-C") + 1] : options?.cwd;
     const currentProcessIdentity = command === "ps" && args.length === 4 && args[0] === "-p" &&
       args[1] === String(process.pid) && args[2] === "-o" && args[3] === "lstart=";
+    if (command === "/usr/bin/git" && typeof workspace === "string" && workspace.startsWith(hostedDependencyJobsRoot + "/")) {
+      if (args[0] !== "--git-dir=" + workspace + "/.git" || args[1] !== "--work-tree=" + workspace ||
+          options?.env?.PATH !== "/nonexistent" || options.env.GIT_CONFIG_GLOBAL !== "/dev/null" ||
+          !args.includes("core.hooksPath=/dev/null") || !args.includes("core.fsmonitor=false")) throw new Error("TEST nonfixed dependency Git");
+      const physical = local(workspace);
+      if (!physical.startsWith(fixture.root + "/")) throw new Error("TEST dependency Git outside fixture");
+      fixture.legacyGitReads++;
+      const rewrite = (value: string | Buffer) => Buffer.isBuffer(value) ? Buffer.from(value.toString("utf8").split(physical).join(workspace)) : value.split(physical).join(workspace);
+      return real.execFile(command, ["--git-dir=" + physical + "/.git", "--work-tree=" + physical, ...args.slice(2)],
+        { ...options, cwd: physical }, (error, stdout, stderr) => {
+          fixture.afterLegacyGitRead?.(); callback(error, rewrite(stdout), rewrite(stderr));
+        });
+    }
     if (!currentProcessIdentity && (command !== "git" || typeof workspace !== "string" ||
         !workspace.startsWith("/dev/shm/TEST-ordinary-extent-"))) throw new Error("unexpected external command");
     return real.execFile(command, args, options ?? {}, callback);
   };
-  return { execFile: Object.assign(execute, { [promisify.custom]: (command: string, args: readonly string[], options?: import("node:child_process").ExecFileOptions) =>
-    new Promise((resolve, reject) => execute(command, args, options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }),
+  return { execFile: Object.assign(execute, { [promisify.custom]: (command: string, args: readonly string[], options?: import("node:child_process").ExecFileOptions) => {
+    let child!: import("node:child_process").ChildProcess;
+    const pending = new Promise((resolve, reject) => { child = execute(command, args, options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr })); });
+    return Object.assign(pending, { child });
+  } }),
   spawn: (...args: unknown[]) => {
     const [command, argv, options] = args as [string, string[], import("node:child_process").SpawnOptions];
     const batch = command === "git" && Array.isArray(argv) && argv.length === 3 && argv.join("\0") === "--no-replace-objects\0cat-file\0--batch";
@@ -187,15 +214,17 @@ vi.mock("node:child_process", async original => {
     return real.spawn("/usr/bin/git", argv, { ...options, env: environment });
   }, spawnSync: (command: string, args: string[]) => {
   if (command !== "/usr/bin/systemctl") throw new Error("unexpected external command");
+  const show = (stdout: string) => fixture.omitEmptyManagerProperties && !args.includes("--all")
+    ? stdout.replace(/^DropInPaths=\n/gm, "") : stdout;
   if (args[0] === "kill" || args[0] === "stop") {
     fixture.stops.push(args.at(-1)!); fixture.onStop?.();
     return { status: fixture.stopFailed ? 1 : 0, stdout: "" };
   }
   if (args[0] === "show" && args.at(-1) === fixture.runtimeUnit) return { status: 0, stdout:
-    `Id=${fixture.runtimeUnit}\nFragmentPath=\nDropInPaths=\nControlGroup=/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${fixture.runtimeUnit}\nMainPID=234\n` };
+    show(`Id=${fixture.runtimeUnit}\nFragmentPath=\nDropInPaths=\nControlGroup=/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${fixture.runtimeUnit}\nMainPID=234\n`) };
   if (args[0] === "show" && args.at(-1) !== "trusted.service") return { status: 0, stdout:
-    `Id=${args.at(-1)}\nFragmentPath=\nDropInPaths=\nControlGroup=\nMainPID=0\n` };
-  if (args[0] === "show") return { status: 0, stdout: "Id=trusted.service\nFragmentPath=/etc/systemd/system/trusted.service\nDropInPaths=\nControlGroup=/system.slice/trusted.service\nMainPID=123\n" };
+    show(`Id=${args.at(-1)}\nFragmentPath=\nDropInPaths=\nControlGroup=\nMainPID=0\n`) };
+  if (args[0] === "show") return { status: 0, stdout: show("Id=trusted.service\nFragmentPath=/etc/systemd/system/trusted.service\nDropInPaths=\nControlGroup=/system.slice/trusted.service\nMainPID=123\n") };
   if (args[0] === "list-unit-files") return { status: 0, stdout: fixture.enabled };
   if (args[0] === "list-units") return { status: 0, stdout: args.includes("--type=socket,timer") ? "" : "trusted.service loaded active running trusted\n" };
   if (args[0] === "list-jobs") return { status: 0, stdout: fixture.jobs };
@@ -212,9 +241,11 @@ beforeEach(() => {
   vi.spyOn(process, "getuid").mockReturnValue(0);
   vi.spyOn(process, "geteuid").mockReturnValue(0);
   fixture.root = mkdtempSync(join(tmpdir(), "ordinary-installation-")); fixture.group = "/system.slice/trusted.service";
+  fixture.kernelMountInfoSnapshot = "";
   writeFileSync(join(fixture.root, "host-activation-mode"), "required\n", { mode: 0o600 });
-  fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
+  fixture.omitEmptyManagerProperties = false; fixture.failRename = ""; fixture.unsafeDescriptor = false; fixture.enabled = "trusted.service enabled enabled\n"; fixture.jobs = ""; fixture.stopFailed = false; fixture.populated = false; fixture.manifestMountInfo = ""; fixture.stops = []; fixture.onStop = undefined;
   fixture.boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  fixture.legacyGitReads = 0; fixture.afterLegacyGitRead = undefined;
   fixture.spawn.mockReset(); fixture.captureAncestry = false; fixture.captureDirectories.clear();
   const child = Object.assign(new EventEmitter(), { stdin: Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() }),
     stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(() => true) });
@@ -335,67 +366,8 @@ function seedManaged(jobId = "managed-job") {
   put("readonly-epoch.json", { ...epoch, generation: 2, phase: "ready" });
 }
 
-describe("explicit retained managed installation migration", () => {
-  function retained() {
-    seedManaged(); put("readonly-epoch.json", { ...read("readonly-epoch.json"), phase: "closed" });
-    return new HostedInstallationActivationStore();
-  }
-  it.each([false, true])("retains exact managed history and revocation while publishing only CLOSED: revoked=%s", revoked => {
-    const store = retained();
-    put("readonly-epoch.json", { ...read("readonly-epoch.json"), revoked });
-    const before = readFileSync(join(fixture.root, "readonly-epoch.json"));
-    const birth = readFileSync(join(fixture.root, "readonly-enrollment.json"));
-    expect(() => store.install()).toThrow();
-    const activation = store.installManaged();
-    expect(activation.phase).toBe("CLOSED");
-    expect(activation.exclusiveEnrollmentSha256).toBe(hash(birth));
-    expect(read("ordinary-origins.json").origins).toEqual([]);
-    expect(store.installManaged()).toEqual(activation);
-    expect(readFileSync(join(fixture.root, "readonly-epoch.json"))).toEqual(before);
-    expect(readFileSync(join(fixture.root, "readonly-enrollment.json"))).toEqual(birth);
-    expect(fixture.spawn).not.toHaveBeenCalled(); expect(fixture.stops).toEqual([]);
-  });
-  it.each(["missing-birth", "missing-epoch", "ready", "stage", "foreign-host", "pending-epoch", "ordinary-history", "foreign-operator", "missing-terminal-proof"])(
-    "rejects %s without creating installation authority", fault => {
-      const store = retained();
-      if (fault === "missing-birth") rmSync(join(fixture.root, "readonly-enrollment.json"));
-      if (fault === "missing-epoch") rmSync(join(fixture.root, "readonly-epoch.json"));
-      if (fault === "ready") put("readonly-epoch.json", { ...read("readonly-epoch.json"), phase: "ready" });
-      if (fault === "stage") put(stageName, { ...read(stageName), runtimeSha: "f".repeat(40) });
-      if (fault === "foreign-host") put("readonly-epoch.json", { ...read("readonly-epoch.json"), hostId: "foreign-host" });
-      if (fault === "pending-epoch") put("readonly-epoch.next", read("readonly-epoch.json"));
-      if (fault === "ordinary-history") put("ordinary-starts/orphan.json", { incomplete: true });
-      if (fault === "foreign-operator") fixture.group = "/system.slice/foreign.service";
-      if (fault === "missing-terminal-proof") put("readonly-epoch.json", { ...read("readonly-epoch.json"), reservations: [{
-        startId: "33333333-3333-4333-8333-333333333333", creatorId: "33333333-3333-4333-8333-333333333333",
-        unit: "subscription-runtime-hosted-33333333-3333-4333-8333-333333333333.service", state: "terminal" }] });
-      expect(() => store.installManaged()).toThrow();
-      expect(() => read("host-installation.json")).toThrow();
-      expect(fixture.spawn).not.toHaveBeenCalled(); expect(fixture.stops).toEqual([]);
-    });
-  it("missing activation after publication is not reconstructed on migration replay", () => {
-    const store = retained(); store.installManaged(); rmSync(join(fixture.root, "host-activation.json"));
-    expect(() => store.installManaged()).toThrow();
-    expect(() => read("host-activation.json")).toThrow();
-  });
-  it("official managed migration command derives retained identity without caller-authored records", async () => {
-    retained();
-    // Directory provisioning is an explicit substituted host fact. All records,
-    // installation validation and CLI dispatch below use the real composition.
-    vi.spyOn(egressFiles, "assertHostedTestEgressDirectory").mockResolvedValue(true);
-    const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    const errors = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    const argv = process.argv, exitCode = process.exitCode;
-    try {
-      process.argv = [process.execPath, "operator", "install-managed-host"];
-      await import("../hosted-readonly-inputs-cli");
-    } finally { process.argv = argv; process.exitCode = exitCode; vi.resetModules(); }
-    expect(errors).not.toHaveBeenCalled();
-    expect(output).toHaveBeenCalledWith(expect.stringContaining('"operation":"install-managed-host"'));
-    expect(read("host-activation.json").phase).toBe("CLOSED");
-    expect(fixture.spawn).not.toHaveBeenCalled();
-  });
-});
+registerManagedInstallationMigrationTests({ fixture, stageName, seedManaged, read, put, hash });
+
 function ordinarySlots(store: HostedInstallationActivationStore): HostedOrdinaryReservation[] {
   const origin = read("ordinary-origins.json").origins[0];
   const rows: HostedOrdinaryReservation[] = [];
@@ -547,6 +519,12 @@ describe("ordinary dispatcher births and actual process origin", () => {
     fixture.runtimeUnit = unit;
     fixture.group = `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}`;
   }
+  it("holds an unconfigured protected workspace before a genuine generic reservation", () => {
+    const { store, launch } = prepared(), before = read("host-activation.json");
+    mkdirSync(local(`${hostedDependencyJobsRoot}/TEST-unconfigured/workspace`), { recursive: true, mode: 0o700 });
+    expect(() => reserve(store, launch)).toThrow("hosted_dependency_parent_writer_ingress_held");
+    expect(read("host-activation.json")).toEqual(before); expect(fixture.spawn).not.toHaveBeenCalled();
+  });
   it.each([false, true])("binds actual creator PID birth and private scope; npm=%s", npm => {
     const { store, launch } = prepared(npm), first = reserve(store, launch);
     // A subsequent sibling reservation changes activation generation, not the
@@ -726,6 +704,14 @@ describe("real default provider primitive under ordinary activation", () => {
         npm ? "codex-test-npm-qualification" : "codex-full-internet-v1", TEST_BOOTSTRAP_VALUE: "fixture-only" } };
     return { store, input };
   }
+  it.skipIf(process.platform !== "linux")("keeps a genuine ordinary job without a dependency binding unmanaged and refuses protected caller paths", () => {
+    runtime();
+    expect(readHostedDependencyGitRoute(creator().workspacePath).kind).toBe(HostedDependencyGitRoute.Unmanaged);
+    expect(requiresManagedDependencyGitRunner(creator().workspacePath)).toBe(false);
+    expect(captureManagedDependencyGitContext(creator().workspacePath)).toBeUndefined();
+    expect(() => captureManagedDependencyGitContext(hostedDependencyJobsRoot+"/TEST-foreign/workspace")).toThrow();
+    expect(fixture.legacyGitReads).toBe(0);
+  });
   it.each(["app-server", "app-server-goal", "packaged-exec", "plain-exec"] as const)("no-grant Internet preserves supported native engines and refuses legacy sandboxes: %s", async executionEngine => {
     const { input } = runtime();
     const identity = { jobId: creator().jobId, jobRootDir: creator().jobRootDir, workspacePath: creator().workspacePath,
@@ -786,6 +772,13 @@ describe("real default provider primitive under ordinary activation", () => {
     if (fault === "environment") input.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND = "";
     await expect(admitHostedTestEgress({ ...identity, ...(fault === "engine" ? { executionEngine: "plain-exec" as const } : {}) })).rejects.toThrow();
     expect(fixture.spawn).not.toHaveBeenCalled();
+  });
+  it("requests empty manager properties before authentic ordinary provider reservation", () => {
+    const { store, input } = runtime();
+    fixture.omitEmptyManagerProperties = true;
+    spawnCodexAppServerProcess(input);
+    expect(fixture.spawn).toHaveBeenCalledTimes(1);
+    expect(store.read().ordinaryStarts).toHaveLength(2);
   });
   it.each([false, true])("the default primitive reserves and excludes baseline storage context; npm=%s", npm => {
     const { store, input } = runtime(npm);

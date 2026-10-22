@@ -1,0 +1,2048 @@
+import { prepareFreshDependencyManifestPolicy, qualifyFreshDependencyManifestPlacement } from "./manifest-placement.ts";
+import { observeOwnedSyntheticInstallerFailure } from "./owned-installer-diagnostic.ts";
+import { qualifyIoUringEffects } from "./io-uring.ts";
+import { classifyOwnedProxyStderr, classifyTransientStartFailure } from "./transient-start-diagnostic.ts";
+import { sameSyntheticDiagnosticFile, syntheticCliStderrDiagnostic, verifiedSyntheticCliInputs } from "./synthetic-cli-diagnostic.ts";
+import { observeSyntheticResultFile, syntheticStructuredFailure } from "./synthetic-result-diagnostic.ts";
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer, createConnection, type Socket } from "node:net";
+import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSync, lstatSync, openSync,
+  readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statfsSync, symlinkSync, writeFileSync } from "node:fs";
+import { HostedInstallationActivationStore, readHostedInstallationActivation } from "../../dist/worker-codex/hosted-installation-activation.js";
+import { hostedReadonlyPolicyRoot, readHostedPrivateBytes } from "../../dist/worker-codex/hosted-readonly-inputs.js";
+import { completionPath, HostedReadonlyHostKernel } from "../../dist/worker-codex/hosted-readonly-host-kernel.js";
+import { assertReadonlyHostOperator, readonlyIdentityName } from "../../dist/worker-codex/hosted-readonly-authority.js";
+import { HostedReadonlySupervisorHost } from "../../dist/worker-codex/hosted-readonly-supervisor-host.js";
+import { inspectReadonlyInputs } from "../../dist/worker-codex/hosted-readonly-custody.js";
+import { runHostedRuntimeForeground } from "../../dist/worker-codex/hosted-readonly-foreground.js";
+import { hostedForegroundExitCode } from "../../dist/worker-codex/hosted-foreground-result.js";
+import { readCodexGoalResultSummary } from "../../dist/worker-codex/codex-goal-status-files.js";
+import { decodeCodexGoalOriginDiagnostic } from "../../dist/worker-codex/codex-goal-origin-diagnostic.js";
+import { collectCodexGoalStatus } from "../../dist/worker-codex/codex-goal-ops.js";
+import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
+import { CodexProviderEgressProfileId, verifySystemBusInfrastructure } from "../../dist/provider-codex/index.js";
+import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH,
+  SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
+  SYSTEM_BUS_SOCKET_FRAGMENT, SystemBusQueryRenderer, type SystemBusQueryTool, type SystemBusFilePin, type SystemBusInfrastructure } from "../../dist/core/index.js";
+import { observeSystemBusFdEmptyArrays } from "../../dist/provider-codex/app-server/adapters/system-bus-infrastructure.js";
+import { assertPinnedSystemBusQueryTool, observeSystemdServiceEmptyArrays, SystemdServiceArrayKind,
+  type SystemdEmptyArrayFact } from "../../dist/provider-codex/app-server/adapters/systemd-service-arrays.js";
+import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind, HostedCustodyPhase, HostedCustodyReservationState, parseHostedOrdinaryStart } from "../../dist/worker-core/index.js";
+import { HostedDependencyInstallerNetworkInput, hostedDependencyInstallerNetworkRoot, hostedDependencyInstallerNpmRootSha256,
+  HostedDependencyInstallerRevision, hostedDependencyInstallerDropperSha256,
+  type HostedDependencyInstallerProfile } from "../../dist/worker-codex/hosted-dependency-installer-recipe.js";
+import { readHostedDependencyBinding } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-workspace.js";
+import { LocalDependencyOwnerStore } from "../../dist/store-local-file/dependency-environment/local-dependency-owner-store.js";
+import { readHostedDependencyReceipt } from "../../dist/worker-codex/hosted-dependency-materialization.js";
+import { fdCollectorProfilePath, FdCollectorRenderer, parseFdCollectorProfile, parseFdCollectorRows, knownFdCollectorPeer,
+  type FdCollectorProfile, type FdExecutablePin, type FdFilePin, type FdCollectorPeer } from "../../dist/core/host-infrastructure/fd-collector-profile.js";
+import { assertHostedFdInternals, observeHostedFdProcess, hostedFdTable } from "../../dist/provider-codex/app-server/adapters/hosted-fd-observation.js";
+import { hostedFdLaunch, hostedFdInvocationUnit, spawnHostedFdChild, HostedFdLaunchKind, HostedForegroundArtifactKind, type HostedForegroundResult } from "../../dist/provider-codex/app-server/adapters/hosted-fd-launch.js";
+import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
+import { startResearchLaunch } from "../../dist/worker-codex/research-launch-owner.js";
+import { assertResearchInitialRoot } from "../../dist/worker-codex/research-launch-host.js";
+import { cleanEnv, command, ControlSinkPhase, digest, directory, directoryIdentity, fileDigest, installedArtifactDigest, json, node, OwnedOsScenario,
+  policy, readonlyStorage, runtime, runtimeDiagnostic } from "./common.ts";
+
+{
+  const evidence: Record<string, unknown> = { schemaVersion: 1, sourceSha: process.env.TEST_SOURCE_SHA,
+    qualification: process.env.TEST_OS_SCENARIO === OwnedOsScenario.Readonly ? "native_readonly_custody_synthetic_provider" : "native_fresh_hot_synthetic_provider", machineId: readFileSync("/etc/machine-id", "utf8").trim(),
+    status: "failed", results: [], requiredCompanionGates: [{ workflow: "dependency-retention-linux-test.yml",
+      sourceSha: process.env.TEST_SOURCE_SHA, observedInvariant: "actual npm UID/GID 65532 before normalization" }],
+    unsupported: ["committed_absent_eviction_and_cold_restore", "live_account_provider_acceptance", "complete_stdio_fd_peer_provenance"],
+    pendingNativeCases: ["actual_inherited_control_sink_capture", "separate_readonly_custody_foreground_consumer"] };
+  try {
+    assert(Object.values(OwnedOsScenario).includes(process.env.TEST_OS_SCENARIO as OwnedOsScenario));
+    if (process.env.TEST_OS_SCENARIO === OwnedOsScenario.Readonly) await qualifyReadonly(evidence);
+    else await qualify(evidence);
+    evidence.status = "partial_pass";
+  }
+  catch (error) {
+    evidence.failure = error instanceof Error ? error.message.slice(0, 512) : "TEST native qualification failed";
+    if (error instanceof Error) evidence.failureLocations = failureLocations(error);
+    process.exitCode = 1;
+  } finally { json(runtime + "/guest-evidence.json", evidence, 0o644); }
+}
+
+async function qualify(evidence: Record<string, unknown>): Promise<void> {
+  assert.equal(process.argv[2], "qualify"); assertReadonlyHostOperator();
+  assert.match(process.env.TEST_SOURCE_SHA ?? "", /^[a-f0-9]{40}$/);
+  evidence.kernelGatePhase = "actual_system_bus_infrastructure";
+  const systemBusInfrastructure = await issueActualSystemBusInfrastructure(evidence);
+  assert(!existsSync(policy)); directory(policy);
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
+    directory(policy + "/" + name);
+  const results = evidence.results as unknown[];
+  evidence.kernel = command("/usr/bin/uname", ["--release"]).trim();
+  const guestNamespaces = { user: readlinkSync("/proc/self/ns/user"), mnt: readlinkSync("/proc/self/ns/mnt"), pid: readlinkSync("/proc/self/ns/pid") };
+  evidence.namespaces = { ...guestNamespaces, cgroup: readlinkSync("/proc/self/ns/cgroup") };
+  evidence.uidMap = readFileSync("/proc/self/uid_map", "utf8").trim();
+  evidence.bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  evidence.runtimeManifestSha256 = installedArtifactDigest(process.env.TEST_OS_SCENARIO as OwnedOsScenario);
+  const actualPackage = lstatSync(runtime + "/package.json");
+  assert(actualPackage.isFile() && !actualPackage.isSymbolicLink() && actualPackage.uid === 0 && actualPackage.nlink === 1 && !(actualPackage.mode & 0o022));
+  evidence.installedRuntimeRootPackage = { path: runtime + "/package.json", sha256: fileDigest(runtime + "/package.json"),
+    bytes: actualPackage.size, source: "actual copied runtime-root artifact, no substitute metadata" };
+  evidence.runtimeDirectory = directoryIdentity(runtime);
+  evidence.systemdVersion = command("/usr/bin/systemctl", ["--version"]).split("\n")[0];
+  evidence.cgroupControllers = readFileSync("/sys/fs/cgroup/cgroup.controllers", "utf8").trim();
+  assert(!readFileSync("/etc/passwd", "utf8").split("\n").some(line => line.split(":")[2] === "65532"));
+  assert(!readFileSync("/etc/group", "utf8").split("\n").some(line => line.split(":")[2] === "65532"));
+  evidence.installerNssIdentityAbsent = true;
+  assert.match(String(evidence.cgroupControllers), /\bcpu\b/); assert.match(String(evidence.cgroupControllers), /\bmemory\b/);
+  assert.match(String(evidence.cgroupControllers), /\bpids\b/);
+  const jobId = "TEST-os-" + randomUUID(), root = policy + "/dependency-test-jobs/jobs/" + jobId;
+  directory(root); const workspace = root + "/workspace"; directory(workspace);
+  const inputs = await publicInputs();
+  writeFileSync(workspace + "/package.json", inputs.packageBytes, { flag: "wx", mode: 0o600 });
+  writeFileSync(workspace + "/package-lock.json", inputs.lockBytes, { flag: "wx", mode: 0o600 });
+  writeFileSync(workspace + "/source-sentinel", "TEST source original\n", { flag: "wx", mode: 0o600 });
+  writeFileSync(workspace + "/.gitignore", ".needed-ignored\nTEST-provider-probe-*.json\nnode_modules/\n", { flag: "wx", mode: 0o600 });
+  command("/usr/bin/git", ["init", "--initial-branch=main", workspace]);
+  command("/usr/bin/git", ["config", "user.name", "iliya"], 30000, workspace);
+  command("/usr/bin/git", ["config", "user.email", "iliyazelenkog@gmail.com"], 30000, workspace);
+  command("/usr/bin/git", ["add", "package.json", "package-lock.json", ".gitignore", "source-sentinel"], 30000, workspace);
+  const author = command("/usr/bin/git", ["var", "GIT_AUTHOR_IDENT"], 30000, workspace);
+  const committer = command("/usr/bin/git", ["var", "GIT_COMMITTER_IDENT"], 30000, workspace);
+  assert(author.startsWith("iliya <iliyazelenkog@gmail.com> ")); assert(committer.startsWith("iliya <iliyazelenkog@gmail.com> "));
+  command("/usr/bin/git", ["commit", "-m", "test: initialize disposable dependency fixture"], 30000, workspace);
+  const sentinels = [workspace + "/source-sentinel", workspace + "/.git/config", workspace + "/.needed-ignored",
+    root + "/key-sentinel", root + "/state-sentinel", root + "/output-sentinel", policy + "/privileged-sibling-sentinel"];
+  for (const path of sentinels.slice(2)) writeFileSync(path, "TEST private original\n", { flag: "wx", mode: 0o600 });
+  const before = sentinels.map(path => ({ path, sha256: fileDigest(path), ino: String(lstatSync(path).ino) }));
+  const gitBefore = command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim();
+  directory(root + "/auth/TEST-account");
+  json(root + "/auth/TEST-account/auth.json", { auth_mode: "chatgpt", tokens: { refresh_token: "TEST-NOT-A-CREDENTIAL" }, last_refresh: new Date().toISOString() });
+  writeFileSync(root + "/prompt", "Execute the fixed dependency-reading TEST probe. This is a synthetic provider protocol fixture.\n", { flag: "wx", mode: 0o600 });
+  directory(root + "/state");
+  const resultPath = root + "/state/TEST-result.json";
+  directory(runtime + "/codex/bin", 0o755);
+  cpSync(runtime + "/scripts/dependency-retention-os-test/provider.ts", runtime + "/codex/bin/provider.ts");
+  chmodSync(runtime + "/codex/bin/provider.ts", 0o755);
+  json(runtime + "/codex/package.json", { name: "@openai/codex", type: "module", private: true }, 0o644);
+  json(runtime + "/codex/TEST-probe.json", { workspace, guestNamespaces }, 0o644);
+  const args = [runtime + "/dist/worker-codex/codex-goal-cli.js", "run", "--task-id", jobId, "--job-id", jobId,
+    "--job-root", root, "--workspace", workspace, "--prompt", root + "/prompt", "--accounts", "TEST-account", "--auth-root", root + "/auth",
+    "--codex-binary", runtime + "/codex/bin/provider.ts", "--model", "TEST-synthetic-model", "--effort", "low",
+    "--timeout", "5m", "--max-goal-turns", "1", "--max-attempts", "1", "--continuation-mode", "disabled",
+    "--registry-root", root + "/state/registry", "--output", resultPath, "--worker-report-mode", "structured-output"];
+  const launch = { command: node, args, cwd: workspace };
+  const supervisorUnit = "TEST-retention-supervisor.service";
+  // v255 list-unit-files exits ENOENT for a zero-row filtered list. Enable only
+  // the already-required, inventoried TEST supervisor through an actual guest
+  // runtime wants link; no extra unit, reload or process is introduced.
+  const runtimeUnits = "/run/systemd/system", wants = runtimeUnits + "/TEST-retention.target.wants";
+  directory(runtimeUnits, 0o755); assert(!existsSync(wants)); directory(wants, 0o755);
+  const link = wants + "/" + supervisorUnit, fragment = "/etc/systemd/test-units/" + supervisorUnit;
+  symlinkSync(fragment, link);
+  const linkStat = lstatSync(link); assert(linkStat.isSymbolicLink() && linkStat.uid === 0 && linkStat.nlink === 1);
+  assert.equal(readlinkSync(link), fragment); assert.equal(realpathSync(link), fragment);
+  const enabled = command("/usr/bin/systemctl", ["list-unit-files", "--type=service,socket,timer",
+    "--state=enabled,enabled-runtime,linked,linked-runtime,alias", "--no-legend", "--no-pager"])
+    .split("\n").filter(line => line.trim()).map(line => line.trim().split(/\s+/));
+  assert.equal(enabled.length, 1); assert.equal(enabled[0]?.[0], supervisorUnit); assert.equal(enabled[0]?.[1], "enabled-runtime");
+  evidence.runtimeSupervisorEnablement = { unit: supervisorUnit, actualState: enabled[0]![1],
+    linkRootOwned: true, linkTargetMatches: true, fragmentSha256: fileDigest(fragment) };
+  const controlGroup = command("/usr/bin/systemctl", ["show", supervisorUnit, "--property=ControlGroup", "--value"]).trim();
+  evidence.kernelGatePhase = "native_fd_collector_qualification";
+  const collectorProfile = await issueNativeFdProfile(evidence, systemBusInfrastructure);
+  json(policy + "/readonly-inventory.json", { schemaVersion: 4, hostId: evidence.machineId, supervisorUnit, systemBusInfrastructure, collectorProfile,
+    units: [{ name: supervisorUnit, controlGroup, fragmentSha256: fileDigest("/etc/systemd/test-units/" + supervisorUnit) },
+      { name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP, fragmentSha256: systemBusInfrastructure.service.fragmentSha256 }],
+    ordinaryCreators: [{ creatorId: jobId, jobId, jobRootDir: root, workspacePath: workspace, launch }],
+    disabledCreators: [], runtimeLaunch: launch });
+  const stage = "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages"; directory(stage);
+  json(stage + "/" + digest(runtime) + ".json", { schemaVersion: 1, runtimeDirectory: runtime,
+    runtimeSha: process.env.TEST_SOURCE_SHA, runtimeManifestSha256: evidence.runtimeManifestSha256 });
+  const installerProfile = actualToolchainProfile();
+  evidence.installerProfile = installerProfile;
+  json(policy + "/dependency-installer-profile.json", installerProfile);
+  evidence.kernelGatePhase = "exclusive_inventory";
+  try { new HostedReadonlyHostKernel().verifyExclusiveInventory(); }
+  catch (error) {
+    try { evidence.kernelInventoryObservation = observeKernelInventory(supervisorUnit, controlGroup); }
+    catch { evidence.kernelInventoryObservation = { purpose: "TEST_kernel_predicate_observation_only", unavailable: true }; }
+    throw error;
+  }
+  evidence.kernelGatePhase = "fresh_manifest_storage_configuration";
+  evidence.manifestStorageConfiguration = prepareFreshDependencyManifestPolicy();
+  evidence.kernelGatePhase = "cold_installation";
+  const store = new HostedInstallationActivationStore();
+  try { store.install(); }
+  catch (error) {
+    try { evidence.kernelInventoryObservation = observeKernelInventory(supervisorUnit, controlGroup); }
+    catch { evidence.kernelInventoryObservation = { purpose: "TEST_kernel_predicate_observation_only", unavailable: true }; }
+    throw error;
+  }
+  evidence.kernelGatePhase = "fresh_manifest_placement_readback";
+  evidence.manifestStoragePlacement = await qualifyFreshDependencyManifestPlacement();
+  results.push({ scenario: "unchanged_cold_host_installation", result: "qualified_actual_finite_inventory", controlGroup });
+  evidence.kernelGatePhase = "research_shared_host_early_denial";
+  assertResearchInitialRoot(true);
+  const activationBeforeResearch = fileDigest(policy + "/host-installation.json");
+  const authorityBeforeResearch = existsSync("/run/user/subscription-runtime-research-v1");
+  const unitsBeforeResearch = command("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]);
+  const transientSnapshot = () => ({ present: existsSync("/run/systemd/transient"),
+    entries: existsSync("/run/systemd/transient") ? readdirSync("/run/systemd/transient").sort() : [] });
+  const transientBeforeResearch = transientSnapshot();
+  assert.throws(() => startResearchLaunch(root + "/TEST-nonexistent-research-request.json", "0".repeat(64)),
+    (error: unknown) => error instanceof Error && error.message === "hosted_research_launch_denied");
+  assert.equal(fileDigest(policy + "/host-installation.json"), activationBeforeResearch);
+  assert.equal(existsSync("/run/user/subscription-runtime-research-v1"), authorityBeforeResearch);
+  assert.equal(command("/usr/bin/systemctl", ["list-jobs", "--no-legend", "--no-pager"]), unitsBeforeResearch);
+  assert.deepEqual(transientSnapshot(), transientBeforeResearch);
+  results.push({ scenario: "research_shared_host_early_denial", result: "denied_before_request_read_or_unit_launch" });
+  evidence.kernelGatePhase = "private_policy_namespace_setup";
+  // The strict private reader recognizes only a missing leaf beneath existing
+  // trusted ancestry. An absent parent is invalid, never managed-policy absence.
+  assert(!existsSync(hostedReadonlyPolicyRoot)); directory(hostedReadonlyPolicyRoot);
+  const parents = ["/", "/run", "/run/user", "/run/user/0", "/run/user/0/subscription-runtime-host-policy", hostedReadonlyPolicyRoot];
+  const ancestry = parents.map((path, index) => {
+    const stat = lstatSync(path); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && (stat.mode & 0o022) === 0);
+    if (path === hostedReadonlyPolicyRoot) assert.equal(stat.mode & 0o777, 0o700);
+    return { component: index, uid: stat.uid, mode: stat.mode & 0o777, dev: String(stat.dev), ino: String(stat.ino) };
+  });
+  assert.equal(readdirSync(hostedReadonlyPolicyRoot).length, 0);
+  assert.equal(readHostedPrivateBytes(hostedReadonlyPolicyRoot + "/" + digest(jobId) + ".json", 64 * 1024), null);
+  evidence.privatePolicyNamespace = { ancestry, entries: 0, unchangedReaderMissingLeaf: true };
+  evidence.kernelGatePhase = "write_test_egress_grant";
+  await writeHostedTestEgressGrant({ schemaVersion: 1, jobId, jobRootDir: root, workspacePath: workspace,
+    profileId: CodexProviderEgressProfileId.TestNpmQualification });
+  evidence.kernelGatePhase = "enroll_ordinary"; store.enrollOrdinary(jobId);
+  evidence.kernelGatePhase = "resume_ordinary"; store.resumeOrdinary();
+  evidence.kernelGatePhase = "read_dependency_binding";
+  const binding = readHostedDependencyBinding(jobId); assert(binding);
+  const env = { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" };
+  let readyDigest: string | undefined;
+  evidence.guestBusPaths = ["/run/systemd/private", "/run/dbus/system_bus_socket"].map((path, slot) => {
+    try { const stat = lstatSync(path); return { slot, present: true, socket: stat.isSocket(), symlink: stat.isSymbolicLink(),
+      uid: stat.uid, mode: stat.mode & 0o777, dev: String(stat.dev), ino: String(stat.ino) }; }
+    catch (error) { return { slot, present: false, missing: (error as NodeJS.ErrnoException).code === "ENOENT" }; }
+  });
+  const releaseTrace = releaseChainTrace();
+  for (const mode of ["fresh", "hot"] as const) {
+    evidence.kernelGatePhase = mode + "_real_cli";
+    releaseTrace.reset();
+    const foreground = await runHostedRuntimeForeground(node, args, workspace, env), cliStatus = hostedForegroundExitCode(foreground);
+    evidence[mode + "ReleaseChainObservation"] = releaseTrace.snapshot();
+    if (cliStatus !== 0) {
+      try {
+        // Redacted fixture stderr text needs only the exact fixture proof for the
+        // current phase; the wider fixture channels stay fresh-only.
+        const synthetic = verifyOwnedSyntheticDiagnosticInputs(`${mode}_real_cli`, jobId, root, workspace, node, args, env);
+        evidence.cliFailureObservation = observeOwnedCliFailure(jobId, root, workspace, cliStatus,
+          mode === "fresh" && synthetic, synthetic);
+      }
+      catch { evidence.cliFailureObservation = { purpose: "TEST_owned_cli_failure_only", status: cliStatus, unavailable: true }; }
+    }
+    assert.equal(cliStatus, 0, `actual ${mode} CLI failed`);
+    assert(typeof foreground !== "number", "TEST governed foreground must return authenticated output refs");
+    const retrieved = await readCodexGoalResultSummary(resultPath); assert(retrieved.foregroundOutput);
+    assert.equal(retrieved.foregroundOutput.unit, foreground.unit);
+    assert.equal(retrieved.foregroundOutput.exitCode, 0);
+    assert(Buffer.byteLength(retrieved.foregroundOutput.stdout) + Buffer.byteLength(retrieved.foregroundOutput.stderr) > 0);
+    const outputEvidence = { unit: foreground.unit, exitCode: retrieved.foregroundOutput.exitCode, artifacts: foreground.artifacts,
+      retrievedStdoutBytes: Buffer.byteLength(retrieved.foregroundOutput.stdout), retrievedStderrBytes: Buffer.byteLength(retrieved.foregroundOutput.stderr) };
+    evidence.kernelGatePhase = mode + "_receipt_owner_probe";
+    const receipt = readHostedDependencyReceipt(binding); assert(receipt);
+    const owner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
+    try {
+      const row = owner.read(binding.workspace);
+      try { evidence[mode + "ReceiptOwnerProbeObservation"] = receiptOwnerProbeObservation(policy, row, workspace); }
+      catch { evidence[mode + "ReceiptOwnerProbeObservation"] = { unavailable: true }; }
+      assert.equal(row?.owner, null, "actual creator/drain release unresolved");
+    }
+    finally { owner.close(); }
+    const probes = readdirSync(workspace).filter(name => /^TEST-provider-probe-[12]\.json$/.test(name)).sort();
+    assert.equal(probes.length, mode === "fresh" ? 1 : 2);
+    const probePath = workspace + "/" + probes.at(-1)!;
+    const probeStat = lstatSync(probePath); assert(probeStat.isFile() && probeStat.nlink === 1 && probeStat.uid === 0 && probeStat.size < 4096);
+    const observed = JSON.parse(readFileSync(probePath, "utf8")) as Record<string, unknown>;
+    assert(typeof observed.uidMap === "string" && /^65532\s+0\s+1$/.test(observed.uidMap));
+    assert(typeof observed.gidMap === "string" && /^65532\s+0\s+1$/.test(observed.gidMap));
+    assert(observed.namespaces && typeof observed.namespaces === "object" && !Array.isArray(observed.namespaces));
+    const namespaces = observed.namespaces as Record<string, unknown>;
+    assert.equal(Object.keys(namespaces).sort().join(","), "mnt,pid,user");
+    for (const kind of ["user", "mnt", "pid"] as const) {
+      assert(typeof namespaces[kind] === "string" && new RegExp(`^${kind}:\\[\\d+\\]$`).test(namespaces[kind]));
+      assert.notEqual(namespaces[kind], guestNamespaces[kind], `actual provider ${kind} namespace must differ from guest`);
+    }
+    assert.deepEqual(observed, { schemaVersion: 1, result: "dependency_read_and_actual_enclosure_denial_passed",
+      ids: { uid: 65532, euid: 65532, gid: 65532, egid: 65532 }, uidMap: observed.uidMap, gidMap: observed.gidMap,
+      namespaces, noNewPrivs: 1, capabilities: "zero" });
+    const installs = readdirSync(policy + "/dependency-installers").filter(name => /^[a-f0-9-]{36}$/.test(name));
+    assert.equal(installs.length, 1, "hot reuse must not reinstall");
+    const currentReady = digest(JSON.stringify(receipt));
+    if (mode === "hot") assert.equal(currentReady, readyDigest); else readyDigest = currentReady;
+    results.push({ scenario: mode + "_real_cli_provider_and_drain", result: "passed", installCount: installs.length,
+      receiptSha256: currentReady, probe: observed, output: outputEvidence });
+  }
+  evidence.kernelGatePhase = "actual_inherited_relay_control_sink";
+  results.push(await qualifyRelayControlSink(systemBusInfrastructure, workspace, resultPath, evidence));
+  const afterSink = readHostedDependencyReceipt(binding); assert(afterSink);
+  assert.equal(digest(JSON.stringify(afterSink)), readyDigest);
+  const afterSinkOwner = LocalDependencyOwnerStore.open({ rootPath: policy + "/dependency-owners", maxRecordBytes: 16384 });
+  try { assert.equal(afterSinkOwner.read(binding.workspace)?.owner, null); } finally { afterSinkOwner.close(); }
+  evidence.pendingNativeCases = ["direct_daemon_socket_sent_byte_capture", "noop_and_stale_same_inode_result", "unauthorized_destination_no_preread"];
+  evidence.kernelGatePhase = "actual_final_release_deadline_denial";
+  results.push(await qualifyLateRelease(node, args, workspace, env, systemBusInfrastructure, evidence));
+  const afterLateReceipt = readHostedDependencyReceipt(binding); assert(afterLateReceipt);
+  assert.equal(digest(JSON.stringify(afterLateReceipt)), readyDigest);
+  assert.equal(readdirSync(policy + "/dependency-installers").filter(name => /^[a-f0-9-]{36}$/.test(name)).length, 1);
+  assert.deepEqual(before, sentinels.map(path => ({ path, sha256: fileDigest(path), ino: String(lstatSync(path).ino) })));
+  assert.equal(command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim(), gitBefore);
+  results.push({ scenario: "source_git_ignored_key_state_output_sentinels", result: "unchanged" });
+}
+
+function closedFailureToken(error: unknown): string {
+  const tokens = ["hosted_foreground_result_unresolved", "hosted_activation_evidence_invalid",
+    "hosted_activation_fence_busy", "hosted_custody_legacy_lock_recovery_required", "hosted_custody_admission_denied",
+    "hosted_custody_runtime_not_started", "hosted_custody_runtime_stop_incomplete", "hosted_custody_inherited_handle_denied",
+    "hosted_custody_stdio_pipe_required", "hosted_custody_descriptor_invalid", "hosted_custody_kernel_evidence_invalid",
+    "hosted_custody_runtime_launch_denied", "hosted_fd_boundary_unresolved", "hosted_fd_profile_invalid"];
+  return error instanceof Error && tokens.includes(error.message) ? error.message : "unknown";
+}
+
+/** Closed-fact release chain trace. Wrappers record stage tokens and one
+ * classified error code, then rethrow — no product behavior change. */
+function releaseChainTrace() {
+  const stages: string[] = [];
+  const failure: { stage: string | null; class: string | null } = { stage: null, class: null };
+  const classify = (error: unknown): string => {
+    const code = error instanceof Error ? error.message : "";
+    const known: Record<string, string> = {
+      hosted_ordinary_reader_completion_held: "reader_completion_held",
+      hosted_dependency_provider_terminal_unresolved: "provider_terminal_unresolved",
+      hosted_custody_creator_not_fenced: "creator_not_fenced",
+      hosted_custody_stop_incomplete: "stop_incomplete",
+      hosted_activation_invalid: "activation_invalid",
+      hosted_readonly_conflicting_enrollment: "conflicting_enrollment",
+      child_invocation_consumed: "child_invocation_consumed"
+    };
+    if (code in known) return known[code]!;
+    const admission = error instanceof Error && "failure" in error ? (error as { failure?: unknown }).failure : undefined;
+    const failures = ["busy", "stale_attempt", "invalid_record", "workspace_changed", "needs_install", "unsafe_tree", "unsupported"];
+    if (typeof admission === "string" && failures.includes(admission)) return "admission_" + admission;
+    return "unclassified";
+  };
+  const wrap = (target: object, name: string, label: string) => {
+    const holder = target as Record<string, unknown>, original = holder[name];
+    if (typeof original !== "function") return;
+    holder[name] = function (this: unknown, ...args: unknown[]) {
+      stages.push(label);
+      try { return (original as (...a: unknown[]) => unknown).apply(this, args); }
+      catch (error) {
+        if (failure.stage === null) { failure.stage = label; failure.class = classify(error); }
+        throw error;
+      }
+    };
+  };
+  for (const name of ["runOrdinaryRuntimeLaunch", "recordOrdinaryRuntimeWaitCompletion", "withOrdinaryForegroundTerminal",
+    "completeOrdinaryDependencyReader", "releaseOrdinaryDependencyConsumer", "requestOrdinaryDependencyCleanup"])
+    wrap(HostedInstallationActivationStore.prototype, name, "store." + name);
+  for (const name of ["fenceOrdinaryCreator", "drainOrdinaryQueue", "confirmOrdinaryDescendants"])
+    wrap(HostedReadonlyHostKernel.prototype, name, "kernel." + name);
+  wrap(LocalDependencyOwnerStore.prototype, "compareAndSwap", "owner.compareAndSwap");
+  return {
+    reset: () => { stages.length = 0; failure.stage = null; failure.class = null; },
+    snapshot: () => ({ stages: stages.slice(0, 32), stageCount: stages.length, failureStage: failure.stage, failureClass: failure.class })
+  };
+}
+
+/** Closed-fact release observation for the owner probe: enums, booleans and
+ * counts only. Never record IDs, raw paths, bytes or stderr. */
+function receiptOwnerProbeObservation(policy: string, row: ReturnType<LocalDependencyOwnerStore["read"]>, workspace: string): Record<string, unknown> {
+  const present = (path: string): boolean => { try { lstatSync(path); return true; } catch { return false; } };
+  const owner = row?.owner ?? null;
+  const attempt = owner && typeof owner === "object" && "attempt" in owner
+    ? owner.attempt as { attemptId?: unknown; epoch?: unknown } : undefined;
+  const attemptId = typeof attempt?.attemptId === "string" ? attempt.attemptId : null;
+  const attemptEpoch = typeof attempt?.epoch === "number" ? attempt.epoch : null;
+  const phaseValue: string = owner === null ? "none" : String(owner.phase);
+  const phase = phaseValue === "exclusive_mutation" || phaseValue === "running" || phaseValue === "fenced" ? phaseValue : "other";
+  const kindValue: string | undefined = owner === null || owner.kind === undefined ? undefined : String(owner.kind);
+  const ownerKind = owner === null ? "none" : kindValue === undefined ? "unspecified"
+    : kindValue === "consumer" || kindValue === "maintenance" ? kindValue : "other";
+  const continuity = (row as { generationContinuity?: { kind?: unknown } } | null)?.generationContinuity;
+  const continuityKind = row === null ? "no_record" : continuity === undefined ? "absent"
+    : continuity.kind === "baseline_authenticated_v1" ? "baseline_authenticated_v1"
+      : continuity.kind === "retired_ready_v1" ? "retired_ready_v1"
+        : continuity.kind === "retired_evicting_v1" ? "retired_evicting_v1" : "other";
+  const installers = policy + "/dependency-installers";
+  const activation = readHostedInstallationActivation().activation;
+  // Closed unit-state enum for the durable start's unit: a live unit with no
+  // zero record discriminates provider survival from an unpublishing terminal.
+  const unitState = (unit: string): string => {
+    try {
+      const text = command("/usr/bin/systemctl", ["show", "--property=LoadState,ActiveState,SubState", "--", unit], 5000);
+      const facts = new Map(text.split("\n").map(line => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
+      if (facts.get("LoadState") === "not-found") return "not_found";
+      const active = facts.get("ActiveState");
+      return ["active", "activating", "deactivating", "inactive", "failed"].includes(active ?? "") ? active! : "other";
+    } catch { return "unknown"; }
+  };
+  const rows = activation.ordinaryStarts.slice(0, 8).map(start => ({
+    unitClass: start.unit.startsWith("subscription-runtime-installer-") ? "installer"
+      : start.unit.startsWith("subscription-runtime-hosted-") ? "hosted"
+        : start.unit.startsWith("subscription-runtime-") ? "ordinary" : "other",
+    state: start.state === HostedCustodyReservationState.Reserved ? "reserved"
+      : start.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+    unitState: unitState(start.unit),
+    attemptFenceRecord: present(`${policy}/dependency-attempt-fences/${start.startId}.json`),
+    readerCompletionRecord: present(`${policy}/dependency-ordinary-reader-completions/${start.startId}.json`),
+    providerCompletionRecord: present(`${policy}/dependency-ordinary-provider-completions/${start.startId}.json`),
+    providerAttemptRecord: present(`${policy}/dependency-provider-attempts/${start.startId}.json`),
+    waitCompletionRecord: present(`${policy}/ordinary-completed/${start.startId}.json`),
+    installerStartRecord: present(`${installers}/${start.startId}/start.json`),
+    installerTerminalRecord: present(`${installers}/${start.startId}/terminal.json`)
+  }));
+  let installerAttemptRecordCount = 0, installerAttemptDetails: unknown[] = [];
+  try {
+    const attempts = readdirSync(installers).filter(name => /^attempt-[a-f0-9-]{36}\.json$/.test(name)).slice(0, 4);
+    installerAttemptRecordCount = attempts.length;
+    installerAttemptDetails = attempts.map(name => {
+      try {
+        const row = JSON.parse(readFileSync(installers + "/" + name, "utf8")) as { startId?: unknown };
+        const id = typeof row.startId === "string" ? row.startId : "";
+        return id === "" ? { parseFailed: true }
+          : { startRecord: present(`${installers}/${id}/start.json`), terminalRecord: present(`${installers}/${id}/terminal.json`) };
+      } catch { return { parseFailed: true }; }
+    });
+  } catch { installerAttemptRecordCount = -1; }
+  // Closed provider termination markers: which exit path the provider process
+  // actually took (EOF-driven clean exit vs a signaled stop).
+  let providerTerminationMarkers = "none";
+  try {
+    const markers = (JSON.parse(readFileSync(workspace + "/TEST-provider-termination.json", "utf8")) as { markers?: unknown }).markers;
+    const names = Array.isArray(markers) ? markers.filter(name => name === "stdin_eof" || name === "sigterm") : [];
+    providerTerminationMarkers = names.includes("stdin_eof") && names.includes("sigterm") ? "both"
+      : names.includes("stdin_eof") ? "stdin_eof" : names.includes("sigterm") ? "sigterm" : "none";
+  } catch { providerTerminationMarkers = "absent"; }
+  return {
+    ownerRowPresent: row !== null, recordVersion: row === null ? "no_record" : row.version,
+    ownerPhase: phase, ownerKind, continuityKind, providerTerminationMarkers,
+    attemptEpochMatchesRecord: attemptEpoch === null || row === null ? null : attemptEpoch === row.epoch,
+    activityLastEntry: row === null ? null : row.activity?.lastEntry !== undefined && row.activity?.lastEntry !== null,
+    activityLastRelease: row === null ? null : row.activity?.lastRelease !== undefined && row.activity?.lastRelease !== null,
+    ownerInstallerAttemptRecord: attemptId === null ? null : present(`${installers}/attempt-${attemptId}.json`),
+    installerAttemptRecordCount, installerAttemptDetails,
+    ordinaryStartCount: activation.ordinaryStarts.length, ordinaryStartRowsTruncated: activation.ordinaryStarts.length > 8,
+    ordinaryStartRows: rows
+  };
+}
+
+/** Captures bytes SENT to the inherited first-hop TEST relay. Incoming bus
+ * replies, final manager state and Socket.bytesWritten are not send evidence.
+ * This deliberately does not claim capture on a directly inherited daemon FD. */
+async function qualifyRelayControlSink(bus: SystemBusInfrastructure, workspace: string, resultPath: string,
+  evidence: Record<string, unknown>) {
+  verifySystemBusInfrastructure(bus);
+  const endpointBefore = lstatSync(SYSTEM_BUS_ENDPOINT), name = "/run/TEST-control-relay-" + randomUUID();
+  const server = createServer(), connection = once(server, "connection");
+  let source: Socket | undefined, receiver: Socket | undefined, upstream: Socket | undefined;
+  let child: ReturnType<typeof spawn> | undefined, birth: string | undefined, sentBytes = 0, prePayloadBytes = -1;
+  let outputPaths: string[] = [], observed = false, drained = false;
+  // Closed-fact fixture diagnostics only: stage tokens and counts. No payload,
+  // path or raw error text is recorded and no gate authority changes here.
+  let checkpoint = "setup", handlerStage: string | null = null, handlerFailed = false;
+  let childCode: number | null = null, childSignal: "null" | "other" | null = null;
+  // Closed-enum unit/state classes only; no ids or paths leave this fixture.
+  const classifyUnit = (value: string) => value.startsWith("subscription-runtime-hosted-") ? "hosted"
+    : value.startsWith("subscription-runtime-ordinary-") ? "ordinary"
+    : value.startsWith("subscription-runtime-outer-") ? "outer" : "other";
+  const classifyState = (value: string) => value === HostedCustodyReservationState.Reserved ? "reserved"
+    : value === HostedCustodyReservationState.Terminal ? "terminal" : "other";
+  const snapshotRows = readHostedInstallationActivation().activation.ordinaryStarts
+    .map(row => ({ unit: classifyUnit(row.unit), state: classifyState(row.state) }));
+  const previousStarts = new Set(readHostedInstallationActivation().activation.ordinaryStarts.map(row => row.startId));
+  const countProbes = () => readdirSync(workspace).filter(value => /^TEST-provider-probe-[123]\.json$/.test(value)).length;
+  assert.equal(countProbes(), 2);
+  try {
+    await boundedWait(new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(name, resolve); }), 2000);
+    chmodSync(name, 0o600); const relay = lstatSync(name); assert(relay.isSocket() && relay.uid === 0 && (relay.mode & 0o777) === 0o600);
+    source = createConnection(name); await boundedWait(once(source, "connect"), 2000);
+    [receiver] = await boundedWait(connection, 2000) as [Socket];
+    upstream = createConnection(SYSTEM_BUS_ENDPOINT); await boundedWait(once(upstream, "connect"), 2000);
+    const actualUpstream = upstream;
+    // Record counts only. Never persist payload, credential or bus reply bytes.
+    receiver.on("data", (chunk: Buffer) => {
+      sentBytes += chunk.length;
+      if (sentBytes > 4 * 1024 * 1024) { receiver!.destroy(); actualUpstream.destroy(); return; }
+      if (!actualUpstream.write(chunk)) { receiver!.pause(); actualUpstream.once("drain", () => receiver!.resume()); }
+    });
+    upstream.on("data", () => {}); upstream.on("error", () => {}); source.on("error", () => {}); receiver.on("error", () => {});
+    const receiverEnd = once(receiver, "end");
+    child = spawn(node, ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/common.ts", "control-sink"],
+      { env: cleanEnv, stdio: ["pipe", source, source, "ipc"] });
+    assert(child.pid); birth = observeHostedFdProcess(child.pid).birth; checkpoint = "child_spawned";
+    const actual = observeHostedFdProcess(child.pid);
+    assert.equal(actual.group, boundedProc("/proc/self/cgroup", 4096).trim());
+    const stdio = actual.descriptors.filter(row => row.fd === 1 || row.fd === 2);
+    assert(stdio.length === 2 && stdio.every(row => row.socket) && stdio[0]!.target === stdio[1]!.target);
+    const closed = once(child, "close"); child.stdin!.on("error", () => {}); child.stdin!.end();
+    let rejectMessage: (error: unknown) => void = () => {};
+    const messageFailure = new Promise<never>((_resolve, reject) => { rejectMessage = reject; });
+    void messageFailure.catch(() => {});
+    child.on("message", (value: unknown) => { try {
+      handlerStage = "shape";
+      assert(value && typeof value === "object" && !Array.isArray(value));
+      const message = value as Record<string, unknown>;
+      handlerStage = "keys";
+      assert.equal(Object.keys(message).sort().join(","), "outputPaths,phase");
+      handlerStage = "output_paths";
+      assert(Array.isArray(message.outputPaths) && message.outputPaths.length === 2 && message.outputPaths.every(path => typeof path === "string"));
+      if (message.phase === ControlSinkPhase.Observed) {
+        handlerStage = "observed_once";
+        assert(!observed); observed = true; outputPaths = message.outputPaths as string[];
+        handlerStage = "reservation";
+        const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+        assert.equal(added.length, 1); const reserved = added[0]!; assert.equal(reserved.state, HostedCustodyReservationState.Reserved);
+        handlerStage = "start_record";
+        const startBytes = readHostedPrivateBytes(policy + "/ordinary-starts/" + reserved.startId + ".json", 16384); assert(startBytes);
+        const start = parseHostedOrdinaryStart(JSON.parse(startBytes.toString("utf8")));
+        handlerStage = "start_identity";
+        assert.equal(start.creatorPidBirth, birth); assert.equal(start.workspacePath, workspace);
+        assert.equal(start.unit, reserved.unit); assert.equal(start.activationGeneration, reserved.generation);
+        handlerStage = "output_layout";
+        assert.deepEqual(outputPaths, [policy + "/foreground-output/" + reserved.unit + ".stdout", policy + "/foreground-output/" + reserved.unit + ".stderr"]);
+        handlerStage = "relay_state";
+        verifySystemBusInfrastructure(bus); assert.equal(countProbes(), 2);
+        handlerStage = "payload_bytes";
+        prePayloadBytes = sentBytes; assert.equal(prePayloadBytes, 0);
+        handlerStage = "log_files";
+        for (const path of outputPaths) { const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.nlink === 1 && (stat.mode & 0o777) === 0o600 && stat.size === 0); }
+        handlerStage = "release_send";
+        child!.send({ phase: ControlSinkPhase.Release });
+      } else {
+        handlerStage = "drain_identity";
+        assert.equal(message.phase, ControlSinkPhase.Drained); assert(observed && !drained); drained = true;
+        assert.deepEqual(message.outputPaths, outputPaths);
+      }
+    } catch (error) { handlerFailed = true; rejectMessage(error); }
+    });
+    const [code, signal] = await boundedWait(Promise.race([closed, messageFailure]), 6 * 60000);
+    childCode = code; childSignal = signal === null ? "null" : "other"; checkpoint = "child_closed";
+    assert.equal(code, 0); assert.equal(signal, null); assert(observed && drained);
+    source.end(); await boundedWait(receiverEnd, 2000); checkpoint = "relay_ended";
+    assert.equal(sentBytes, 0); assert.equal(countProbes(), 3);
+    verifySystemBusInfrastructure(bus); const endpointAfter = lstatSync(SYSTEM_BUS_ENDPOINT);
+    assert(endpointBefore.dev === endpointAfter.dev && endpointBefore.ino === endpointAfter.ino);
+    checkpoint = "rows_accounting";
+    const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+    // Canonical custody accounting for a successful window: this launch reserves
+    // exactly one ordinary reader row, and each spawned provider (probe 3) appends
+    // one hosted provider row. Rows are append-only and stay Reserved in the
+    // ordinary flow; window closure is the released consumer owner asserted
+    // after this scenario returns.
+    assert.equal(added.length, 2);
+    const readers = added.filter(value => !value.unit.startsWith("subscription-runtime-hosted-"));
+    const providers = added.filter(value => value.unit.startsWith("subscription-runtime-hosted-"));
+    assert.equal(readers.length, 1); assert.equal(providers.length, 1);
+    const row = readers[0]!, provider = providers[0]!;
+    assert.equal(row.state, HostedCustodyReservationState.Reserved);
+    assert.equal(provider.state, HostedCustodyReservationState.Reserved);
+    assert.equal(provider.creatorId, row.creatorId); assert.equal(provider.originSha256, row.originSha256);
+    assert(provider.generation > row.generation);
+    const present = (name: string): boolean => { try { lstatSync(name); return true; } catch { return false; } };
+    assert(present(`${policy}/ordinary-starts/${row.startId}.json`) && present(`${policy}/ordinary-starts/${provider.startId}.json`));
+    assert(present(`${policy}/dependency-provider-attempts/${provider.startId}.json`));
+    assert(present(`${policy}/ordinary-completed/${row.startId}.json`));
+    checkpoint = "output_identity";
+    assert.deepEqual(outputPaths, [policy + "/foreground-output/" + row.unit + ".stdout", policy + "/foreground-output/" + row.unit + ".stderr"]);
+    checkpoint = "logs_accounting";
+    const logs = outputPaths.map(path => { const stat = lstatSync(path); assert(stat.isFile() && stat.uid === 0 && stat.nlink === 1 && !(stat.mode & 0o077));
+      return { path, dev: String(stat.dev), ino: String(stat.ino), bytes: stat.size }; });
+    assert(logs.reduce((sum, log) => sum + log.bytes, 0) > 0, "TEST successful payload did not exercise protected output");
+    checkpoint = "result_identity";
+    const result = await readCodexGoalResultSummary(resultPath); assert(result.foregroundOutput);
+    assert.equal(result.foregroundOutput.unit, row.unit);
+    assert.equal(result.foregroundOutput.exitCode, 0);
+    checkpoint = "byte_compare";
+    assert.equal(Buffer.byteLength(result.foregroundOutput.stdout), logs[0]!.bytes);
+    assert.equal(Buffer.byteLength(result.foregroundOutput.stderr), logs[1]!.bytes);
+    checkpoint = "verified";
+    return { scenario: "actual_inherited_control_relay", outcome: "protected_output_replacement_and_real_drain", inheritedStdio: stdio.map(row => ({ fd: row.fd, target: row.target })),
+      relayEndpoint: name, upstreamEndpoint: SYSTEM_BUS_ENDPOINT, upstreamManagerPid: 1, producerPidBirth: birth, prePayloadSentBytes: prePayloadBytes,
+      finalSentBytes: sentBytes, actualStartId: row.startId, unit: row.unit, logs,
+      limitation: "first-hop relay capture; direct daemon inherited FD sent-byte capture remains pending" };
+  } finally {
+    if (child?.pid && birth && child.exitCode === null && observeHostedFdProcess(child.pid).birth === birth) child.kill("SIGTERM");
+    source?.destroy(); receiver?.destroy(); upstream?.destroy();
+    if (server.listening) await boundedWait(new Promise<void>(resolve => server.close(() => resolve())), 2000);
+    evidence.relayControlSinkObservation = { purpose: "TEST_relay_control_sink_closed_fact_classification",
+      checkpoint, handlerStage, handlerFailed, childCode, childSignal, observed, drained,
+      prePayloadBytes, finalSentBytes: sentBytes,
+      probeCount: (() => { try { return countProbes(); } catch { return null; } })(),
+      postFailureStart: (() => {
+        try {
+          const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+          if (added.length === 0) return "none";
+          try { lstatSync(`${policy}/ordinary-starts/${added[0]!.startId}.json`); return "row_and_record"; }
+          catch { return "row_only"; }
+        } catch { return "unknown"; }
+      })(),
+      // Closed-enum accounting of every start row the scenario window added, so an
+      // unexpected second row is classified by unit kind/state/record only. No ids.
+      snapshotStarts: { count: snapshotRows.length,
+        units: snapshotRows.slice(0, 8).map(row => row.unit),
+        states: snapshotRows.slice(0, 8).map(row => row.state),
+        overflow: snapshotRows.length > 8 },
+      postFailureAdded: (() => {
+        try {
+          const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+          const record = (startId: string) => { try { lstatSync(`${policy}/ordinary-starts/${startId}.json`); return "present"; } catch { return "absent"; } };
+          const privateJson = (name: string, startId: string): Record<string, unknown> | undefined => {
+            try {
+              const bytes = readHostedPrivateBytes(`${policy}/${name}/${startId}.json`, 16384);
+              return bytes ? JSON.parse(bytes.toString("utf8")) as Record<string, unknown> : undefined;
+            } catch { return undefined; }
+          };
+          const ordinary = added.find(row => classifyUnit(row.unit) === "ordinary");
+          const ordinaryRecord = ordinary ? privateJson("ordinary-starts", ordinary.startId) : undefined;
+          const identities = added.slice(0, 4).map(row => {
+            const start = privateJson("ordinary-starts", row.startId);
+            return {
+              unit: classifyUnit(row.unit),
+              providerAttemptRecord: privateJson("dependency-provider-attempts", row.startId) ? "present" : "absent",
+              correlationRecord: privateJson("ordinary-correlations", row.startId) ? "present" : "absent",
+              birthMatchesOrdinaryRecord: start && ordinaryRecord && typeof start.creatorPidBirth === "string" && typeof ordinaryRecord.creatorPidBirth === "string"
+                ? start.creatorPidBirth === ordinaryRecord.creatorPidBirth : null,
+              birthMatchesControlSinkChild: start && typeof start.creatorPidBirth === "string" && typeof birth === "string"
+                ? start.creatorPidBirth === birth : null,
+              creatorMatchesOrdinary: ordinary ? row.creatorId === ordinary.creatorId : null,
+              generationRelation: ordinary ? (row.generation > ordinary.generation ? "after_ordinary"
+                : row.generation === ordinary.generation ? "equal" : "before_ordinary") : "unknown",
+              recordWorkspaceMatches: start ? start.workspacePath === workspace : null
+            };
+          });
+          return { count: added.length,
+            units: added.slice(0, 4).map(row => classifyUnit(row.unit)),
+            states: added.slice(0, 4).map(row => classifyState(row.state)),
+            records: added.slice(0, 4).map(row => record(row.startId)),
+            identities, overflow: added.length > 4 };
+        } catch {
+          return { count: -1, units: ["unknown"], states: ["unknown"], records: ["unknown"], identities: [], overflow: false };
+        }
+      })(),
+      childDiagnostic: (() => {
+        try {
+          const value = JSON.parse(readFileSync("/run/TEST-control-sink-diagnostic.json", "utf8")) as Record<string, unknown>;
+          const stages = ["argv_identity", "imports", "inventory", "foreground_request", "ordinary_launch", "spawn_submit", "spawn_returned",
+            "guard", "observe", "observed_ipc",
+            "release", "wait_completion", "foreground_result", "publish", "reader_completion", "consumer_release", "drained_ipc", "disconnect"];
+          const classes = ["clean", "inner_guard_failure", "assertion", "request_unresolved", "launch_invalidated", "input_overflow",
+            "invocation_consumed", "operator_required", "authority_invalid", "activation_invalid", "activation_evidence_invalid",
+            "publication_recovery_required", "activation_stop_incomplete", "activation_authority_required", "owned_unresolved",
+            "descriptor_denied", "stdio_pipe_required", "descriptor_invalid", "frame_invalid", "creator_not_fenced",
+            "custody_stop_incomplete", "fd_boundary_unresolved", "unclassified", "non_error_throw"];
+          return { available: true,
+            stage: typeof value.stage === "string" && stages.includes(value.stage) ? value.stage : "other",
+            exitClass: typeof value.exitClass === "string" && classes.includes(value.exitClass) ? value.exitClass : "other",
+            requestFdCountBefore: Number.isSafeInteger(value.requestFdCountBefore) ? value.requestFdCountBefore : -1,
+            requestFdCountAfter: Number.isSafeInteger(value.requestFdCountAfter) ? value.requestFdCountAfter : -1 };
+        } catch { return { available: false }; }
+      })() };
+  }
+}
+
+/** Separate authentic installation, never a managed flag on the dependency
+ * inventory. All readiness and terminal facts come from existing operator APIs. */
+async function qualifyReadonly(evidence: Record<string, unknown>): Promise<void> {
+  assert.equal(process.argv[2], "qualify"); assertReadonlyHostOperator();
+  const systemBusInfrastructure = await issueActualSystemBusInfrastructure(evidence);
+  assert(!existsSync(policy)); directory(policy);
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-services"])
+    directory(policy + "/" + name);
+  const capacity = statfsSync(readonlyStorage, { bigint: true }), storage = directoryIdentity(readonlyStorage);
+  assert.notEqual(storage.dev, String(lstatSync("/").dev));
+  assert(capacity.bavail * capacity.bsize >= 5n * 1024n ** 3n && capacity.ffree >= 50000n);
+  assert.equal(readFileSync("/etc/subscription-runtime/storage-root", "utf8"), readonlyStorage + "\n");
+  evidence.readonlyStorage = { ...storage, availableBytes: String(capacity.bavail * capacity.bsize), availableInodes: String(capacity.ffree),
+    mountNamespace: readlinkSync("/proc/self/ns/mnt"), mountInfoSha256: digest(boundedProc("/proc/self/mountinfo", 1024 * 1024)) };
+  const namespaces = { user: readlinkSync("/proc/self/ns/user"), mnt: readlinkSync("/proc/self/ns/mnt"), pid: readlinkSync("/proc/self/ns/pid") };
+  evidence.runtimeManifestSha256 = installedArtifactDigest(OwnedOsScenario.Readonly);
+  evidence.installedRuntimeRootPackage = { path: runtime + "/package.json", sha256: fileDigest(runtime + "/package.json"),
+    bytes: lstatSync(runtime + "/package.json").size, source: "actual copied runtime-root artifact, no substitute metadata" };
+  const jobId = "TEST-readonly-" + randomUUID(), root = readonlyStorage + "/jobs/" + jobId, workspace = root + "/workspace";
+  directory(root); directory(workspace); directory(workspace + "/reviewed");
+  const input = "TEST independently reviewed readonly bytes\n", inputPath = workspace + "/reviewed/input.txt";
+  writeFileSync(inputPath, input, { flag: "wx", mode: 0o644 });
+  json(workspace + "/package.json", { name: "test-readonly-native", version: "1.0.0", private: true }, 0o644);
+  writeFileSync(workspace + "/.gitignore", "TEST-readonly*-probe.json\n", { flag: "wx", mode: 0o644 });
+  command("/usr/bin/git", ["init", "--initial-branch=main", workspace]);
+  command("/usr/bin/git", ["config", "user.name", "iliya"], 30000, workspace);
+  command("/usr/bin/git", ["config", "user.email", "iliyazelenkog@gmail.com"], 30000, workspace);
+  assert(command("/usr/bin/git", ["var", "GIT_AUTHOR_IDENT"], 30000, workspace).startsWith("iliya <iliyazelenkog@gmail.com> "));
+  assert(command("/usr/bin/git", ["var", "GIT_COMMITTER_IDENT"], 30000, workspace).startsWith("iliya <iliyazelenkog@gmail.com> "));
+  command("/usr/bin/git", ["add", "reviewed/input.txt", "package.json", ".gitignore"], 30000, workspace);
+  command("/usr/bin/git", ["commit", "-m", "test: initialize disposable readonly fixture"], 30000, workspace);
+  const gitBefore = command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim();
+  directory(root + "/auth/TEST-account");
+  json(root + "/auth/TEST-account/auth.json", { auth_mode: "chatgpt", tokens: { refresh_token: "TEST-NOT-A-CREDENTIAL" }, last_refresh: new Date().toISOString() });
+  writeFileSync(root + "/prompt", "Execute the fixed readonly TEST probe.\n", { flag: "wx", mode: 0o600 });
+  directory(root + "/state"); const resultPath = root + "/state/TEST-result.json";
+  directory(runtime + "/codex/bin", 0o755);
+  cpSync(runtime + "/scripts/dependency-retention-os-test/provider.ts", runtime + "/codex/bin/provider.ts");
+  chmodSync(runtime + "/codex/bin/provider.ts", 0o755);
+  json(runtime + "/codex/package.json", { name: "@openai/codex", type: "module", private: true }, 0o644);
+  json(runtime + "/codex/TEST-probe.json", { scenario: OwnedOsScenario.Readonly, failSecondReadonlyTurn: true,
+    workspace, guestNamespaces: namespaces, inputSha256: digest(input) }, 0o644);
+  const args = [runtime + "/dist/worker-codex/codex-goal-cli.js", "run", "--task-id", jobId, "--job-id", jobId,
+    "--job-root", root, "--runtime-home-root", root + "/home", "--workspace", workspace, "--prompt", root + "/prompt", "--accounts", "TEST-account", "--auth-root", root + "/auth",
+    "--codex-binary", runtime + "/codex/bin/provider.ts", "--model", "TEST-synthetic-model", "--effort", "low",
+    "--timeout", "5m", "--max-goal-turns", "1", "--max-attempts", "1", "--continuation-mode", "disabled",
+    "--registry-root", root + "/state/registry", "--output", resultPath, "--worker-report-mode", "structured-output"];
+  const supervisorUnit = "TEST-retention-supervisor.service", fragment = "/etc/systemd/test-units/" + supervisorUnit;
+  directory("/run/systemd/system", 0o755); directory("/run/systemd/system/TEST-retention.target.wants", 0o755);
+  symlinkSync(fragment, "/run/systemd/system/TEST-retention.target.wants/" + supervisorUnit);
+  const collectorProfile = await issueNativeFdProfile(evidence, systemBusInfrastructure);
+  const launch = { command: node, args, cwd: workspace };
+  json(policy + "/readonly-inventory.json", { schemaVersion: 4, hostId: evidence.machineId, supervisorUnit, systemBusInfrastructure, collectorProfile,
+    units: [{ name: supervisorUnit, controlGroup: command("/usr/bin/systemctl", ["show", supervisorUnit, "--property=ControlGroup", "--value"]).trim(), fragmentSha256: fileDigest(fragment) },
+      { name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP, fragmentSha256: systemBusInfrastructure.service.fragmentSha256 }],
+    ordinaryCreators: [], disabledCreators: [], runtimeLaunch: launch });
+  const authorityRoot = "/run/user/0/subscription-runtime-host-policy";
+  for (const name of ["codex-readonly", "codex-readonly-stages", "codex-readonly-reviewed"]) directory(authorityRoot + "/" + name);
+  json(authorityRoot + "/codex-readonly-stages/" + digest(runtime) + ".json", { schemaVersion: 1, runtimeDirectory: runtime,
+    runtimeSha: process.env.TEST_SOURCE_SHA, runtimeManifestSha256: evidence.runtimeManifestSha256 });
+  evidence.kernelGatePhase = "readonly_cold_installation";
+  const store = new HostedInstallationActivationStore(); store.install(); store.enterExclusive();
+  await writeHostedTestEgressGrant({ schemaVersion: 1, jobId, jobRootDir: root, workspacePath: workspace,
+    profileId: CodexProviderEgressProfileId.TestManagedQualification });
+  const projection = { schemaVersion: 1 as const, jobId, jobRootDir: root, workspacePath: workspace, runtimeSha: process.env.TEST_SOURCE_SHA!,
+    runtimeManifestSha256: String(evidence.runtimeManifestSha256), issuerDeploymentDigest: digest(JSON.stringify({ sourceSha: process.env.TEST_SOURCE_SHA,
+      artifact: evidence.runtimeManifestSha256, inputSha256: digest(input), providerSha256: fileDigest(runtime + "/codex/bin/provider.ts") })),
+    readonlyPaths: [workspace + "/reviewed"] };
+  // Trusted TEST issuer verifies the full finite input independently, then
+  // publishes review input. It never writes lease/epoch/Ready or completion.
+  assert.equal(readFileSync(inputPath, "utf8"), input); inspectReadonlyInputs(projection, null);
+  json(authorityRoot + "/codex-readonly-reviewed/" + readonlyIdentityName(jobId), { schemaVersion: 1, policy: projection, corepackShim: null,
+    reviewReference: "TEST exact-source native fixture projection " + process.env.TEST_SOURCE_SHA,
+    custodyReference: "TEST finite input SHA256 " + digest(input) });
+  const policyInput = root + "/TEST-readonly-policy.json"; json(policyInput, projection);
+  const operator = (operation: string, operand?: string) => {
+    evidence.readonlyOperator = { operation, status: null, signal: null };
+    const output = command(node,
+      [runtime + "/dist/worker-codex/hosted-readonly-inputs-cli.js", operation, ...(operand ? [operand] : [])], 60000, "/",
+      failure => { evidence.readonlyOperator = { operation, ...failure }; });
+    evidence.readonlyOperator = { operation, status: 0, signal: null };
+    return output;
+  };
+  evidence.kernelGatePhase = "readonly_real_enrollment_and_recovery";
+  operator("enroll", policyInput); operator("recover", jobId); operator("finish-exclusive");
+  const host = new HostedReadonlySupervisorHost(), enrolled = host.readEpoch();
+  assert.equal(enrolled.identity.jobId, jobId); assert.equal(enrolled.phase, HostedCustodyPhase.Ready);
+  host.verifyReadonlyMaterial(enrolled.identity);
+  evidence.kernelGatePhase = "readonly_real_cli_provider_and_drain";
+  const foreground = await runHostedRuntimeForeground(node, args, workspace, { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" });
+  const foregroundStatus = hostedForegroundExitCode(foreground);
+  if (foregroundStatus !== 0) {
+    // Closed failure-class facts only: enums, booleans and counts. Each reader
+    // is isolated so one rejected read cannot mask the other classes. The outer
+    // guard keeps this observation from ever changing TEST behavior.
+    try {
+      const fixtureLiterals = ["TEST_provider_protocol_or_probe_failed", "TEST_provider_deadline",
+        "TEST_provider_startup_failed", "TEST_default_executable_identity_failed", "TEST_catalog_protocol_refused",
+        "hosted_custody_runtime_bootstrap_denied", "AssertionError", "EPIPE",
+        "codex_app_server_turn", "hosted_foreground_result_unresolved"];
+      const facts: Record<string, unknown> = { purpose: "TEST_readonly_foreground_failure_class_only", status: foregroundStatus,
+        authenticated: typeof foreground !== "number", probePresent: existsSync(workspace + "/TEST-readonly-probe.json") };
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(resultPath, "utf8"));
+        const rawStatus = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { status?: unknown }).status : undefined;
+        facts.resultPresent = true;
+        facts.rawResultStatus = typeof rawStatus === "string" && ["completed", "failed", "partial", "blocked", "cancelled"].includes(rawStatus)
+          ? rawStatus : "unrecognized";
+      } catch (error) { facts.resultPresent = existsSync(resultPath); facts.rawResultRead = closedFailureToken(error); }
+      try {
+        const summary = await readCodexGoalResultSummary(resultPath);
+        facts.resultStatus = summary.status ?? null; facts.foregroundOutputPresent = !!summary.foregroundOutput;
+        facts.outputExitCode = summary.foregroundOutput ? summary.foregroundOutput.exitCode : null;
+      } catch (error) { facts.summaryRead = closedFailureToken(error); }
+      try {
+        const epoch = host.readEpoch();
+        facts.phase = epoch.phase; facts.outerState = epoch.outerRuntime ? epoch.outerRuntime.state : null;
+        facts.completionPresent = epoch.outerRuntime ? readHostedPrivateBytes(completionPath(epoch.outerRuntime), 4096) !== null : null;
+        if (epoch.outerRuntime) try {
+          const shown = spawnSync("/usr/bin/systemctl", ["show", epoch.outerRuntime.unit, "--property=ExecMainCode",
+            "--property=ExecMainStatus", "--property=Result", "--property=ActiveState", "--property=SubState"],
+            { encoding: "utf8", timeout: 5000, maxBuffer: 65536, stdio: ["ignore", "pipe", "pipe"], env: cleanEnv });
+          if (!shown.error && shown.signal === null && shown.status === 0 && shown.stderr === "") {
+            const rows = new Map(shown.stdout.trim().split("\n").map(line => {
+              const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)] as const;
+            }));
+            const code = rows.get("ExecMainCode");
+            facts.unitExecMainCode = code === "0" ? "exited" : code === "1" ? "killed" : code === "2" ? "dumped" : code === undefined ? "absent" : "other";
+            const unitStatus = Number(rows.get("ExecMainStatus"));
+            facts.unitExecMainStatus = Number.isSafeInteger(unitStatus) ? unitStatus : null;
+            const unitResult = rows.get("Result");
+            facts.unitResult = unitResult === undefined ? "absent" : ["success", "exit-code", "signal", "core-dump", "timeout",
+              "watchdog", "oom-kill", "startup-limit", "dependency", "assert", "resources", "protocol"].includes(unitResult) ? unitResult : "other";
+            facts.unitActiveState = rows.get("ActiveState") ?? null; facts.unitSubState = rows.get("SubState") ?? null;
+          } else facts.unitShow = "unavailable";
+        } catch { facts.unitShow = "unavailable"; }
+      } catch (error) { facts.epochRead = closedFailureToken(error); }
+      try {
+        const rows = host.readEpoch().reservations.map(row => ({
+          state: row.state === HostedCustodyReservationState.Reserved ? "reserved" :
+            row.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+          kind: row.unit.startsWith("subscription-runtime-outer-") ? "outer" :
+            row.unit.startsWith("subscription-runtime-hosted-") ? "hosted" :
+            row.unit.startsWith("subscription-runtime-ordinary-") ? "ordinary" : "other" }));
+        facts.reservations = { count: rows.length, rows: rows.slice(0, 8) };
+      } catch (error) { facts.reservations = closedFailureToken(error); }
+      try {
+        const path = workspace + "/TEST-provider-termination.json";
+        facts.providerTermination = existsSync(path) ? "present" : "absent";
+        if (facts.providerTermination === "present") {
+          const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+          const markers = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { markers?: unknown }).markers : undefined;
+          facts.providerTerminationMarkers = Array.isArray(markers) ? ["stdin_eof", "sigterm"].filter(name => markers.includes(name)) : ["unrecognized"];
+        }
+      } catch { facts.providerTermination = "unreadable"; }
+      try {
+        const path = workspace + "/TEST-provider-failure.json";
+        if (!existsSync(path)) facts.providerFailure = "absent";
+        else {
+          const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+          const record = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as { site?: unknown; code?: unknown; assert?: unknown } : {};
+          const site = record.site, code = record.code, startup = record.assert;
+          facts.providerFailure = { site: typeof site === "string" && ["startup", "probe", "protocol", "deadline"].includes(site) ? site : "other",
+            code: Number.isSafeInteger(code) ? code : null,
+            assert: typeof startup === "string" && ["workspace_shape", "cwd_home_identity", "cwd_home_root"].includes(startup) ? startup : null };
+        }
+      } catch { facts.providerFailure = "unreadable"; }
+      try {
+        facts.providerStart = existsSync(workspace + "/TEST-provider-start.json") ? "present" : "absent";
+      } catch { facts.providerStart = "unreadable"; }
+      try {
+        facts.runPath = { launchManifest: existsSync(root + "/state/registry/" + jobId + "/job.json"),
+          controllerOrigin: existsSync(root + "/.controller-state-origin.json"),
+          events: existsSync(root + "/" + jobId + ".events.jsonl"),
+          progress: existsSync(root + "/" + jobId + ".progress.json"),
+          registryDir: existsSync(root + "/state/registry/" + jobId) };
+      } catch { facts.runPath = "unreadable"; }
+      try {
+        const hp = "/var/lib/subscription-runtime-host-policy";
+        facts.hostPolicy = { receiptHistory: existsSync(hp + "/dependency-receipt-history"),
+          sourceBindings: existsSync(hp + "/dependency-source-bindings"),
+          receipts: existsSync(hp + "/dependency-receipts"),
+          readonlyStarts: existsSync(hp + "/readonly-dependency-starts"),
+          readonlyEpoch: existsSync(hp + "/readonly-epoch.json"),
+          checkpointAdmission: existsSync(root + "/.terminal-checkpoint-admission") };
+      } catch { facts.hostPolicy = "unreadable"; }
+      try {
+        facts.probeFiles = { readonlyProbe: existsSync(workspace + "/TEST-readonly-probe.json"),
+          readonlyFailedProbe: existsSync(workspace + "/TEST-readonly-failed-probe.json"),
+          providerProbeFailed: existsSync(workspace + "/TEST-provider-probe-failed.json"),
+          providerProbe1: existsSync(workspace + "/TEST-provider-probe-1.json") };
+      } catch { facts.probeFiles = "unreadable"; }
+      try {
+        const reviewed = workspace + "/reviewed/input.txt";
+        if (!existsSync(reviewed)) facts.reviewedHostAppend = "absent";
+        else {
+          let fd: number | undefined;
+          try { fd = openSync(reviewed, "a"); facts.reviewedHostAppend = "permitted"; }
+          catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            facts.reviewedHostAppend = ["EROFS", "EACCES", "EPERM"].includes(code ?? "") ? code : "other";
+          } finally { if (fd !== undefined) closeSync(fd); }
+        }
+      } catch { facts.reviewedHostAppend = "unreadable"; }
+      try {
+        const outer = host.readEpoch().outerRuntime;
+        facts.foregroundLogsUnit = outer ? "present" : "absent";
+        if (outer) {
+          const logs: Record<string, unknown> = {};
+          for (const kind of ["stdout", "stderr"] as const) {
+            const path = `/var/lib/subscription-runtime-host-policy/foreground-output/${outer.unit}.${kind}`;
+            try {
+              const bytes = readFileSync(path), text = bytes.toString("utf8");
+              const exited = /codex_app_server_exited:(\d+)/.exec(text), rpc = /json_rpc_process_exited:(\d+)/.exec(text);
+              logs[kind] = { present: true, byteLength: Math.min(bytes.length, 1048576), markers: fixtureLiterals.filter(name => text.includes(name)),
+                appServerExitedCode: exited ? Number(exited[1]) : null, jsonRpcExitedCode: rpc ? Number(rpc[1]) : null };
+            } catch (error) { logs[kind] = { present: existsSync(path), read: closedFailureToken(error) }; }
+          }
+          facts.foregroundLogs = logs;
+        }
+      } catch { facts.foregroundLogs = "unreadable"; }
+      try {
+        const outer = host.readEpoch().outerRuntime;
+        if (!outer) facts.stderrShape = "no_unit";
+        else {
+          let text: string | undefined;
+          try { text = readFileSync(`/var/lib/subscription-runtime-host-policy/foreground-output/${outer.unit}.stderr`, "utf8"); }
+          catch (error) { facts.stderrShape = { read: closedFailureToken(error) }; }
+          if (text !== undefined) {
+            const lines = text.split("\n").filter(line => line.length > 0);
+            const shape: Record<string, unknown> = { lineCount: Math.min(lines.length, 16),
+              lineLengths: lines.slice(0, 4).map(line => Math.min(line.length, 4096)) };
+            const trimmed = text.trim();
+            const diagnostic = decodeCodexGoalOriginDiagnostic(trimmed);
+            const prefix = /^\{"reason":"(hosted_[a-z_]+)","locations":/.exec(trimmed);
+            const reason = prefix ? prefix[1] : undefined;
+            if (trimmed === "") shape.kind = "empty";
+            else if (diagnostic) {
+              shape.kind = "origin_diagnostic"; shape.originReason = diagnostic.reason;
+              shape.originLocationCount = diagnostic.locations.length;
+              shape.originModules = [...new Set(diagnostic.locations.map(row => row.module))];
+              const first = diagnostic.locations[0];
+              if (first) shape.originFirst = { module: first.module, format: first.format, line: first.line, column: first.column };
+            } else if (prefix) {
+              shape.kind = "origin_diagnostic_prefix";
+              shape.originReason = reason === "hosted_dependency_current_origin_unresolved" ||
+                reason === "hosted_current_dependency_origin_unresolved" ? reason : "other";
+            } else if (lines.every(line => /^\(node:\d+\)/.test(line))) shape.kind = "node_warning";
+            else if (/^Running as unit: /.test(trimmed)) shape.kind = "running_as_unit";
+            else if (lines.every(line => fixtureLiterals.some(token => line.includes(token)))) shape.kind = "fixture_token";
+            else if (trimmed.startsWith("{") && trimmed.endsWith("}")) shape.kind = "json_like";
+            else if (lines.length === 1) shape.kind = "single_line";
+            else if (lines.length > 1) shape.kind = "multi_line";
+            else shape.kind = "other";
+            // Closed error-family facts only: whitelisted codes, syscalls, path
+            // roots and counts. No raw message bytes ever leave the runner.
+            const fsMatch = /^([A-Z]{2,10}): [a-z -]{4,40}, ([a-z_]{2,12}) \x27([^\x27]*)\x27$/.exec(trimmed);
+            if (fsMatch) {
+              shape.errorClass = "fs_error";
+              shape.fsCode = ["ENOENT", "EROFS", "EACCES", "EPERM", "ENOTDIR", "EEXIST", "EISDIR",
+                "EBUSY", "ENOSPC", "EINVAL"].includes(fsMatch[1]!) ? fsMatch[1] : "other";
+              shape.fsSyscall = ["open", "stat", "lstat", "scandir", "mkdir", "write", "unlink",
+                "rename", "realpath", "read", "access", "chmod"].includes(fsMatch[2]!) ? fsMatch[2] : "other";
+              const target = fsMatch[3]!;
+              shape.fsPathRoot = target.startsWith("/mnt/TEST-retention-readonly-storage") ? "readonly_storage" :
+                target.startsWith("/var/lib/subscription-runtime-host-policy") ? "host_policy" :
+                target.startsWith("/opt/subscription-runtime") ? "runtime" :
+                target.startsWith("/run/") ? "run" : target.startsWith("/etc/") ? "etc" : "other";
+              shape.fsPathLength = Math.min(target.length, 4096);
+              shape.fsLeaf = target === "/var/lib/subscription-runtime-host-policy/dependency-receipt-history" ? "receipt_history" :
+                target === "/var/lib/subscription-runtime-host-policy/dependency-source-bindings" ? "source_bindings" :
+                target === "/var/lib/subscription-runtime-host-policy/dependency-receipts" ? "receipts" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-dependency-starts" ? "readonly_starts" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-epoch.json" ? "readonly_epoch" :
+                target === "/var/lib/subscription-runtime-host-policy/readonly-inventory.json" ? "readonly_inventory" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-custody" ? "readonly_custody" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-services" ? "readonly_services" :
+                target === "/var/lib/subscription-runtime-host-policy/codex-readonly-revoked" ? "readonly_revoked" : "other";
+            } else if (/^[A-Z][A-Z_]{1,20}: /.test(trimmed)) shape.errorClass = "node_other";
+            else if (/^[a-z][a-z0-9_]{2,60}[:; ]/.test(trimmed)) {
+              shape.errorClass = "token_message";
+              const head = /^[a-z][a-z0-9_]*/.exec(trimmed)![0];
+              shape.tokenFamily = head.startsWith("hosted_") ? "hosted" :
+                head.startsWith("codex_goal") ? "codex_goal" :
+                head.startsWith("dependency_") ? "dependency" :
+                head.startsWith("project_control") ? "project_control" :
+                head.startsWith("controller_") ? "controller" :
+                head.startsWith("scratch") ? "scratch" :
+                head.startsWith("job_storage") ? "job_storage" : "other";
+            } else shape.errorClass = "other";
+            shape.parts = Math.min((trimmed.match(/; /g) ?? []).length, 8);
+            shape.hasPath = trimmed.includes("/");
+            facts.stderrShape = shape;
+          }
+        }
+      } catch { facts.stderrShape = "unreadable"; }
+      evidence.readonlyForegroundFailure = facts;
+    } catch {
+      evidence.readonlyForegroundFailure = { purpose: "TEST_readonly_foreground_failure_class_only",
+        status: foregroundStatus, authenticated: typeof foreground !== "number", diagnostics: "unavailable" };
+    }
+  }
+  assert.equal(foregroundStatus, 0); assert(typeof foreground !== "number");
+  const retrieved = await readCodexGoalResultSummary(resultPath); assert(retrieved.foregroundOutput);
+  assert.equal(retrieved.foregroundOutput.unit, foreground.unit);
+  assert.equal(retrieved.foregroundOutput.exitCode, 0);
+  assert(Buffer.byteLength(retrieved.foregroundOutput.stdout) + Buffer.byteLength(retrieved.foregroundOutput.stderr) > 0);
+  const terminal = host.readEpoch(); assert(terminal.outerRuntime && terminal.outerRuntime.state === HostedCustodyReservationState.Terminal);
+  assert(terminal.reservations.length === 1 && terminal.reservations.every(row => row.state === HostedCustodyReservationState.Terminal));
+  const probePath = workspace + "/TEST-readonly-probe.json", probeStat = lstatSync(probePath);
+  assert(probeStat.isFile() && !probeStat.isSymbolicLink() && probeStat.uid === 0 && probeStat.nlink === 1 && probeStat.size < 4096);
+  const probe = JSON.parse(readFileSync(probePath, "utf8")) as Record<string, unknown>;
+  assert(typeof probe.uidMap === "string" && /^65532\s+0\s+1$/.test(probe.uidMap));
+  assert(typeof probe.gidMap === "string" && /^65532\s+0\s+1$/.test(probe.gidMap));
+  assert(probe.namespaces && typeof probe.namespaces === "object" && !Array.isArray(probe.namespaces));
+  const observedNamespaces = probe.namespaces as Record<string, unknown>;
+  assert.equal(Object.keys(observedNamespaces).sort().join(","), "mnt,pid,user");
+  for (const kind of ["user", "mnt", "pid"] as const) {
+    assert(typeof observedNamespaces[kind] === "string" && new RegExp(`^${kind}:\\[\\d+\\]$`).test(observedNamespaces[kind]));
+    assert.notEqual(observedNamespaces[kind], namespaces[kind]);
+  }
+  assert.deepEqual(probe, { schemaVersion: 1, result: "actual_readonly_mount_and_bus_denial_passed", ids: { uid: 65532, euid: 65532, gid: 65532, egid: 65532 },
+    uidMap: probe.uidMap, gidMap: probe.gidMap, namespaces: observedNamespaces, noNewPrivs: 1, capabilities: "zero" });
+  assert.equal(digest(readFileSync(inputPath)), digest(input)); assert.equal(command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim(), gitBefore);
+  (evidence.results as unknown[]).push({ scenario: "separate_readonly_custody_real_cli_provider_and_drain", result: "passed", probe,
+    outer: terminal.outerRuntime, provider: terminal.reservations[0], projectionSha256: digest(JSON.stringify(projection)), inputSha256: digest(input),
+    output: { unit: foreground.unit, exitCode: retrieved.foregroundOutput.exitCode, artifacts: foreground.artifacts, retrievedStdoutBytes: Buffer.byteLength(retrieved.foregroundOutput.stdout),
+      retrievedStderrBytes: Buffer.byteLength(retrieved.foregroundOutput.stderr) } });
+  evidence.kernelGatePhase = "readonly_next_generation_recovery";
+  // These are the existing product transitions. Each must prove real terminal
+  // units and preserved custody; no epoch or generation is written by TEST.
+  operator("leave-exclusive"); operator("finish-closed"); operator("enter-exclusive");
+  operator("recover", jobId); operator("finish-exclusive");
+  const recovered = host.readEpoch(); assert.equal(recovered.phase, HostedCustodyPhase.Ready);
+  assert(recovered.generation > terminal.generation && recovered.identity.jobId === jobId);
+  const priorOutput = lstatSync(resultPath), priorSha256 = fileDigest(resultPath);
+  const priorProbeSha256 = fileDigest(probePath);
+  evidence.kernelGatePhase = "readonly_historical_output_before_next_frame";
+  const next = runHostedRuntimeForeground(node, args, workspace, { ...cleanEnv, SUBSCRIPTION_RUNTIME_SANDBOX_KIND: "hosted-codex-job" });
+  void next.catch(() => {});
+  let historical: Awaited<ReturnType<typeof readCodexGoalResultSummary>> | undefined, historicalFailure: unknown;
+  let nextStartId: string | undefined;
+  try {
+    const reserved = host.readEpoch(); assert(reserved.outerRuntime);
+    assert.equal(reserved.outerRuntime.state, HostedCustodyReservationState.Reserved);
+    assert.notEqual(reserved.outerRuntime.startId, terminal.outerRuntime.startId);
+    assert(reserved.generation > terminal.generation); nextStartId = reserved.outerRuntime.startId;
+    assert.equal(fileDigest(resultPath), priorSha256);
+    const current = lstatSync(resultPath); assert(current.dev === priorOutput.dev && current.ino === priorOutput.ino);
+    assert(!existsSync(workspace + "/TEST-readonly-failed-probe.json"));
+    // Both public reader and real reservation creation execute synchronously
+    // before the promise continuation can release the next observed FD frame.
+    // The same actual runtime remains retained and is awaited even on failure.
+    const selected = readCodexGoalResultSummary(resultPath);
+    historical = await selected;
+    assert(historical.foregroundOutput);
+    assert.equal(historical.status, retrieved.status);
+    assert.equal(historical.foregroundOutput.unit, retrieved.foregroundOutput.unit);
+    assert.equal(historical.foregroundOutput.exitCode, 0);
+    assert.equal(digest(historical.foregroundOutput.stdout), digest(retrieved.foregroundOutput.stdout));
+    assert.equal(digest(historical.foregroundOutput.stderr), digest(retrieved.foregroundOutput.stderr));
+  } catch (error) { historicalFailure = error; }
+  evidence.kernelGatePhase = "readonly_real_nonzero_cli_and_output_drain";
+  let failedForeground: Awaited<ReturnType<typeof runHostedRuntimeForeground>>;
+  try { failedForeground = await boundedWait(next, 6 * 60000); }
+  catch (error) {
+    try { host.stopRuntime(enrolled.identity); } catch { /* Real retained uncertainty is not completion. */ }
+    try { await boundedWait(next, 15000); } catch { /* Exact owned OS cleanup remains mandatory. */ }
+    throw error;
+  }
+  if (historicalFailure) throw historicalFailure;
+  assert(historical?.foregroundOutput && nextStartId);
+  assert.equal(hostedForegroundExitCode(failedForeground), 1, "TEST terminal goal failure must preserve its actual CLI exit");
+  assert(typeof failedForeground !== "number", "TEST nonzero foreground lost authenticated output refs");
+  const failedSummary = await readCodexGoalResultSummary(resultPath); assert(failedSummary.foregroundOutput);
+  assert(["failed", "partial"].includes(failedSummary.status ?? ""));
+  assert.equal(failedSummary.foregroundOutput.unit, failedForeground.unit);
+  assert.equal(failedSummary.foregroundOutput.exitCode, 1);
+  assert(Buffer.byteLength(failedSummary.foregroundOutput.stdout) + Buffer.byteLength(failedSummary.foregroundOutput.stderr) > 0);
+  const status = await collectCodexGoalStatus({ taskId: jobId, jobRootDir: root, resultPath });
+  assert.equal(status.resultStatus, failedSummary.status); assert(status.foregroundOutput);
+  assert.equal(status.progressAttemptCount, 1, "TEST terminal failure must not cause another attempt");
+  assert.equal(status.foregroundOutput.unit, failedForeground.unit); assert.equal(status.foregroundOutput.exitCode, 1);
+  assert.equal(digest(status.foregroundOutput.stdout), digest(failedSummary.foregroundOutput.stdout));
+  assert.equal(digest(status.foregroundOutput.stderr), digest(failedSummary.foregroundOutput.stderr));
+  assert.equal(failedForeground.artifacts.length, 2);
+  for (const [kind, suffix, bytes] of [[HostedForegroundArtifactKind.Stdout, "stdout", failedSummary.foregroundOutput.stdout],
+    [HostedForegroundArtifactKind.Stderr, "stderr", failedSummary.foregroundOutput.stderr]] as const) {
+    const refs: HostedForegroundResult["artifacts"] = failedForeground.artifacts.filter(ref => ref.kind === kind); assert.equal(refs.length, 1);
+    const ref = refs[0]!; assert.equal(ref.path, policy + "/foreground-output/" + failedForeground.unit + "." + suffix);
+    const stat = lstatSync(ref.path); assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1 && (stat.mode & 0o777) === 0o600);
+    assert.equal(String(stat.dev), ref.dev); assert.equal(String(stat.ino), ref.ino);
+    assert.equal(stat.size, ref.byteLength); assert.equal(Buffer.byteLength(bytes), ref.byteLength); assert.equal(digest(bytes), ref.sha256);
+  }
+  const final = host.readEpoch(); assert(final.outerRuntime && final.outerRuntime.startId === nextStartId);
+  assert.equal(final.outerRuntime.state, HostedCustodyReservationState.Reserved);
+  assert.equal(final.phase, HostedCustodyPhase.Closed);
+  assert.equal(readHostedPrivateBytes(completionPath(final.outerRuntime), 4096), null, "TEST failure acquired a success receipt");
+  const failedProbePath = workspace + "/TEST-readonly-failed-probe.json", failedProbeStat = lstatSync(failedProbePath);
+  assert(failedProbeStat.isFile() && !failedProbeStat.isSymbolicLink() && failedProbeStat.uid === 0 && failedProbeStat.nlink === 1 && failedProbeStat.size < 4096);
+  const failedProbe = JSON.parse(readFileSync(failedProbePath, "utf8")) as Record<string, unknown>;
+  assert(failedProbe.namespaces && typeof failedProbe.namespaces === "object" && !Array.isArray(failedProbe.namespaces));
+  const failedNamespaces = failedProbe.namespaces as Record<string, unknown>;
+  assert.equal(Object.keys(failedNamespaces).sort().join(","), "mnt,pid,user");
+  for (const kind of ["user", "mnt", "pid"] as const) {
+    assert(typeof failedNamespaces[kind] === "string" && new RegExp(`^${kind}:\\[\\d+\\]$`).test(failedNamespaces[kind]));
+    assert.notEqual(failedNamespaces[kind], namespaces[kind]);
+  }
+  assert.deepEqual(failedProbe, { ...probe, namespaces: failedNamespaces });
+  assert.equal(fileDigest(probePath), priorProbeSha256);
+  const newOutput = lstatSync(resultPath); assert(newOutput.dev !== priorOutput.dev || newOutput.ino !== priorOutput.ino);
+  assert.equal(digest(readFileSync(inputPath)), digest(input));
+  assert.equal(command("/usr/bin/git", ["rev-parse", "HEAD"], 30000, workspace).trim(), gitBefore);
+  (evidence.results as unknown[]).push({ scenario: "readonly_canonical_history_after_actual_next_outer", result: "passed",
+    oldUnit: historical.foregroundOutput.unit, exitCode: historical.foregroundOutput.exitCode, nextStartId, priorSha256,
+    priorDev: String(priorOutput.dev), priorIno: String(priorOutput.ino) },
+  { scenario: "readonly_real_nonzero_cli_status_and_drain", result: "passed", exitCode: 1, status: failedSummary.status,
+    outer: final.outerRuntime, attemptCount: status.progressAttemptCount, successCompletionPresent: false, probe: failedProbe,
+    output: { unit: failedForeground.unit, artifacts: failedForeground.artifacts,
+      retrievedStdoutBytes: Buffer.byteLength(failedSummary.foregroundOutput.stdout),
+      retrievedStderrBytes: Buffer.byteLength(failedSummary.foregroundOutput.stderr) } });
+  evidence.pendingNativeCases = ["direct_daemon_socket_sent_byte_capture", "noop_and_stale_same_inode_result", "unauthorized_destination_no_preread"];
+}
+
+async function qualifyLateRelease(commandPath: string, args: readonly string[], workspace: string, env: Record<string, string>,
+  systemBusInfrastructure: SystemBusInfrastructure, evidence: Record<string, unknown>) {
+  const store = new HostedInstallationActivationStore();
+  const previousStarts = new Set(readHostedInstallationActivation().activation.ordinaryStarts.map(row => row.startId));
+  const previousProbes = readdirSync(workspace).filter(name => /^TEST-provider-probe-[123]\.json$/.test(name)).sort();
+  let actualUnit: string | undefined;
+  const child = store.runOrdinaryRuntimeLaunch(commandPath, args, workspace, launch => {
+    actualUnit = hostedFdInvocationUnit(launch.args);
+    return spawnHostedFdChild(launch.command, launch.args, { cwd: workspace }, actualUnit, HostedFdLaunchKind.Foreground);
+  });
+  const closed = once(child, "close"), guard = hostedFdLaunch(child);
+  child.stdin?.on("error", () => {});
+  let pausedMs = 0, requestedMs = 0, denied = false;
+  // Closed-fact TEST diagnostics only: enums, booleans and capped counts. No
+  // payload, id, path or raw error text is recorded and no gate authority
+  // changes here.
+  let releaseErrorClass = "none", releaseCall = 0, releaseCallClass = "none", cleanupReleased: boolean | null = null;
+  const classifyError = (error: unknown): string => error instanceof Error && error.message === "hosted_fd_boundary_unresolved" ? "boundary_unresolved"
+    : error instanceof Error && (error as { code?: unknown }).code === "ERR_ASSERTION" ? "assertion"
+      : error instanceof Error ? "other" : "non_error_throw";
+  let typedEmptyArrays: readonly SystemdEmptyArrayFact[] | undefined;
+  const previousProbeCount = readdirSync(workspace).filter(name => /^TEST-provider-probe-[0-9]+\.json$/.test(name)).length;
+  try {
+    await guard.observe(); // Actual peer/unit/birth proof outside the fence.
+    assert(actualUnit);
+    // Actual existing waiting unit, never a caller-chosen unit or admission
+    // receipt. These provisional facts cannot release the frame below.
+    typedEmptyArrays = observeSystemBusFdEmptyArrays(systemBusInfrastructure, actualUnit, () => guard.remainingSetupMs());
+    assertTypedEmptyArrays(typedEmptyArrays, true);
+    try {
+      store.releaseOrdinaryRuntimeFrame((fence, revalidateOwner) => {
+        guard.release(fence, Buffer.from(JSON.stringify({ schemaVersion: 1, env })), true, () => {
+          releaseCall += 1; releaseCallClass = releaseCall === 1 ? "first_revalidate" : releaseCall === 2 ? "tool_parent_revalidate" : "budget_revalidate";
+          revalidateOwner();
+          requestedMs = guard.remainingSetupMs() + 5;
+          assert(requestedMs <= 60005);
+          const began = process.hrtime.bigint();
+          // Real monotonic time expires while the same synchronous fence is
+          // held. No fake clock, thenable or fabricated authority is supplied.
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, requestedMs);
+          pausedMs = Number(process.hrtime.bigint() - began) / 1_000_000;
+        });
+      });
+    } catch (error) {
+      releaseErrorClass = classifyError(error);
+      assert(error instanceof Error && error.message === "hosted_fd_boundary_unresolved"); denied = true;
+    }
+    assert(requestedMs > 0 && pausedMs >= requestedMs - 1, "TEST final-release clock boundary was not exercised");
+    assert(denied, "TEST expired frame crossed actual final release");
+  } finally {
+    // Cleanup is the existing exact owned reservation path, never a completion
+    // claim or blanket manager/process operation. Uncertainty remains retained.
+    guard.invalidate();
+    // Product denial path (runHostedRuntimeForeground catch): the exact retained
+    // proxy is stopped with SIGTERM. systemd-run --wait reports a stop-killed
+    // unit as a clean wait (its documented contract), so the proxy is terminated
+    // before the owned stop can close it as an apparent success.
+    child.kill("SIGTERM");
+    try { cleanupReleased = store.requestOrdinaryDependencyCleanup(); }
+    catch (error) { cleanupReleased = null; evidence.lateReleaseObservation = { purpose: "TEST_late_release_closed_fact_classification",
+      releaseErrorClass, releaseCallClass, denied, requestedMsCapped: Math.min(Math.round(requestedMs), 60005),
+      pausedMsCapped: Math.min(Math.round(pausedMs), 60005), cleanupErrorClass: classifyError(error) }; throw error; }
+    assert(cleanupReleased);
+    const [code, signal] = await boundedWait(closed, 15000);
+    const childExitClass = signal !== null ? "signal" : code === 0 ? "exit0" : "nonzero";
+    const added = readHostedInstallationActivation().activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+    evidence.lateReleaseObservation = { purpose: "TEST_late_release_closed_fact_classification",
+      releaseErrorClass, releaseCallClass, denied, requestedMsCapped: Math.min(Math.round(requestedMs), 60005),
+      pausedMsCapped: Math.min(Math.round(pausedMs), 60005), cleanupReleased, childExitClass,
+      codeCapped: typeof code === "number" ? Math.min(code, 255) : null, signaled: signal !== null,
+      probeAddedCount: Math.min(Math.max(readdirSync(workspace).filter(name => /^TEST-provider-probe-[0-9]+\.json$/.test(name)).length - previousProbeCount, 0), 8),
+      addedRows: added.slice(0, 4).map(row => ({
+        unit: row.unit.startsWith("subscription-runtime-hosted-") ? "hosted" : row.unit.startsWith("subscription-runtime-ordinary-") ? "ordinary" : "other",
+        state: row.state === HostedCustodyReservationState.Reserved ? "reserved" : row.state === HostedCustodyReservationState.Terminal ? "terminal" : "other",
+        startRecord: (() => { try { lstatSync(`${policy}/ordinary-starts/${row.startId}.json`); return "present"; } catch { return "absent"; } })(),
+        completionRecord: (() => { try { lstatSync(`${policy}/ordinary-completed/${row.startId}.json`); return "present"; } catch { return "absent"; } })() })),
+      addedCount: added.length, addedOverflow: added.length > 4 };
+    assert(code !== 0 || signal !== null, "TEST pre-payload deadline launch unexpectedly completed successfully");
+  }
+  assert.deepEqual(readdirSync(workspace).filter(name => /^TEST-provider-probe-[123]\.json$/.test(name)).sort(), previousProbes);
+  const current = readHostedInstallationActivation(), added = current.activation.ordinaryStarts.filter(row => !previousStarts.has(row.startId));
+  assert.equal(added.length, 1); const row = added[0]!;
+  assert.equal(row.state, HostedCustodyReservationState.Reserved); assert.equal(row.unit, actualUnit);
+  assert.equal(readHostedPrivateBytes(policy + "/ordinary-completed/" + row.startId + ".json", 4096), null);
+  const stdout = guard.outputPaths[0]; assert(stdout); assert.equal(stdout, policy + "/foreground-output/" + row.unit + ".stdout");
+  const stat = lstatSync(stdout); assert(stat.isFile() && stat.uid === 0 && stat.nlink === 1 && !(stat.mode & 0o077));
+  assert.equal(stat.size, 0, "TEST late release forwarded payload bytes");
+  return { scenario: "actual_final_release_deadline", outcome: "denied_before_enqueue_and_payload",
+    requestedMs, pausedMs, startId: row.startId, unit: row.unit, reservationState: row.state,
+    completionPresent: false, stdoutBytes: stat.size, typedEmptyArrays,
+    typedObservationPurpose: "TEST_current_waiting_unit_facts_not_release_authority" };
+}
+
+/** Native trusted TEST issuance, before any managed start exists. Parsed profile
+ * bytes alone never qualify a binary: live retained endpoints and observations
+ * below must succeed before create-only publication. Real routes reprove peers. */
+async function issueNativeFdProfile(evidence: Record<string, unknown>, bus: SystemBusInfrastructure): Promise<{ path: typeof fdCollectorProfilePath; sha256: string }> {
+  const NativeFdQualificationPhase = { Pins: "pins", UidObservation: "uid_observation", NamedSockets: "named_sockets",
+    Profile: "profile", Internals: "internals", ExtraSocket: "extra_socket", DirectBusSocket: "direct_bus_socket",
+    FinalPins: "final_pins", Publication: "publication", Complete: "complete" } as const;
+  type NativeFdQualificationPhase = typeof NativeFdQualificationPhase[keyof typeof NativeFdQualificationPhase];
+  const NativeFdQualificationParser = { None: "none", Rows: "rows", Profile: "profile" } as const;
+  type NativeFdQualificationParser = typeof NativeFdQualificationParser[keyof typeof NativeFdQualificationParser];
+  const measured = { setupMs: 0, collectorMs: 0, outputBytes: 0, rows: 0, eventPoll: 0, eventFd: 0, pipes: 0, devNull: 0 };
+  const progress: { purpose: string; phase: NativeFdQualificationPhase; parser: NativeFdQualificationParser;
+    uid: 0 | 65532 | null; completedUidObservations: number; rowParseCalls: number; measured: typeof measured;
+    rowsInput?: ReturnType<typeof nativeFdRowsInputFacts>;
+    internalsInput?: ReturnType<typeof nativeFdInternalsInputFacts> & { snapshotOrdinal: number };
+    profileInput?: { ssElfFiles: number; nodeElfFiles: number;
+      wrapperElfFiles: readonly number[]; bootstrapCount: number; limits: FdCollectorProfile["limits"] } } = {
+    purpose: "TEST_partial_fd_qualification_facts_not_profile_authority", phase: NativeFdQualificationPhase.Pins,
+    parser: NativeFdQualificationParser.None, uid: null, completedUidObservations: 0, rowParseCalls: 0, measured };
+  evidence.fdCollectorProgress = progress;
+  const observerStatus = boundedProc("/proc/self/status", 16384);
+  const capabilitySets = Object.fromEntries(["Inh", "Prm", "Eff", "Bnd", "Amb"].map(name => {
+    const value = new RegExp(`^Cap${name}:\\s+([a-f0-9]{1,16})$`, "m").exec(observerStatus)?.[1]; assert(value);
+    assert(BigInt("0x" + value) <= (1n << 41n) - 1n); return [name, value];
+  })) as Record<string, string>;
+  assert(BigInt("0x" + capabilitySets.Eff!) & (1n << 19n), "TEST root observer requires actual cross-UID ptrace access");
+  assert.equal(BigInt("0x" + capabilitySets.Amb!), 0n);
+  let lsm: string | undefined;
+  try { const value = boundedProc("/proc/self/attr/current", 4096).trim();
+    lsm = value === "unconfined" ? "unconfined" : "other_" + digest(value); }
+  catch (error) { assert(["ENOENT", "EINVAL"].includes((error as NodeJS.ErrnoException).code ?? "")); }
+  evidence.rootFdObserver = { uid: process.getuid!(), gid: process.getgid!(), capabilitySets, lsm: lsm ?? "unavailable",
+    namespaces: { user: readlinkSync("/proc/self/ns/user"), pid: readlinkSync("/proc/self/ns/pid"), mount: readlinkSync("/proc/self/ns/mnt") },
+    scope: "trusted root observer in private owned TEST OS proc; no runner proc or consumer privilege" };
+  const qualificationBegan = performance.now();
+  const effectDeadline = process.hrtime.bigint() + 20_000_000_000n;
+  evidence.ioUringEffects = await qualifyIoUringEffects(bus, () => {
+    const left = Number((effectDeadline - process.hrtime.bigint()) / 1_000_000n); assert(left > 0); return left;
+  });
+  const signedBytes = boundedProc(runtime + "/os-signed-elf-pins.json", 256 * 1024);
+  const signedValue = JSON.parse(signedBytes) as { schemaVersion: number; pins: FdFilePin[] };
+  assert.equal(signedValue.schemaVersion, 1); assert(Array.isArray(signedValue.pins) && signedValue.pins.length <= 1024);
+  const signed = new Map(signedValue.pins.map(pin => [pin.path, pin.sha256])); assert.equal(signed.size, signedValue.pins.length);
+  const packageFacts = JSON.parse(boundedProc(runtime + "/os-packages.json", 256 * 1024)) as {
+    packages: { package: string; version: string; arch: string; sha256: string }[]; pinnedNode: { sha256: string } };
+  const ssPackages = packageFacts.packages.filter(row => row.package === "iproute2");
+  assert.equal(ssPackages.length, 1); assert.equal(ssPackages[0]!.version, "6.1.0-1ubuntu6.4");
+  assert.equal(ssPackages[0]!.arch, "amd64"); assert.match(ssPackages[0]!.sha256, /^[a-f0-9]{64}$/);
+  evidence.fdCandidateNode = { bytes: lstatSync(node).size, version: process.version, artifactSha256: packageFacts.pinnedNode.sha256 };
+  const pin = (path: string): FdFilePin => {
+    assert.equal(realpathSync(path), path);
+    for (let parent = dirname(path);; parent = dirname(parent)) {
+      const stat = lstatSync(parent); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && !(stat.mode & 0o022));
+      if (parent === "/") break;
+    }
+    const before = lstatSync(path); assert(before.isFile() && before.uid === 0 && before.nlink === 1 &&
+      !(before.mode & 0o022) && before.size > 0 && before.size <= 256 * 1024 * 1024);
+    const sha256 = fileDigest(path), after = lstatSync(path);
+    assert(before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+      before.ctimeMs === after.ctimeMs && before.mtimeMs === after.mtimeMs);
+    return { path, sha256 };
+  };
+  const executable = (path: string): FdExecutablePin => {
+    const first = pin(path);
+    assert.equal(first.sha256, path === node ? packageFacts.pinnedNode.sha256 : signed.get(path));
+    // Hash/immutable ancestry before invoking the trusted OS linkage tool.
+    const libraries = actualLibraries(path).map(row => {
+      const current = pin(row.path); assert.equal(current.sha256, signed.get(row.path)); return current;
+    });
+    assert.equal(pin(path).sha256, first.sha256);
+    return { ...first, elfFiles: [first, ...libraries] };
+  };
+  const ss = executable("/usr/bin/ss"), nodePin = executable(node);
+  const pythonPin = executable("/usr/bin/python3.12"); // Negative TEST fixture only; never a profile bootstrap.
+  const wrappers = ["/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare"].map(executable);
+  assert.equal(command(ss.path, ["--version"]).trim(), "ss utility, iproute2-6.1.0");
+  const bootstraps = ["provider-codex/app-server/adapters/hosted-app-server-launcher.js",
+    "worker-codex/hosted-dependency-installer-bootstrap.js", "worker-codex/hosted-readonly-host-launch-cli.js",
+    "worker-codex/hosted-readonly-runtime-bootstrap.js", "worker-codex/hosted-readonly-foreground.js"]
+    .map(path => pin(runtime + "/dist/" + path));
+  if (process.env.TEST_OS_SCENARIO === OwnedOsScenario.Readonly) {
+    for (const path of ["managed-launcher/launch.mjs", "managed-launcher/payload-guard.mjs", "managed-launcher/profiles.mjs", "host-jobs/storage-policy.mjs",
+      "managed-launcher/hosted-host-policy.mjs", "managed-launcher/storage-pressure-guard.mjs"])
+      bootstraps.push(pin("/opt/subscription-runtime/" + path));
+  }
+  const query = (): ReadonlyMap<string, FdCollectorPeer> => {
+    const began = performance.now();
+    delete progress.rowsInput;
+    const result = spawnSync(ss.path, ["-H", "-n", "-A", "unix_stream", "state", "established", "src", "unix:"],
+      { env: cleanEnv, encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    assert(!result.error && result.signal === null && result.status === 0 && result.stderr === "");
+    // Bounded existing stdout only; numeric shape facts never repair the reply.
+    progress.rowsInput = nativeFdRowsInputFacts(result.stdout); progress.rowParseCalls++;
+    progress.parser = NativeFdQualificationParser.Rows;
+    const rows = parseFdCollectorRows(result.stdout, 65536);
+    progress.parser = NativeFdQualificationParser.None;
+    measured.collectorMs = Math.max(measured.collectorMs, Math.ceil(performance.now() - began));
+    measured.outputBytes = Math.max(measured.outputBytes, Buffer.byteLength(result.stdout)); measured.rows = Math.max(measured.rows, rows.size);
+    assert.equal(pin(ss.path).sha256, ss.sha256); return rows;
+  };
+  const sock = (target: string): string => {
+    const match = /^socket:\[([1-9][0-9]*)\]$/.exec(target); assert(match && BigInt(match[1]!) <= 4294967295n); return match[1]!;
+  };
+  const observations: unknown[] = [], snapshots: { uid: 0 | 65532; observation: ReturnType<typeof observeHostedFdProcess> }[] = [];
+  for (const uid of [0, 65532] as const) {
+    progress.phase = NativeFdQualificationPhase.UidObservation; progress.uid = uid;
+    const began = performance.now(), before = new Set(hostedFdTable(process.pid).filter(row => row.socket).map(row => sock(row.target)));
+    const args = ["--experimental-strip-types", runtime + "/scripts/dependency-retention-os-test/common.ts", "fd-qualification"];
+    const child = uid === 0 ? spawn(node, args, { env: cleanEnv, stdio: ["pipe", "pipe", "pipe"] }) :
+      spawn("/usr/bin/setpriv", ["--reuid=65532", "--regid=65532", "--clear-groups", "--inh-caps=-all", "--ambient-caps=-all",
+        "--bounding-set=-all", "--no-new-privs", node, ...args], { env: cleanEnv, stdio: ["pipe", "pipe", "pipe"] });
+    const exited = once(child, "close"); let birth: string | undefined;
+    child.stdin.on("error", () => {}); child.stderr.resume();
+    try {
+      await boundedWait(new Promise<void>((resolve, reject) => {
+        let ready = "";
+        child.stdout.on("data", (chunk: Buffer) => { ready += chunk.toString("ascii");
+          if (ready.length > 64 || !"TEST_fd_waiting\n".startsWith(ready)) reject(new Error("TEST fd waiting marker invalid"));
+          else if (ready === "TEST_fd_waiting\n") resolve(); });
+        child.once("error", reject); child.once("exit", () => reject(new Error("TEST fd child exited before observation")));
+      }), 10000);
+      assert(child.pid); const actual = observeHostedFdProcess(child.pid); birth = actual.birth;
+      const status = boundedProc("/proc/" + child.pid + "/status", 16384);
+      assert.match(status, new RegExp(`^Uid:\\s+${uid}\\s+${uid}\\s+${uid}\\s+${uid}$`, "m"));
+      assert.match(status, new RegExp(`^Gid:\\s+${uid}\\s+${uid}\\s+${uid}\\s+${uid}$`, "m"));
+      assert.match(status, /^NoNewPrivs:\s+1$/m); assert.match(status, /^Seccomp:\s+2$/m);
+      assert(!actual.descriptors.some(row => row.target === "anon_inode:[io_uring]"));
+      if (uid === 65532) {
+        for (const kind of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]) assert.match(status, new RegExp(`^${kind}:\\s+0+$`, "m"));
+        assert.match(status, /^NoNewPrivs:\s+1$/m);
+        assert.match(status, /^Groups:\s*$/m);
+      } else {
+        for (const [set, value] of Object.entries(capabilitySets)) assert.match(status, new RegExp(`^Cap${set}:\\s+${value}$`, "m"));
+      }
+      const namespaces = { user: readlinkSync(`/proc/${child.pid}/ns/user`), mnt: readlinkSync(`/proc/${child.pid}/ns/mnt`),
+        pid: readlinkSync(`/proc/${child.pid}/ns/pid`), net: actual.net };
+      for (const kind of ["user", "mnt", "pid", "net"] as const) assert.equal(namespaces[kind], readlinkSync("/proc/self/ns/" + kind));
+      assert.equal(actual.exe, node); assert.equal(actual.net, readlinkSync("/proc/self/ns/net"));
+      assert.equal(actual.group, boundedProc("/proc/self/cgroup", 4096).trim());
+      const peerRows = query(), parent = hostedFdTable(process.pid), pairs: { fd: number; parent: string; child: string }[] = [];
+      for (const fd of [0, 1, 2]) {
+        const target = actual.descriptors.find(row => row.fd === fd); assert(target?.socket);
+        const remote = sock(target.target), local = knownFdCollectorPeer(peerRows, remote); assert(local && !before.has(local));
+        assert.equal(knownFdCollectorPeer(peerRows, local), remote);
+        assert.equal(parent.filter(row => row.socket && sock(row.target) === local).length, 1); pairs.push({ fd, parent: local, child: remote });
+      }
+      assert.equal(new Set(pairs.flatMap(row => [row.parent, row.child])).size, 6);
+      const count = (test: (target: string, character: boolean, pipe: boolean) => boolean) => actual.descriptors.filter(row => row.fd > 2 && test(row.target, row.character, row.pipe)).length;
+      measured.eventPoll = Math.max(measured.eventPoll, count(target => target === "anon_inode:[eventpoll]"));
+      measured.eventFd = Math.max(measured.eventFd, count(target => target === "anon_inode:[eventfd]"));
+      measured.pipes = Math.max(measured.pipes, count((_target, _char, pipe) => pipe));
+      measured.devNull = Math.max(measured.devNull, count((_target, character) => character));
+      measured.setupMs = Math.max(measured.setupMs, Math.ceil(performance.now() - began));
+      const next = observeHostedFdProcess(child.pid); assert.equal(next.birth, birth);
+      assert.deepEqual(next.descriptors, actual.descriptors);
+      const nextRows = query(); for (const pair of pairs) { assert.equal(knownFdCollectorPeer(nextRows, pair.parent), pair.child); assert.equal(knownFdCollectorPeer(nextRows, pair.child), pair.parent); }
+      observations.push({ uid, pid: child.pid, birth, namespaces, group: actual.group, pairs,
+        droppedCapabilitiesAndNoNewPrivsObserved: uid === 65532,
+        descriptors: actual.descriptors.map(row => ({ fd: row.fd, target: row.target, flags: row.flags, rdev: row.rdev })) });
+      snapshots.push({ uid, observation: actual });
+      progress.phase = NativeFdQualificationPhase.NamedSockets;
+      await qualifyNamedSockets(query, pairs[0]!.parent, pairs[0]!.child, sock);
+    } finally {
+      child.stdin.end();
+      try { const [code, signal] = await boundedWait(exited, 2000); assert.equal(code, 0); assert.equal(signal, null); }
+      catch (error) {
+        // Exact retained child only. Unobservable identity stays unresolved and
+        // the outer owned service performs its normal final cleanup.
+        if (child.pid && birth && child.exitCode === null && observeHostedFdProcess(child.pid).birth === birth) child.kill("SIGTERM");
+        throw error;
+      }
+    }
+    progress.completedUidObservations++;
+  }
+  progress.uid = null; progress.phase = NativeFdQualificationPhase.Profile;
+  // Include actual immutable toolchain discovery and both native observations,
+  // rather than projecting a complete manager setup from one cheap Node spawn.
+  measured.setupMs = Math.max(measured.setupMs, Math.ceil(performance.now() - qualificationBegan));
+  const headroom = (value: number, maximum: number, floor = 1): number => {
+    assert(value <= maximum && floor <= maximum, "TEST measured fd profile exceeds closed bounds");
+    return Math.min(maximum, Math.max(floor, value * 4 + 2));
+  };
+  const collectorTimeoutMs = headroom(measured.collectorMs, 5000, 250);
+  const profileInput = { schemaVersion: 1, renderer: FdCollectorRenderer.SsV61Signed, ss, node: nodePin, wrappers, bootstraps,
+    limits: { setupTimeoutMs: Math.max(collectorTimeoutMs, headroom(measured.setupMs, 60000, 1000)), collectorTimeoutMs,
+      maxOutputBytes: headroom(measured.outputBytes, 4 * 1024 * 1024, 4096), maxRows: headroom(measured.rows, 65536, 16),
+      maxBufferedInputBytes: headroom(Buffer.byteLength(JSON.stringify({ schemaVersion: 1, env: cleanEnv })), 4 * 1024 * 1024, 4096),
+      maxEventPoll: headroom(measured.eventPoll, 8), maxEventFd: headroom(measured.eventFd, 8),
+      maxPipeEndpoints: headroom(measured.pipes, 32), maxDevNullReserves: headroom(measured.devNull, 8) } };
+  progress.profileInput = { ssElfFiles: ss.elfFiles.length, nodeElfFiles: nodePin.elfFiles.length,
+    wrapperElfFiles: wrappers.map(pin => pin.elfFiles.length), bootstrapCount: bootstraps.length, limits: { ...profileInput.limits } };
+  progress.parser = NativeFdQualificationParser.Profile;
+  const profile = parseFdCollectorProfile(profileInput);
+  progress.parser = NativeFdQualificationParser.None; progress.phase = NativeFdQualificationPhase.Internals;
+  for (const [snapshotOrdinal, { uid, observation: snapshot }] of snapshots.entries()) {
+    progress.uid = uid;
+    progress.internalsInput = { snapshotOrdinal, ...nativeFdInternalsInputFacts(snapshot) };
+    // Positive classification uses the real production contract, not a copied
+    // fixture decision. Processes have drained, so retain their actual snapshots.
+    assertHostedFdInternals(snapshot, profile);
+  }
+  delete progress.internalsInput; progress.uid = null;
+  progress.phase = NativeFdQualificationPhase.ExtraSocket;
+  for (const file of pythonPin.elfFiles) assert.deepEqual(pin(file.path), file);
+  const extraDescriptorDenial = await qualifyExtraSocketDenial(profile, pythonPin);
+  for (const file of pythonPin.elfFiles) assert.deepEqual(pin(file.path), file);
+  progress.phase = NativeFdQualificationPhase.DirectBusSocket;
+  const directBusDescriptorDenial = await qualifyExtraSocketDenial(profile, pythonPin, SYSTEM_BUS_ENDPOINT);
+  for (const file of pythonPin.elfFiles) assert.deepEqual(pin(file.path), file);
+  progress.phase = NativeFdQualificationPhase.FinalPins;
+  for (const executable of [ss, nodePin, ...wrappers, pythonPin]) for (const file of executable.elfFiles) assert.equal(pin(file.path).sha256, file.sha256);
+  progress.phase = NativeFdQualificationPhase.Publication;
+  assert(!existsSync(fdCollectorProfilePath)); json(fdCollectorProfilePath, profile);
+  const profilePin = { path: fdCollectorProfilePath, sha256: fileDigest(fdCollectorProfilePath) };
+  evidence.fdCollectorQualification = { package: ssPackages[0], profilePin, profile, measured, observations, extraDescriptorDenial, directBusDescriptorDenial,
+    observer: { net: readlinkSync("/proc/self/ns/net"), user: readlinkSync("/proc/self/ns/user"),
+      effectiveCapabilities: /^CapEff:\s+([a-f0-9]+)$/m.exec(boundedProc("/proc/self/status", 16384))?.[1] },
+    scope: "actual retained native pairs and cross UID proc access; each production route must reprove before payload" };
+  progress.phase = NativeFdQualificationPhase.Complete;
+  return profilePin;
+}
+
+/** Detached numeric TEST inputs only; no release/classification decision or IO. */
+function nativeFdInternalsInputFacts(snapshot: ReturnType<typeof observeHostedFdProcess>) {
+  const KnownAnonymousKind = {
+    Unknown: 0, EventPoll: 1, EventFd: 2, IoUring: 3,
+  } as const;
+  type KnownAnonymousKind = (typeof KnownAnonymousKind)[keyof typeof KnownAnonymousKind];
+  const knownAnonymousKind = (target: string): KnownAnonymousKind =>
+    target === "anon_inode:[eventpoll]" ? KnownAnonymousKind.EventPoll :
+    target === "anon_inode:[eventfd]" ? KnownAnonymousKind.EventFd :
+    target === "anon_inode:[io_uring]" ? KnownAnonymousKind.IoUring : KnownAnonymousKind.Unknown;
+  const inspected = snapshot.descriptors.filter(fd => fd.fd > 2);
+  return { inspectedCount: inspected.length, omittedCount: Math.max(0, inspected.length - 256),
+    complete: inspected.length <= 256,
+    descriptors: inspected.slice(0, 256).map(fd => ({ fd: fd.fd,
+      cloexec: fd.flags & 0o2000000 ? 1 : 0, pathOnly: fd.flags & 0o10000000 ? 1 : 0,
+      accessMode: fd.flags & 3, socket: fd.socket ? 1 : 0, pipe: fd.pipe ? 1 : 0,
+      character: fd.character ? 1 : 0, file: fd.file ? 1 : 0, directory: fd.directory ? 1 : 0,
+      eventPollTarget: fd.target === "anon_inode:[eventpoll]" ? 1 : 0,
+      eventFdTarget: fd.target === "anon_inode:[eventfd]" ? 1 : 0,
+      knownAnonymousKind: knownAnonymousKind(fd.target),
+      pipeTarget: /^pipe:\[[1-9][0-9]*\]$/.test(fd.target) ? 1 : 0,
+      devNullDevice: fd.rdev === "259" ? 1 : 0 })) };
+}
+
+/** Only numeric classifications of an already bounded TEST collector output.
+ * No raw row, token, name, inode, address or hash leaves this summary. */
+function nativeFdRowsInputFacts(text: string) {
+  const columns = Array<number>(8).fill(0), inodeShapes = { positive: 0, negative: 0, zero: 0, nonCanonical: 0, outOfRange: 0 };
+  let rows = 0, start = 0, blankRows = 0, localNotStar = 0, peerNotStar = 0, nonCanonicalQueues = 0, localZero = 0, peerZero = 0;
+  const end = text.endsWith("\n") ? text.length - 1 : text.length;
+  for (let at = 0; text.length > 0 && at <= end; at++) {
+    if (at < end && text[at] !== "\n") continue;
+    rows++; const rowStart = start; start = at + 1;
+    if (rows > 65536) continue; // Detailed row classification stays within the original row bound.
+    const row = text.slice(rowStart, at);
+    if (!row.trim()) { blankRows++; continue; }
+    const fields = row.trim().split(/[\t ]+/), bucket = Math.min(fields.length, 7);
+    columns[bucket] = (columns[bucket] ?? 0) + 1;
+    if (fields.length !== 6) continue;
+    if (fields[2] !== "*") localNotStar++; if (fields[4] !== "*") peerNotStar++;
+    if (!fields.slice(0, 2).every(token => /^(?:0|[1-9][0-9]{0,9})$/.test(token) && Number(token) <= 4294967295)) nonCanonicalQueues++;
+    if (fields[3] === "0") localZero++; if (fields[5] === "0") peerZero++;
+    for (const token of [fields[3]!, fields[5]!]) {
+      if (!/^(?:0|[1-9][0-9]*|-[1-9][0-9]*)$/.test(token)) inodeShapes.nonCanonical++;
+      else { const value = Number(token);
+        if (!Number.isSafeInteger(value) || value < -2147483648 || value > 2147483647) inodeShapes.outOfRange++;
+        else if (value === 0) inodeShapes.zero++;
+        else if (value < 0) inodeShapes.negative++; else inodeShapes.positive++;
+      }
+    }
+  }
+  return { bytes: Buffer.byteLength(text), rows, classifiedRows: Math.min(rows, 65536), omittedRows: Math.max(0, rows - 65536),
+    blankRows, columns, localNotStar, peerNotStar, nonCanonicalQueues, inodeShapes, localZero, peerZero,
+    nonPrintableAscii: !/^[\x09\x0a\x20-\x7e]*$/.test(text) };
+}
+
+async function qualifyExtraSocketDenial(profile: FdCollectorProfile, python: FdExecutablePin, directEndpoint?: typeof SYSTEM_BUS_ENDPOINT) {
+  assert.equal(python.path, "/usr/bin/python3.12");
+  // Node startup reinstates CLOEXEC. This finite child clears fd3 after its own
+  // startup and stays idle for the trusted parent's actual proc observation.
+  const program = `import os
+if os.__spec__.origin != "frozen" or any(getattr(os, name).__module__ != "posix" for name in ("fstat", "set_inheritable", "get_inheritable", "read", "write")):
+    os._exit(70)
+if os.fstat(3).st_mode & 0o170000 != 0o140000:
+    os._exit(70)
+os.set_inheritable(3, True)
+if not os.get_inheritable(3):
+    os._exit(70)
+ready = b"TEST_fd_waiting\\n"
+if os.write(1, ready) != len(ready):
+    os._exit(70)
+data = b""
+while True:
+    chunk = os.read(0, 33 - len(data))
+    if not chunk:
+        break
+    data += chunk
+    if len(data) > 32:
+        os._exit(70)
+if data:
+    if data != b"TEST_fd_release\\n":
+        os._exit(70)
+    marker = b"TEST_fd_payload_executed\\n"
+    if os.write(1, marker) != len(marker):
+        os._exit(70)
+`;
+  const socketPath = "/run/TEST-fd-extra-" + randomUUID(), server = createServer();
+  let client: Socket | undefined, accepted: Socket | undefined;
+  try {
+    if (directEndpoint) {
+      const stat = lstatSync(directEndpoint); assert(stat.isSocket() && stat.uid === 0 && (stat.mode & 0o777) === 0o600);
+      client = createConnection(directEndpoint); client.on("error", () => {}); client.on("data", () => {});
+    } else {
+      server.listen(socketPath); await boundedWait(once(server, "listening"), 2000);
+      const connection = once(server, "connection"); client = createConnection(socketPath);
+      const [socket] = await boundedWait(connection, 2000); accepted = socket as Socket;
+    }
+    await boundedWait(client.readyState === "open" ? Promise.resolve() : once(client, "connect").then(() => {}), 2000);
+    const child = spawn("/usr/bin/setpriv", ["--reuid=65532", "--regid=65532", "--clear-groups", "--inh-caps=-all", "--ambient-caps=-all",
+      "--bounding-set=-all", "--no-new-privs", python.path, "-I", "-S", "-c", program],
+      { env: cleanEnv, stdio: ["pipe", "pipe", "pipe", client] });
+    assert(child.stdin && child.stdout && child.stderr);
+    const exited = once(child, "close"); let output = "", birth: string | undefined;
+    child.stdin.on("error", () => {}); child.stderr.resume();
+    child.stdout.on("data", (bytes: Buffer) => { output += bytes.toString("ascii"); assert(output.length <= 128); });
+    try {
+      await boundedWait(new Promise<void>((resolve, reject) => {
+        child.stdout!.on("data", () => { if (output === "TEST_fd_waiting\n") resolve(); });
+        child.once("error", reject); child.once("exit", () => reject(new Error("TEST extra fd child exited")));
+      }), 10000);
+      assert(child.pid); const actual = observeHostedFdProcess(child.pid); birth = actual.birth;
+      assert.equal(actual.exe, python.path); assert.deepEqual(actual.argv, [python.path, "-I", "-S", "-c", program]);
+      assert.match(boundedProc("/proc/" + child.pid + "/status", 16384), /^Uid:\s+65532\s+65532\s+65532\s+65532$/m);
+      const inherited = actual.descriptors.find(fd => fd.fd === 3); assert(inherited?.socket);
+      assert.equal(inherited.flags & 0o2000000, 0, "TEST must actually clear inherited CLOEXEC");
+      let denied = false;
+      try { assertHostedFdInternals(actual, profile); }
+      catch (error) { assert(error instanceof Error && error.message === "hosted_fd_boundary_unresolved"); denied = true; }
+      // If the boundary regresses, the real waiting child gets data and executes
+      // its bounded TEST marker. No mock descriptor or fake permit is involved.
+      if (!denied) child.stdin.write("TEST_fd_release\n");
+      child.stdin.end(); const [code, signal] = await boundedWait(exited, 2000);
+      assert.equal(code, 0); assert.equal(signal, null); assert(denied, "TEST inherited socket reached payload release");
+      assert.equal(output, "TEST_fd_waiting\n", "TEST extra descriptor denial failed before payload");
+      return { uid: 65532, pid: child.pid, birth, fd: 3, target: inherited.target, flags: inherited.flags,
+        endpoint: directEndpoint ?? socketPath, outcome: "production_internal_boundary_denied_before_TEST_payload",
+        limitation: directEndpoint ? "actual direct guest daemon FD3 denial; no daemon sent-byte trace or managed-positive claim" : "plain waiting TEST internal-boundary denial" };
+    } finally {
+      child.stdin.end();
+      if (child.pid && birth && child.exitCode === null && observeHostedFdProcess(child.pid).birth === birth) child.kill("SIGTERM");
+      if (child.exitCode === null) await boundedWait(exited, 2000);
+    }
+  } finally {
+    client?.destroy(); accepted?.destroy();
+    if (server.listening) await boundedWait(new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())), 2000);
+  }
+}
+
+async function boundedWait<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("TEST owned fd observation deadline")), milliseconds);
+  })]); } finally { clearTimeout(timer); }
+}
+
+async function qualifyNamedSockets(query: () => ReadonlyMap<string, FdCollectorPeer>, local: string, peer: string, sock: (target: string) => string): Promise<void> {
+  const directoryPath = "/run/TEST-fd-" + randomUUID(); directory(directoryPath);
+  for (const name of [directoryPath + "/named\n0 0 * " + local + " * " + peer,
+    "\0TEST-fd-" + randomUUID() + "\n0 0 * " + local + " * " + peer, directoryPath + "/*"]) {
+    const server = createServer(); let accepted: Socket | undefined, client: Socket | undefined;
+    try {
+      server.listen(name); await boundedWait(once(server, "listening"), 2000);
+      const previous = new Set(hostedFdTable(process.pid).filter(row => row.socket).map(row => sock(row.target)));
+      const connection = once(server, "connection"); client = createConnection(name);
+      const [socket] = await boundedWait(connection, 2000); accepted = socket as Socket;
+      await boundedWait(client.readyState === "open" ? Promise.resolve() : once(client, "connect").then(() => {}), 2000);
+      const created = hostedFdTable(process.pid).filter(row => row.socket && !previous.has(sock(row.target))).map(row => sock(row.target));
+      assert.equal(created.length, 2);
+      const rows = query(); assert.equal(knownFdCollectorPeer(rows, local), peer); assert.equal(knownFdCollectorPeer(rows, peer), local);
+      assert(created.some(inode => !rows.has(inode)), "TEST named local socket bypassed empty-address filter");
+      assert(!created.some(inode => knownFdCollectorPeer(rows, knownFdCollectorPeer(rows, inode) ?? "") === inode), "TEST named peer gained reciprocal authority");
+    } finally {
+      client?.destroy(); accepted?.destroy();
+      if (server.listening) await boundedWait(new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())), 2000);
+    }
+  }
+}
+
+async function issueActualSystemBusInfrastructure(evidence: Record<string, unknown>): Promise<SystemBusInfrastructure> {
+  // The original 20-second acquisition allowance now covers signed pin IO,
+  // linkage discovery, every query and final observation, without child resets.
+  const deadline = process.hrtime.bigint() + 20_000_000_000n;
+  const remainingMs = () => {
+    const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
+    assert(Number.isSafeInteger(remaining) && remaining > 0, "TEST genuine system bus setup allowance exhausted"); return remaining;
+  };
+  remainingMs();
+  const pinPath = runtime + "/os-signed-elf-pins.json", beforePins = lstatSync(pinPath);
+  assert(beforePins.isFile() && !beforePins.isSymbolicLink() && beforePins.uid === 0 && beforePins.nlink === 1 && (beforePins.mode & 0o777) === 0o600);
+  const pinBytes = Buffer.from(boundedProc(pinPath, 256 * 1024));
+  const afterPins = lstatSync(pinPath);
+  assert(beforePins.dev === afterPins.dev && beforePins.ino === afterPins.ino && beforePins.size === afterPins.size &&
+    beforePins.ctimeMs === afterPins.ctimeMs && beforePins.mtimeMs === afterPins.mtimeMs && pinBytes.length === beforePins.size);
+  const extraction = JSON.parse(pinBytes.toString("utf8")) as { schemaVersion: number; pins: SystemBusFilePin[] };
+  assert.equal(extraction.schemaVersion, 1); assert(Array.isArray(extraction.pins) && extraction.pins.length <= 1024);
+  const signed = new Map(extraction.pins.map(pin => {
+    assert(([SYSTEM_BUS_EXECUTABLE, "/usr/bin/ss", "/usr/bin/setpriv", hostedDependencySystemdRunExecutable, "/usr/bin/tini", "/usr/bin/unshare", "/usr/bin/systemctl", "/usr/bin/busctl", "/usr/bin/python3.12", "/usr/bin/git"].includes(pin.path) || pin.path.startsWith("/usr/lib/")) && /^[a-f0-9]{64}$/.test(pin.sha256));
+    return [pin.path, pin.sha256] as const;
+  }));
+  assert.equal(signed.size, extraction.pins.length);
+  remainingMs();
+  let queryBytes = 0;
+  const queryPin = (path: string, executable = false): SystemBusFilePin => {
+    remainingMs(); assert.equal(realpathSync(path), path);
+    for (let parent = dirname(path);; parent = dirname(parent)) {
+      const stat = lstatSync(parent); remainingMs();
+      assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && stat.gid === 0 && !(stat.mode & 0o022));
+      if (parent === "/") break;
+    }
+    const expected = signed.get(path); assert(expected);
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = fstatSync(fd), entry = lstatSync(path);
+      assert(before.isFile() && before.uid === 0 && before.gid === 0 && before.nlink === 1 && !(before.mode & 0o022) &&
+        (!executable || (before.mode & 0o111)) && before.size >= 20 && before.size <= 32 * 1024 * 1024 &&
+        (queryBytes += before.size) <= 256 * 1024 * 1024 && entry.dev === before.dev && entry.ino === before.ino);
+      const bytes = Buffer.alloc(before.size + 1); let length = 0;
+      while (length < bytes.length) { remainingMs(); const count = readSync(fd, bytes, length, bytes.length - length, null);
+        if (!count) break; length += count; remainingMs(); }
+      assert.equal(length, before.size);
+      assert(bytes[0] === 127 && bytes.subarray(1, 4).toString() === "ELF" && bytes[4] === 2 && bytes[5] === 1 && bytes.readUInt16LE(18) === 62);
+      const sha256 = digest(bytes.subarray(0, length)); assert.equal(sha256, expected);
+      for (const stat of [fstatSync(fd), lstatSync(path)]) assert(stat.isFile() && stat.uid === 0 && stat.gid === 0 &&
+        stat.nlink === 1 && stat.dev === before.dev && stat.ino === before.ino && stat.mode === before.mode &&
+        stat.size === before.size && stat.ctimeMs === before.ctimeMs && stat.mtimeMs === before.mtimeMs);
+      remainingMs(); return { path, sha256 };
+    } finally { closeSync(fd); }
+  };
+  // Same trusted signed-ELF -> OS ldd procedure as the existing FD issuer.
+  // No busctl execution (including --version) precedes the complete closure.
+  const queryExecutable = queryPin("/usr/bin/busctl", true);
+  const linkage = spawnSync("/usr/bin/ldd", [queryExecutable.path], { env: cleanEnv, encoding: "utf8",
+    timeout: Math.min(2000, remainingMs()), maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+  remainingMs(); assert(!linkage.error && linkage.signal === null && linkage.status === 0 && linkage.stderr === "" && !linkage.stdout.includes("not found"));
+  const libraries = [...new Set([...linkage.stdout.matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)].map(row => realpathSync(row[1]!)))].sort();
+  assert(libraries.length > 0 && libraries.length <= 32 && libraries.every(path => path.startsWith("/usr/lib/")));
+  const queryTool: SystemBusQueryTool = { path: "/usr/bin/busctl", sha256: queryExecutable.sha256,
+    renderer: SystemBusQueryRenderer.Systemd255Terse, elfClosure: [queryExecutable, ...libraries.map(path => queryPin(path))] };
+  assertPinnedSystemBusQueryTool(queryTool, remainingMs);
+  const version = spawnSync(queryTool.path, ["--version"], { env: cleanEnv, encoding: "utf8",
+    timeout: Math.min(2000, remainingMs()), maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"] });
+  remainingMs(); assert(!version.error && version.signal === null && version.status === 0 && version.stderr === "" && /^systemd 255(?:[ .(]|$)/.test(version.stdout));
+  assertPinnedSystemBusQueryTool(queryTool, remainingMs);
+  let registered = false;
+  // Preserve the existing bounded name-registration wait, on the fixed bus.
+  // Every query uses the SAME remaining allowance and enrolled signed closure.
+  while (!registered) {
+    assertPinnedSystemBusQueryTool(queryTool, remainingMs);
+    const read = spawnSync(queryTool.path, ["--address=unix:path=/run/dbus/system_bus_socket", "--no-pager",
+      "--auto-start=no", "--allow-interactive-authorization=no", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
+      "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"],
+      { env: cleanEnv, encoding: "utf8", timeout: Math.min(2000, remainingMs()), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
+    remainingMs(); assertPinnedSystemBusQueryTool(queryTool, remainingMs);
+    assert(!read.error && read.signal === null, "TEST genuine PID1 system bus registration query uncertain");
+    if (read.status === 0) { assert(read.stderr === "" && (read.stdout === "u 1" || read.stdout === "u 1\n")); registered = true; }
+    else await new Promise(resolve => setTimeout(resolve, Math.min(100, remainingMs())));
+  }
+  remainingMs();
+  const pid = command("/usr/bin/systemctl", ["show", "--property=MainPID", "--value", "--", "dbus.service"], Math.min(2000, remainingMs())).trim();
+  remainingMs();
+  assert(/^[1-9][0-9]{0,9}$/.test(pid));
+  const processBirth = () => {
+    const stat = boundedProc("/proc/" + pid + "/stat", 4096), at = stat.lastIndexOf(") ");
+    assert(stat.startsWith(pid + " (") && at > 0);
+    const fields = stat.slice(at + 2).trim().split(/\s+/); assert.equal(fields[1], "1"); assert(/^[1-9][0-9]*$/.test(fields[19]!));
+    return pid + ":" + fields[19];
+  };
+  const birth = processBirth(); assert.equal(readlinkSync("/proc/" + pid + "/exe"), SYSTEM_BUS_EXECUTABLE);
+  assert.equal(boundedProc("/proc/" + pid + "/cgroup", 4096).trim(), "0::" + SYSTEM_BUS_CONTROL_GROUP);
+  const mapped = new Set<string>();
+  for (const line of boundedProc("/proc/" + pid + "/maps", 2 * 1024 * 1024).trim().split("\n")) {
+    const row = /^[a-f0-9]+-[a-f0-9]+\s+[rwxps-]{4}\s+[a-f0-9]+\s+[a-f0-9]+:[a-f0-9]+\s+[0-9]+(?:\s+(.*))?$/.exec(line); assert(row);
+    const path = row[1]; if (!path?.startsWith("/")) continue;
+    assert(mapped.size < 64 || mapped.has(path)); assert.equal(realpathSync(path), path); assert(signed.has(path)); mapped.add(path);
+  }
+  const elfClosure = [...mapped].sort().map(path => {
+    const stat = lstatSync(path); assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1 && (stat.mode & 0o022) === 0 && stat.size <= 32 * 1024 * 1024);
+    const sha256 = fileDigest(path); assert.equal(sha256, signed.get(path)); return { path, sha256 };
+  });
+  assert.equal(readFileSync(SYSTEM_BUS_CONFIG_PATH, "utf8"), SYSTEM_BUS_CONFIG);
+  const serviceFragment = "/etc/systemd/test-units/dbus.service", socketFragment = "/etc/systemd/test-units/dbus.socket";
+  assert.equal(readFileSync(serviceFragment, "utf8"), SYSTEM_BUS_SERVICE_FRAGMENT);
+  assert.equal(readFileSync(socketFragment, "utf8"), SYSTEM_BUS_SOCKET_FRAGMENT);
+  remainingMs();
+  const descriptor = parseSystemBusInfrastructure({ version: 2, role: SystemBusInfrastructureRole.SystemBus,
+    service: { name: "dbus.service", controlGroup: SYSTEM_BUS_CONTROL_GROUP, fragmentPath: serviceFragment, fragmentSha256: fileDigest(serviceFragment) },
+    socket: { name: "dbus.socket", endpoint: SYSTEM_BUS_ENDPOINT, fragmentPath: socketFragment, fragmentSha256: fileDigest(socketFragment) },
+    config: { path: SYSTEM_BUS_CONFIG_PATH, sha256: fileDigest(SYSTEM_BUS_CONFIG_PATH) },
+    executable: { path: SYSTEM_BUS_EXECUTABLE, sha256: signed.get(SYSTEM_BUS_EXECUTABLE) }, elfClosure, queryTool });
+  const endpoint = lstatSync(SYSTEM_BUS_ENDPOINT); assert(endpoint.isSocket() && endpoint.uid === 0 && (endpoint.mode & 0o777) === 0o600);
+  const socketInodes = (processId: string) => {
+    const entries = readdirSync("/proc/" + processId + "/fd"); assert(entries.length <= 4096);
+    const inodes = new Set<string>();
+    for (const name of entries) { assert(/^[0-9]+$/.test(name));
+      try { const match = /^socket:\[([1-9][0-9]*)\]$/.exec(readlinkSync("/proc/" + processId + "/fd/" + name));
+        if (match) inodes.add(match[1]!); }
+      catch (error) { assert.equal((error as NodeJS.ErrnoException).code, "ENOENT"); } }
+    return inodes;
+  };
+  const managerInodes = socketInodes("1"), daemonInodes = socketInodes(pid);
+  const listenerRows = boundedProc("/proc/net/unix", 2 * 1024 * 1024).trim().split("\n").slice(1).map(row => row.trim().split(/\s+/))
+    .filter(row => /^[a-f0-9]{8}$/.test(row[3] ?? "") && (parseInt(row[3]!, 16) & 0x10000) !== 0 && daemonInodes.has(row[6]!));
+  assert.equal(listenerRows.length, 1); const listenerRow = listenerRows[0]!, listener = listenerRow[6]!;
+  assert.equal(listenerRow[7], SYSTEM_BUS_ENDPOINT); assert.equal(listenerRow[4], "0001");
+  assert.equal(listenerRow[3], "00010000"); assert.equal(listenerRow[5], "01");
+  assert(/^[1-9][0-9]*$/.test(listener) && managerInodes.has(listener));
+  evidence.systemBus = { descriptor, daemonPidBirth: birth, endpoint: { dev: String(endpoint.dev), ino: String(endpoint.ino), uid: endpoint.uid,
+    mode: endpoint.mode & 0o777, listenerInode: listener }, observedManagerPid: 1, extractionPinsSha256: digest(pinBytes) };
+  // Execute the real production verifier before issuing any inventory. Its
+  // return is not serialized as authority; every later gate verifies again.
+  try { verifySystemBusInfrastructure(descriptor, remainingMs); }
+  catch (error) {
+    const observation: Record<string, unknown> = { purpose: "TEST_post_failure_current_bus_predicates_only", unavailable: true };
+    evidence.systemBusRejectedCurrentObservation = observation;
+    try {
+      // Reuse the existing manager acquisition deadline; telemetry gets no
+      // extra budget and never reconstructs the original failing query.
+      const until = process.hrtime.bigint() + BigInt(Math.min(remainingMs(), 5000)) * 1000000n;
+      const telemetryRemainingMs = () => Number((until - process.hrtime.bigint()) / 1000000n);
+      const systemctl = "/usr/bin/systemctl", tool = lstatSync(systemctl);
+      assert(tool.isFile() && tool.uid === 0 && tool.nlink === 1 && !(tool.mode & 0o022) && tool.size <= 32 * 1024 * 1024);
+      const expectedTool = signed.get(systemctl); assert(expectedTool);
+      for (let parent = dirname(systemctl);; parent = dirname(parent)) {
+        const stat = lstatSync(parent); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && !(stat.mode & 0o022));
+        if (parent === "/") break;
+      }
+      assert.equal(realpathSync(systemctl), systemctl); assert.equal(fileDigest(systemctl), expectedTool);
+      const current = () => {
+        assert(telemetryRemainingMs() > 0); assert.equal(processBirth(), birth);
+        for (const name of ["user", "mnt", "pid", "net"] as const)
+          assert.equal(readlinkSync(`/proc/self/ns/${name}`), readlinkSync(`/proc/1/ns/${name}`));
+        const now = lstatSync(systemctl), socket = lstatSync(SYSTEM_BUS_ENDPOINT);
+        assert(now.isFile() && now.uid === 0 && now.nlink === 1 && !(now.mode & 0o022) &&
+          now.dev === tool.dev && now.ino === tool.ino && now.size === tool.size && now.ctimeMs === tool.ctimeMs && now.mtimeMs === tool.mtimeMs);
+        assert.equal(fileDigest(systemctl), expectedTool);
+        assert(socket.isSocket() && socket.uid === 0 && (socket.mode & 0o777) === 0o600 && socket.dev === endpoint.dev && socket.ino === endpoint.ino);
+        assert(telemetryRemainingMs() > 0);
+      };
+      const common = ["Id", "Names", "LoadState", "ActiveState", "SubState", "FragmentPath", "DropInPaths", "Job"] as const;
+      const queries = [
+        { unit: "dbus.service", keys: [...common, "ControlGroup", "MainPID", "ExecStart", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "Environment", "EnvironmentFiles", "User", "Group", "Restart", "Type", "TriggeredBy"] },
+        { unit: "dbus.socket", keys: [...common, "Listen", "Accept", "Triggers", "SocketMode", "DirectoryMode", "RemoveOnStop"] },
+      ] as const;
+      const facts = [];
+      for (const query of queries) {
+        current(); const allowance = telemetryRemainingMs(); assert(allowance > 0);
+        const read = spawnSync(systemctl, ["show", `--property=${query.keys.join(",")}`, "--", query.unit],
+          { env: cleanEnv, encoding: "utf8", timeout: Math.min(2000, allowance), maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+        assert(!read.error && read.status === 0 && read.signal === null); current();
+        const values: Record<string, string> = {}, rows = read.stdout.trim().split("\n"); assert(rows.length <= 64);
+        let unknown = 0, duplicates = 0;
+        for (const row of rows) {
+          const at = row.indexOf("="), key = row.slice(0, at); assert(at > 0);
+          if (!query.keys.some(known => known === key)) { unknown++; continue; }
+          if (Object.hasOwn(values, key)) duplicates++;
+          values[key] = row.slice(at + 1);
+        }
+        const checks: Record<string, boolean> = { exactKeys: unknown === 0 && duplicates === 0 && Object.keys(values).length === query.keys.length,
+          Id: values.Id === query.unit, Names: values.Names === query.unit, LoadState: values.LoadState === "loaded",
+          ActiveState: values.ActiveState === "active", SubState: values.SubState === "running", DropInPaths: values.DropInPaths === "", Job: values.Job === "" };
+        if (query.unit === "dbus.service") {
+          const exec = /^\{ path=([^;]+) ; argv\[\]=(.*?) ; ignore_errors=no ; [^{}]*\}$/.exec(values.ExecStart ?? "");
+          Object.assign(checks, { FragmentPath: values.FragmentPath === serviceFragment, ControlGroup: values.ControlGroup === SYSTEM_BUS_CONTROL_GROUP,
+            MainPID: /^[1-9][0-9]{0,9}$/.test(values.MainPID ?? ""), User: values.User === "", Group: values.Group === "",
+            Restart: values.Restart === "no", Type: values.Type === "notify", TriggeredBy: values.TriggeredBy === "dbus.socket",
+            ExecStart: !!exec && exec[1] === SYSTEM_BUS_EXECUTABLE && exec[2] === [SYSTEM_BUS_EXECUTABLE, ...SYSTEM_BUS_ARGUMENTS].join(" ") });
+          for (const key of ["ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "Environment", "EnvironmentFiles"] as const) checks[key] = values[key] === "";
+        } else Object.assign(checks, { FragmentPath: values.FragmentPath === socketFragment, Listen: values.Listen === `${SYSTEM_BUS_ENDPOINT} (Stream)`,
+          Accept: values.Accept === "no", Triggers: values.Triggers === "dbus.service", SocketMode: values.SocketMode === "0600",
+          DirectoryMode: values.DirectoryMode === "0755", RemoveOnStop: values.RemoveOnStop === "yes" });
+        facts.push({ unit: query.unit, checks, missingKnownFields: query.keys.filter(key => !Object.hasOwn(values, key)), unknownFields: unknown, duplicates });
+      }
+      current(); observation.unavailable = false; observation.units = facts;
+    } catch { /* Only closed unavailable telemetry; preserve the real rejection. */ }
+    throw error;
+  }
+  remainingMs(); assert.equal(processBirth(), birth);
+  const typedEmptyArrays = observeSystemdServiceEmptyArrays(queryTool, "dbus.service", SystemdServiceArrayKind.Infrastructure, remainingMs);
+  assertTypedEmptyArrays(typedEmptyArrays, false);
+  assert.equal(processBirth(), birth);
+  const currentEndpoint = lstatSync(SYSTEM_BUS_ENDPOINT);
+  assert(currentEndpoint.isSocket() && currentEndpoint.uid === 0 && (currentEndpoint.mode & 0o777) === 0o600 &&
+    currentEndpoint.dev === endpoint.dev && currentEndpoint.ino === endpoint.ino);
+  remainingMs();
+  evidence.systemBusTypedEmptyArrays = { purpose: "TEST_actual_fixed_bus_service_facts_not_inventory_authority", facts: typedEmptyArrays };
+  return descriptor;
+}
+function assertTypedEmptyArrays(facts: readonly SystemdEmptyArrayFact[], managed: boolean): void {
+  // Independent expected native contract; never create or fill measured facts.
+  const names = managed ? ["ExecCondition", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "EnvironmentFiles"] :
+    ["ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost", "EnvironmentFiles"];
+  assert.deepEqual(facts, names.map(property => ({ property, signature: property === "EnvironmentFiles" ? "a(sb)" : "a(sasbttttuii)", count: 0 })));
+}
+function boundedProc(path: string, max: number): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try { const buffer = Buffer.alloc(max + 1); let length = 0;
+    while (length < buffer.length) { const count = readSync(fd, buffer, length, buffer.length - length, null); if (!count) break; length += count; }
+    assert(length <= max); return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length)); }
+  finally { closeSync(fd); }
+}
+
+function verifyOwnedSyntheticDiagnosticInputs(phase: "fresh_real_cli" | "hot_real_cli", jobId: string, root: string,
+  workspace: string, command: string, args: readonly string[], env: Readonly<Record<string, string | undefined>>): boolean {
+  try {
+    if (process.env.TEST_OS_SCENARIO !== OwnedOsScenario.Dependency || !/^TEST-os-[a-f0-9-]{36}$/.test(jobId) ||
+        root !== policy + "/dependency-test-jobs/jobs/" + jobId || workspace !== root + "/workspace") return false;
+    const read = (path: string, max: number): Buffer => {
+      for (let parent = dirname(path);; parent = dirname(parent)) {
+        const stat = lstatSync(parent); assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && !(stat.mode & 0o022));
+        assert.equal(realpathSync(parent), parent); if (parent === "/") break;
+      }
+      const before = lstatSync(path); assert(before.isFile() && !before.isSymbolicLink() && before.uid === 0 && before.nlink === 1 &&
+        !(before.mode & 0o022) && before.size > 0 && before.size <= max);
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        assert(sameSyntheticDiagnosticFile(before, fstatSync(fd)));
+        const bytes = Buffer.alloc(max + 1); let length = 0;
+        while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
+        assert.equal(length, before.size);
+        assert(sameSyntheticDiagnosticFile(before, fstatSync(fd)) && sameSyntheticDiagnosticFile(before, lstatSync(path)));
+        return bytes.subarray(0, length);
+      } finally { closeSync(fd); }
+    };
+    return verifiedSyntheticCliInputs({ scenario: process.env.TEST_OS_SCENARIO, phase, entry: process.argv[1], command,
+      jobId, root, workspace, args, env, providerSha256: digest(read(runtime + "/codex/bin/provider.ts", 32768)),
+      prompt: read(root + "/prompt", 4096), auth: read(root + "/auth/TEST-account/auth.json", 4096) });
+  } catch { return false; }
+}
+function observeOwnedCliFailure(jobId: string, root: string, workspace: string, status: number,
+  trustedSyntheticInputs = false, syntheticStderrVerified = trustedSyntheticInputs) {
+  const observation: Record<string, unknown> = { purpose: "TEST_owned_cli_failure_only", status };
+  const { installation, activation } = readHostedInstallationActivation();
+  assert(activation.ordinaryStarts.length <= 32);
+  const rows = activation.ordinaryStarts.flatMap(row => {
+    assert(/^[a-f0-9-]{36}$/.test(row.startId));
+    const bytes = readHostedPrivateBytes(policy + "/ordinary-starts/" + row.startId + ".json", 65536); assert(bytes);
+    const start = parseHostedOrdinaryStart(JSON.parse(bytes.toString("utf8")));
+    if (start.jobId !== jobId) return [];
+    assert.equal(start.jobRootDir, root); assert.equal(start.workspacePath, workspace);
+    assert.equal(start.unit, row.unit); assert.equal(start.creatorId, row.creatorId); assert.equal(start.activationGeneration, row.generation);
+    assert.equal(start.installationId, installation.installationId); assert.equal(start.bootId, activation.bootId);
+    assert.equal(start.supervisorId, activation.supervisorId); assert.equal(start.originSha256, row.originSha256);
+    assert.equal(start.controlGroup, "/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/" + row.unit);
+    assert([`subscription-runtime-ordinary-${row.startId}.service`, `subscription-runtime-hosted-${row.startId}.service`].includes(row.unit));
+    const shown = spawnSync("/usr/bin/systemctl", ["show", "--property=LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus", "--", row.unit],
+      { env: cleanEnv, encoding: "utf8", timeout: 5000, maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"] });
+    const fields: Record<string, string> = {};
+    if (!shown.error && shown.status === 0) for (const line of shown.stdout.trim().split("\n")) {
+      const [key, value, ...extra] = line.split("=");
+      assert(key && value !== undefined && extra.length === 0 && /^[A-Za-z0-9_-]{0,80}$/.test(value));
+      assert(["LoadState", "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus"].includes(key)); fields[key] = value;
+    }
+    const journal = spawnSync("/usr/bin/journalctl", ["--unit", row.unit, "--no-pager", "--output=cat", "--lines=40"],
+      { env: cleanEnv, encoding: "utf8", timeout: 5000, maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"] });
+    const completion = readHostedPrivateBytes(policy + "/ordinary-completed/" + row.startId + ".json", 4096);
+    const foregroundLogs = ["stdout", "stderr"].map((stream, slot) => {
+      const path = policy + "/foreground-output/" + row.unit + "." + stream;
+      try {
+        const parent = lstatSync(dirname(path)); assert(parent.isDirectory() && !parent.isSymbolicLink() && parent.uid === 0 && !(parent.mode & 0o077));
+        const before = lstatSync(path); assert(before.isFile() && !before.isSymbolicLink() && before.uid === 0 && before.nlink === 1 && !(before.mode & 0o077));
+        const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          const opened = fstatSync(fd); assert.equal(opened.dev, before.dev); assert.equal(opened.ino, before.ino);
+          const tail = Buffer.alloc(Math.min(opened.size, 32768)); const count = readSync(fd, tail, 0, tail.length, Math.max(0, opened.size - tail.length));
+          const current = lstatSync(path); assert.equal(current.dev, before.dev); assert.equal(current.ino, before.ino);
+          const sample = { fullBytes: opened.size, offset: Math.max(0, opened.size - tail.length), initialBytes: before.size, currentBytes: current.size };
+          const stable = sameSyntheticDiagnosticFile(before, opened) && sameSyntheticDiagnosticFile(before, current) && sameSyntheticDiagnosticFile(before, fstatSync(fd));
+          return { slot, present: true, bytes: opened.size, dev: String(opened.dev), ino: String(opened.ino),
+            diagnostic: runtimeDiagnostic(tail.subarray(0, count).toString("utf8")),
+            ...(slot === 0 && trustedSyntheticInputs && row.unit === `subscription-runtime-ordinary-${row.startId}.service` ? { syntheticStructuredFailure: syntheticStructuredFailure(tail.subarray(0, count), sample,
+              stable, process.env.TEST_SOURCE_SHA ?? "", { jobId, workspace }, "safe_execution_stdout") } : {}),
+            ...(slot === 1 ? { transientStart: classifyTransientStartFailure(tail.subarray(0, count), sample),
+              proxyStderr: classifyOwnedProxyStderr(tail.subarray(0, count), sample),
+              ...(syntheticStderrVerified ? { syntheticStderrDiagnostic: syntheticCliStderrDiagnostic(tail.subarray(0, count), sample,
+                stable, process.env.TEST_SOURCE_SHA ?? "") } : {}) } : {}) };
+        } finally { closeSync(fd); }
+      } catch (error) { return { slot, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
+    });
+    return [{ startId: row.startId, reservationState: row.state, startSha256: digest(bytes), completionPresent: completion !== null,
+      completionSha256: completion ? digest(completion) : null, showStatus: shown.status, showFailed: !!shown.error, states: fields,
+      journalStatus: journal.status, journalFailed: !!journal.error, journalDiagnostic: runtimeDiagnostic(journal.stdout ?? ""), foregroundLogs,
+      ...(trustedSyntheticInputs && row.unit === `subscription-runtime-ordinary-${row.startId}.service` ? {
+        installerObservation: observeOwnedSyntheticInstallerFailure({ startId: row.startId, unit: row.unit,
+          installationId: installation.installationId, bootId: activation.bootId, runtimeSha: installation.runtimeSha,
+          grantSha256: start.grantSha256, workspacePath: workspace,
+          workspaceDev: String(lstatSync(workspace).dev), workspaceIno: String(lstatSync(workspace).ino) }) } : {}) }];
+  });
+  observation.starts = rows;
+  if (trustedSyntheticInputs) observation.structuredResult = observeSyntheticResultFile({ jobId, workspace }, true, process.env.TEST_SOURCE_SHA ?? "");
+  const files = [root + "/state/registry/" + jobId + "/job.json", root + "/" + jobId + ".latest-result.json", root + "/" + jobId + ".log"];
+  observation.jobOutputs = files.map((path, index) => {
+    try { const stat = lstatSync(path); assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1);
+      // No artifact/auth payload is copied or hashed. Inspect only bounded
+      // exact TEST log/result bytes for fixed reason/source classifications.
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try { const buffer = Buffer.alloc(Math.min(stat.size, 32768)); const count = readSync(fd, buffer, 0, buffer.length, Math.max(0, stat.size - buffer.length));
+        return { slot: index, present: true, bytes: stat.size, diagnostic: runtimeDiagnostic(buffer.subarray(0, count).toString("utf8")) }; }
+      finally { closeSync(fd); }
+    } catch (error) { return { slot: index, present: false, unavailable: (error as NodeJS.ErrnoException).code !== "ENOENT" }; }
+  });
+  observation.probeFact = (() => {
+    // Bounded closed deny-site fact written by the failed provider probe:
+    // enum identities and counts only, never path names or contents.
+    try {
+      const before = lstatSync(workspace + "/TEST-provider-probe-failed.json");
+      if (!before.isFile() || before.isSymbolicLink() || before.uid !== 0 || before.nlink !== 1 || before.size <= 0 || before.size > 4096) return { present: false };
+      const fd = openSync(workspace + "/TEST-provider-probe-failed.json", constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const buffer = Buffer.alloc(4096); let length = 0;
+        while (length < buffer.length) { const count = readSync(fd, buffer, length, buffer.length - length, length); if (!count) break; length += count; }
+        const raw: unknown = JSON.parse(buffer.subarray(0, length).toString("utf8"));
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { present: false };
+        const v = raw as Record<string, unknown>;
+        if (Object.keys(v).sort().join(",") !== "entryCount,errno,gid,kind,mode,pathIndex,schemaVersion,size,threw,uid" ||
+            v.schemaVersion !== 1 || typeof v.pathIndex !== "number" || !Number.isInteger(v.pathIndex) || v.pathIndex < 0 || v.pathIndex > 8 ||
+            typeof v.threw !== "boolean" || typeof v.errno !== "string" ||
+            !["ENOENT", "EACCES", "EISDIR", "ELOOP", "EPERM", "ENOTDIR", "EROFS", "other"].includes(v.errno) ||
+            typeof v.kind !== "string" || !["missing", "file", "directory", "symlink", "fifo", "socket", "other"].includes(v.kind) ||
+            ["mode", "uid", "gid", "size", "entryCount"].some(key => typeof v[key] !== "number" || !Number.isInteger(v[key]))) return { present: false };
+        return { present: true, pathIndex: v.pathIndex, threw: v.threw, errno: v.errno, kind: v.kind,
+          mode: v.mode, uid: v.uid, gid: v.gid, size: v.size, entryCount: v.entryCount };
+      } finally { closeSync(fd); }
+    } catch { return { present: false }; }
+  })();
+  return observation;
+}
+
+function failureLocations(error: Error) {
+  // Fixed production source locations only, never raw stack paths or names.
+  const files = ["hosted-readonly-host-kernel", "hosted-readonly-linux-collector", "hosted-readonly-observations",
+    "hosted-readonly-inputs", "hosted-installation-activation", "hosted-test-egress-files", "system-bus-infrastructure", "fd-collector-profile", "hosted-fd-observation"];
+  return (error.stack ?? "").split("\n").slice(0, 16).flatMap(line => files.flatMap(file => {
+    const match = new RegExp(`/(${file}\\.js):(\\d+):(\\d+)\\)?$`).exec(line.trim());
+    return match ? [{ file: match[1], line: Number(match[2]), column: Number(match[3]) }] : [];
+  }));
+}
+function observeKernelInventory(supervisor: string, expectedGroup: string) {
+  // Read-only TEST diagnostics have no authority or effect on production gates.
+  const observation: Record<string, unknown> = { purpose: "TEST_kernel_predicate_observation_only",
+    selfGroupMatches: readFileSync("/proc/self/cgroup", "utf8").trim() === "0::" + expectedGroup };
+  const observe = (args: string[], summarize: (rows: string[]) => unknown) => {
+    const result = spawnSync("/usr/bin/systemctl", args, { env: cleanEnv, encoding: "utf8", timeout: 5000,
+      maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    return { status: result.status, signal: result.signal, failed: !!result.error,
+      facts: result.status === 0 && !result.error ? summarize(result.stdout.split("\n").filter(line => line.trim())) : null };
+  };
+  observation.supervisor = observe(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", supervisor], rows => {
+    const fields = new Map(rows.map(row => { const at = row.indexOf("="); return [row.slice(0, at), row.slice(at + 1)]; }));
+    return { exactFiveKeys: rows.length === 5 && [...fields.keys()].sort().join(",") === "ControlGroup,DropInPaths,FragmentPath,Id,MainPID",
+      idMatches: fields.get("Id") === supervisor, groupMatches: fields.get("ControlGroup") === expectedGroup,
+      fragmentMatches: fields.get("FragmentPath") === "/etc/systemd/test-units/" + supervisor,
+      dropInsEmpty: fields.get("DropInPaths") === "", mainPidValid: /^[1-9]\d*$/.test(fields.get("MainPID") ?? "") };
+  });
+  const known = (name: string | undefined, allowInit: boolean) => name === supervisor || name === "dbus.service" ||
+    (!allowInit && name === "dbus.socket") || (allowInit && name === "init.scope");
+  const inventoryRows = (rows: string[], allowInit: boolean) => ({ count: rows.length,
+    unknownCount: rows.filter(row => !known(row.trim().split(/\s+/)[0], allowInit)).length,
+    unknownNameDigests: rows.flatMap(row => { const name = row.trim().split(/\s+/)[0]!;
+      return !known(name, allowInit) ? [digest(name)] : []; }).slice(0, 32) });
+  observation.activeUnits = observe(["list-units", "--all", "--type=service,scope", "--state=active,activating,reloading,deactivating,failed",
+    "--no-legend", "--plain", "--no-pager"], rows => inventoryRows(rows, true));
+  observation.futureUnits = observe(["list-unit-files", "--type=service,socket,timer", "--state=enabled,enabled-runtime,linked,linked-runtime,alias",
+    "--no-legend", "--no-pager"], rows => inventoryRows(rows, false));
+  observation.activeTriggers = observe(["list-units", "--all", "--type=socket,timer", "--state=active,activating,reloading,deactivating",
+    "--no-legend", "--plain", "--no-pager"], rows => ({ count: rows.length }));
+  observation.managerJobs = observe(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"], rows => ({ count: rows.length,
+    malformedRows: rows.filter(row => { const fields = row.trim().split(/\s+/); return fields.length < 4 || !/^\d+$/.test(fields[0]!); }).length,
+    supervisorJobs: rows.filter(row => row.trim().split(/\s+/)[1] === supervisor).length,
+    ownedTargetJobs: rows.filter(row => row.trim().split(/\s+/)[1] === "TEST-retention.target").length,
+    otherNameDigests: rows.flatMap(row => { const name = row.trim().split(/\s+/)[1];
+      return name && name !== supervisor && name !== "TEST-retention.target" ? [digest(name)] : []; }).slice(0, 32) }));
+  let count = 0, zeroPids = 0, malformedPidGroups = 0, foreignPopulatedGroups = 0;
+  const end = Date.now() + 5000, foreignGroupDigests: string[] = [];
+  const walk = (relative: string): void => {
+    assert(++count <= 4096 && Date.now() < end);
+    assert(/^(?:\/[A-Za-z0-9_.@+-]+)*$/.test(relative) && !relative.split("/").some(part => part === "." || part === ".."));
+    const absolute = "/sys/fs/cgroup" + relative, stat = lstatSync(absolute); assert(stat.isDirectory() && !stat.isSymbolicLink());
+    const fd = openSync(absolute + "/cgroup.procs", constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let pidText: string;
+    try { const bytes = Buffer.alloc(65537); let length = 0;
+      for (;;) { assert(Date.now() < end && length < bytes.length);
+        const read = readSync(fd, bytes, length, bytes.length - length, null); if (read === 0) break; length += read; }
+      assert(length <= 65536); pidText = bytes.subarray(0, length).toString("utf8"); }
+    finally { closeSync(fd); }
+    const pids = pidText.split("\n").filter(line => line.trim());
+    zeroPids += pids.filter(pid => pid === "0").length;
+    if (pids.some(pid => !/^[1-9]\d*$/.test(pid))) malformedPidGroups++;
+    if (pids.length && relative !== expectedGroup && relative !== SYSTEM_BUS_CONTROL_GROUP && !(relative === "/init.scope" && pids.length === 1 && pids[0] === "1")) {
+      foreignPopulatedGroups++; if (foreignGroupDigests.length < 32) foreignGroupDigests.push(digest(relative));
+    }
+    for (const child of readdirSync(absolute, { withFileTypes: true })) if (child.isDirectory()) walk(relative + "/" + child.name);
+  };
+  try { walk(""); observation.cgroups = { completed: true, count, zeroPids, malformedPidGroups, foreignPopulatedGroups, foreignGroupDigests }; }
+  catch { observation.cgroups = { completed: false, count, zeroPids, malformedPidGroups, foreignPopulatedGroups, foreignGroupDigests }; }
+  return observation;
+}
+
+function actualToolchainProfile(): HostedDependencyInstallerProfile {
+  assert.equal(realpathSync(process.execPath), node);
+  const npmRootPath = runtime + "/toolchain/lib/node_modules/npm", npmCliPath = npmRootPath + "/bin/npm-cli.js";
+  const toolRoots = actualLibraries(node);
+  // Production validates canonical root ownership and bytes BEFORE execution.
+  const helperSha256 = hostedDependencyInstallerDropperSha256();
+  assert.equal(command("/usr/bin/setpriv", ["--version"]).trim(), "setpriv from util-linux 2.39.3");
+  const privilegeDropper: HostedDependencyInstallerProfile["privilegeDropper"] = { path: "/usr/bin/setpriv", version: "2.39.3",
+    sha256: helperSha256, libraries: actualLibraries("/usr/bin/setpriv") };
+  assert.equal(hostedDependencyInstallerDropperSha256(), helperSha256);
+  const libc = toolRoots.find(row => /\/libc\.so\.[0-9]+$/.test(row.path)); assert(libc);
+  const version = /^glibc\s+([0-9]+\.[0-9]+)\s*$/.exec(command("/usr/bin/getconf", ["GNU_LIBC_VERSION"]))?.[1]; assert(version);
+  return { schemaVersion: 1, platform: "linux", arch: DependencyInstallArchitecture.X64, nodePath: node,
+    nodeSha256: fileDigest(node), nodeVersion: process.version, nodeAbi: process.versions.modules,
+    npmCliPath, npmSha256: fileDigest(npmCliPath), npmVersion: command(node, [npmCliPath, "--version"]).trim(), npmRootPath,
+    npmRootSha256: hostedDependencyInstallerNpmRootSha256(npmRootPath), toolRoots, networkInputs: issueOwnedNetworkInputs(), privilegeDropper,
+    recipeRevision: HostedDependencyInstallerRevision.NumericUidDropV2,
+    libc: { family: DependencyLibcFamily.Glibc, version, path: libc.path, sha256: libc.sha256 } };
+}
+function actualLibraries(executable: string): HostedDependencyInstallerProfile["toolRoots"] {
+  const output = command("/usr/bin/ldd", [executable]); assert(!output.includes("not found"));
+  const paths = [...new Set([...output.matchAll(/(?:=>\s+)?(\/[A-Za-z0-9_./+-]+)\s+\(/g)].map(m => realpathSync(m[1]!)))].sort();
+  assert(paths.length > 0 && paths.length <= 32);
+  return paths.map(path => { assert(path.startsWith("/usr/lib/")); return { path, kind: DependencyToolRootKind.File as const, sha256: fileDigest(path) }; });
+}
+function issueOwnedNetworkInputs(): HostedDependencyInstallerProfile["networkInputs"] {
+  directory(hostedDependencyInstallerNetworkRoot);
+  const capture = (name: HostedDependencyInstallerNetworkInput): string => {
+    // Assembly owns these exact regular files. No alias/OS service mutation is
+    // required; data is read through a bounded stable FD, never as authority.
+    const path = "/etc/" + name; assert.equal(realpathSync(path), path);
+    const before = lstatSync(path, { bigint: true });
+    assert(before.isFile() && before.uid === 0n && before.nlink === 1n && before.size > 0n && before.size <= 65536n);
+    const input = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let bytes: Buffer;
+    try {
+      const buffer = Buffer.alloc(65537), opened = fstatSync(input, { bigint: true });
+      const count = readSync(input, buffer, 0, buffer.length, 0);
+      for (const stat of [opened, fstatSync(input, { bigint: true }), lstatSync(path, { bigint: true })])
+        assert(stat.isFile() && stat.nlink === 1n && stat.dev === before.dev && stat.ino === before.ino && stat.size === before.size &&
+          stat.mtimeNs === before.mtimeNs && stat.ctimeNs === before.ctimeNs);
+      assert.equal(BigInt(count), before.size); bytes = buffer.subarray(0, count);
+    } finally { closeSync(input); }
+    const output = openSync(hostedDependencyInstallerNetworkRoot + "/" + name,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { writeFileSync(output, bytes); fsyncSync(output); } finally { closeSync(output); }
+    return digest(bytes);
+  };
+  const pins = { [HostedDependencyInstallerNetworkInput.Hosts]: capture(HostedDependencyInstallerNetworkInput.Hosts),
+    [HostedDependencyInstallerNetworkInput.Resolver]: capture(HostedDependencyInstallerNetworkInput.Resolver),
+    [HostedDependencyInstallerNetworkInput.NameService]: capture(HostedDependencyInstallerNetworkInput.NameService) };
+  const parent = openSync(hostedDependencyInstallerNetworkRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(parent); } finally { closeSync(parent); }
+  return pins;
+}
+async function publicInputs() {
+  const response = await fetch("https://registry.npmjs.org/is-number/7.0.0", { signal: AbortSignal.timeout(30000) });
+  assert.equal(response.status, 200); assert(response.body);
+  const chunks: Uint8Array[] = []; let total = 0; const reader = response.body.getReader();
+  try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; total += chunk.value.length;
+    assert(total <= 128 * 1024); chunks.push(chunk.value); } } finally { await reader.cancel(); }
+  const metadata = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { name: string; version: string; dependencies?: object; dist: { tarball: string; integrity: string } };
+  assert.equal(metadata.name, "is-number"); assert.equal(metadata.version, "7.0.0");
+  assert(!metadata.dependencies || Object.keys(metadata.dependencies).length === 0);
+  assert.equal(metadata.dist.tarball, "https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz");
+  assert.match(metadata.dist.integrity, /^sha512-[A-Za-z0-9+/]{86}==$/);
+  const pkg = { name: "owned-os-dependency-test", version: "1.0.0", private: true, dependencies: { "is-number": "7.0.0" } };
+  return { packageBytes: Buffer.from(JSON.stringify(pkg) + "\n"), lockBytes: Buffer.from(JSON.stringify({ name: pkg.name,
+    version: pkg.version, lockfileVersion: 3, requires: true, packages: { "": { name: pkg.name, version: pkg.version, dependencies: pkg.dependencies },
+      "node_modules/is-number": { version: "7.0.0", resolved: metadata.dist.tarball, integrity: metadata.dist.integrity } } }) + "\n") };
+}

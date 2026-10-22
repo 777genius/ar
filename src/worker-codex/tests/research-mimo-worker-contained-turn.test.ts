@@ -1,6 +1,7 @@
 import { host, local, request, setupResearchFixture, cleanupResearchFixture } from "./research-launch-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname } from "node:path";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { AppServerExecutionReadiness, AppServerExecutionLifetime, CodexJsonAgentDriver, CodexModelBackend, codexMimoDefaultModel,
@@ -17,6 +18,11 @@ import { createFileBackendCodexWorkerRuntime } from "../file-backend-codex-runti
 import { assertWorkerOptions } from "../file-backend-codex-worker-options";
 import { codexWorkerReportSystemPrompt } from "../codex-goal-report-schema";
 import { StaticRunner, MemoryWorkerObservability } from "./file-backend-codex-worker-test-support";
+import { FileBackendCodexWorker } from "../file-backend-codex-worker";
+import { InMemoryAttemptJournal, InMemoryWorkspaceLockStore, SafeExecutionRunner } from "@vioxen/subscription-runtime/worker-core";
+import { codexRuntimeResultInput } from "../codex-goal-runtime-result-collection";
+import { researchMimoWorkerLifecycle, readResearchMimoCandidate } from "../research-mimo-worker-result";
+import { researchCurrentStart } from "../research-launch-admission";
 
 // Replace only the native transport below real factory selection/admission.
 // The independent peer never provides a GoalAPI completion response.
@@ -31,8 +37,10 @@ vi.mock("../../provider-codex/app-server/adapters/egress-bound-process", () => (
     };
   },
 }));
-beforeEach(() => { setupResearchFixture(); transport.peer = new ControlledPeer(); transport.admittedFactory = undefined; });
-afterEach(cleanupResearchFixture);
+const originalPlatform = process.platform;
+beforeEach(() => { Object.defineProperty(process, "platform", { value: "linux" });
+  setupResearchFixture({ allocationParent: realpathSync(tmpdir()) }); transport.peer = new ControlledPeer(); transport.admittedFactory = undefined; });
+afterEach(() => { cleanupResearchFixture(); Object.defineProperty(process, "platform", { value: originalPlatform }); });
 
 async function containedWorker() {
   host.physicalPaths = true;
@@ -67,10 +75,52 @@ async function containedWorker() {
   const run = () => driver.runTask({ session: null, task: { kind: "structured-prompt", prompt: "TEST bounded worker",
     systemPrompt: codexWorkerReportSystemPrompt, outputSchemaName: "codex-worker-report" }, workspace: { path: selected.workspacePath }, redactor: new DefaultRedactor(),
     runner: new StaticRunner({ exitCode: 0, stdout: "", stderr: "" }), abortSignal: new AbortController().signal });
-  return { driver, peer: transport.peer, events, lifetime, factory, worker, run };
+  return { driver, peer: transport.peer, events, lifetime, factory, worker, run, config, outputSchemas: options.outputSchemas };
 }
 
 describe("genuine owned MiMo contained turn", () => {
+  it("retains only bounded root-shape facts through the real worker, attempt journal and candidate", async () => {
+    const f = await containedWorker();
+    const worker = new FileBackendCodexWorker({ ...f.worker, outputSchemas: f.outputSchemas });
+    const journal = new InMemoryAttemptJournal();
+    const runner = new SafeExecutionRunner({ journal, lockStore: new InMemoryWorkspaceLockStore(),
+      workspaceAccess: { canonicalizePath: async ({ path }) => path, assertGitWorkspace: async () => {} },
+      snapshotter: { capture: async ({ workspacePath }) => ({ mode: "git", workspacePath, capturedAt: new Date(),
+        dirty: false, changedFiles: [], fingerprint: "TEST-unchanged", summary: "TEST clean" }) } });
+    await worker.start();
+    const pending = runner.run({ taskId: f.config.taskId, provider: "codex", effectMode: "workspace_patch",
+      workspace: { mode: "existing_locked", path: f.worker.workspacePath! }, pool: worker,
+      job: { prompt: "TEST bounded worker", systemPrompt: codexWorkerReportSystemPrompt, outputSchemaName: "codex-worker-report" },
+      originalPrompt: "TEST bounded worker", policy: { maxAttempts: 1 } });
+    try {
+      await f.peer.initialize(); await f.peer.thread();
+      const turn = await f.peer.next("turn/start");
+      f.peer.reply(turn, { turn: { id: "TEST-extra-root" } });
+      const report = { outcome: "done", evidence: [], blockers: [], nextActionHint: "review_completed", summary: "TEST result",
+        PRIVATE_PROPERTY_NAME: "PRIVATE_OUTPUT_VALUE" };
+      f.peer.stdout.emit("data", JSON.stringify({ method: "item/agentMessage/delta", params: {
+        threadId: "actual-TEST-thread", turnId: "TEST-extra-root", delta: JSON.stringify(report) } }) + "\n");
+      f.peer.stdout.emit("data", JSON.stringify({ method: "turn/completed", params: { threadId: "actual-TEST-thread",
+        turn: { id: "TEST-extra-root", status: "completed" } } }) + "\n");
+      const result = await pending;
+      const expected = { structuredOutputRootKind: "object", structuredOutputExpectedKeyCount: "5",
+        structuredOutputExpectedKeyPresenceBits: "31", structuredOutputExpectedFieldTypeValidBits: "31",
+        structuredOutputExtraRootKeyCount: "1" };
+      expect(result.status).not.toBe("completed");
+      expect(result).toMatchObject({ reason: "provider_output_invalid", failureDetails: expected });
+      const stored = await journal.readTask({ taskId: f.config.taskId });
+      expect(stored?.attempts).toHaveLength(1);
+      expect(stored?.attempts[0]?.failureDetails).toMatchObject(expected);
+      expect(stored?.lastFailureDetails).toMatchObject(expected);
+      const input = await codexRuntimeResultInput({ config: f.config, result, executionGeneration: "TEST-generation", deferHandoff: true });
+      researchMimoWorkerLifecycle(f.factory)!.stage(input);
+      const candidate = readResearchMimoCandidate(researchCurrentStart(f.config.jobId!));
+      expect(candidate).toMatchObject({ reason: "provider_output_invalid", details: expected });
+      expect(JSON.stringify({ stored, candidate })).not.toMatch(/PRIVATE_PROPERTY_NAME|PRIVATE_OUTPUT_VALUE/);
+      expect(f.peer.requests.filter(r => r.method === "turn/start")).toHaveLength(1);
+    } finally { await worker.dispose(); await f.driver.dispose(); }
+  });
+
   // RED: a completed native turn accepts an incomplete report despite its schema.
   it("rejects an actual malformed turn report without replay", async () => {
     const f = await containedWorker(), pending = f.run();

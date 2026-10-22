@@ -166,9 +166,10 @@ describe("closed provider root graph (native adapter over disposable TEST files)
     }
     const root = prepareResearchProviderRoot(f.spec, unit, f.home);
     const launch = trustedResearchProviderLaunch(f.spec, unit, f.home, root);
-    expect(launch.args.filter(arg => arg.startsWith("--property=MemoryHigh="))).toEqual([
-      profile === HostedMimoProfile.CodingV1 ? "--property=MemoryHigh=4G" : "--property=MemoryHigh=2G"]);
-    for (const property of ["MemoryMax=4G", "MemorySwapMax=0", "CPUQuota=200%", "TasksMax=512", "KillMode=control-group",
+    const coding = profile === HostedMimoProfile.CodingV1;
+    expect(launch.args.filter(arg => arg.startsWith("--property=MemoryHigh="))).toEqual([`--property=MemoryHigh=${coding ? "7680M" : "2G"}`]);
+    expect(launch.args.filter(arg => arg.startsWith("--property=MemoryMax="))).toEqual([`--property=MemoryMax=${coding ? "8G" : "4G"}`]);
+    for (const property of ["OOMPolicy=continue", "MemorySwapMax=0", "CPUQuota=200%", "TasksMax=512", "KillMode=control-group",
       "Delegate=no", "Restart=no", "NoNewPrivileges=yes", "AmbientCapabilities=", "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP CAP_SETFCAP CAP_SYS_PTRACE",
       `BindsTo=${f.spec.unit}`, `PartOf=${f.spec.unit}`, `After=${f.spec.unit}`]) expect(launch.args).toContain("--property=" + property);
     expect(launch.command).toBe("/usr/bin/systemd-run");

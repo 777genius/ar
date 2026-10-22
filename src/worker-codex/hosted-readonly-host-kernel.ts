@@ -1,10 +1,15 @@
+import { assertConfiguredAuthAttachmentPhysical } from "../provider-codex/app-server/adapters/hosted-configured-auth-attachment";
+import { readHostedOrdinaryReaderParentCompletion } from "./hosted-ordinary-reader-parent-completion";
+import { assertHostedOrdinaryProviderFailureCreator } from "./hosted-ordinary-provider-failure-recovery";
+import { assertHostedManagedProviderFailureCreator } from "./hosted-managed-provider-failure-recovery";
 import { parseHostedReadonlyHostInventory, type HostedReadonlyHostInventory as LegacyHostedReadonlyHostInventory } from "@vioxen/subscription-runtime/worker-core";
 import { assertHostedForegroundRequestDescriptors, type HostedForegroundRequest } from "./hosted-foreground-request-custody";
 import { verifyOrdinaryInstallationInventory } from "./hosted-ordinary-installation-census";
 import { type HostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
-import { decodeHostedInventoryBytes, hostedInventoryMaximumBytes, type HostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
+import { decodeHostedInventoryBytes, type HostedInventoryV5 } from "../core/host-infrastructure/host-inventory";
+import type { HostedSuccessorRequest } from "../core/host-infrastructure/host-installation-successor";
 import { ScopedTerminationRecords, scopedFenceIdentity } from "./hosted-controller/scoped-termination-records";
-import { assertHostedActivationOperator, observeHostedScopedActorChildren } from "@vioxen/subscription-runtime/provider-codex";
+import { assertHostedActivationOperator, observeHostedScopedActorChildren, readHostedActivationBytes } from "@vioxen/subscription-runtime/provider-codex";
 import { scopedDigest, ScopedActorDischargeMethod, parseScopedActorDischarge, type ScopedActorChain, type ScopedActorDischarge, type ScopedCollectedEvidence, type ScopedIdentityEvidence, type ScopedTerminationMember, type ScopedTerminationObservation, type ScopedSignal } from "../worker-core/hosted-custody/domain/scoped-termination";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -41,8 +46,13 @@ const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("h
  * below under the common fence. Unknown scopes/services keep the epoch CLOSED. */
 export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
   assertReadonlyHostOperator();
-  const bytes = readHostedPrivateBytes(join(readonlySupervisorRoot, "readonly-inventory.json"), hostedInventoryMaximumBytes);
+  // The SELECTED inventory: the original fixed record, or the versioned copy the committed activation selects by digest.
+  const bytes = readHostedActivationBytes("readonly-inventory.json");
   if (!bytes) invalid();
+  return parseHostedInventoryRecord(bytes);
+}
+/** The one constructor of the kernel's inventory view from bytes (the selected record, or a successor CANDIDATE's own bytes). */
+export function parseHostedInventoryRecord(bytes: Uint8Array): HostedReadonlyHostInventory {
   const decoded = decodeHostedInventoryBytes(bytes);
   if (decoded && typeof decoded === "object" && "schemaVersion" in decoded && decoded.schemaVersion === 5) {
     const inventory = decoded as HostedInventoryV5;
@@ -55,9 +65,22 @@ export function readHostedReadonlyHostInventory(): HostedReadonlyHostInventory {
 }
 
 export class HostedReadonlyHostKernel {
+  /**
+   * `candidate` is used ONLY by an installation successor, before its selection is published: the fresh supervisor is admitted
+   * against its own census (the same live checks of cgroup membership, unit MainPID and birth) while the outside operator's
+   * independent record of that supervisor is compared by the caller. It never selects anything and is never persisted here.
+   * `predecessor` (the funded pins of the committed predecessor) is what lets such a candidate be verified for exclusivity under the
+   * held fence BEFORE its selection: the census then authenticates the committed activation as that predecessor instead of
+   * requiring it to already name the candidate. A candidate is never verified without it, and the pins never apply to a selected world.
+   */
+  constructor(private readonly candidate?: HostedReadonlyHostInventory, private readonly predecessor?: HostedSuccessorRequest) {
+    if (predecessor && !candidate) invalid();
+  }
+  private inventory(): HostedReadonlyHostInventory { return this.candidate ?? readHostedReadonlyHostInventory(); }
+
   session(): { hostId: string; bootId: string; supervisorId: string } {
     assertReadonlyHostOperator();
-    const inventory = readHostedReadonlyHostInventory();
+    const inventory = this.inventory();
     const hostId = readFileSync("/etc/machine-id", "utf8").trim();
     const bootId = collectBootId();
     if (hostId !== inventory.hostId) invalid();
@@ -78,13 +101,16 @@ export class HostedReadonlyHostKernel {
   }
 
   verifyExclusiveInventory(fence?: HostedActivationFence, cleanup = false): void {
-    const inventory = readHostedReadonlyHostInventory();
+    const inventory = this.inventory();
+    // A candidate world is never verified as if it were already selected: refuse before ANY live observation.
+    if (this.candidate && !this.predecessor && inventory.schemaVersion === 5) invalid();
     this.session();
+    for (const creator of inventory.ordinaryCreators) if("authAttachment" in creator && creator.authAttachment) assertConfiguredAuthAttachmentPhysical(creator.authAttachment);
     if (inventory.collectorProfile) verifyPinnedFdCollectorProfile(inventory.collectorProfile);
     if (inventory.systemBusInfrastructure) verifySystemBusInfrastructure(inventory.systemBusInfrastructure);
     if (inventory.schemaVersion === 5) {
       if (!fence) invalid();
-      verifyOrdinaryInstallationInventory(inventory as unknown as HostedInventoryV5, fence, cleanup); return;
+      verifyOrdinaryInstallationInventory(inventory as unknown as HostedInventoryV5, fence, cleanup, this.predecessor); return;
     }
     if (inventory.schemaVersion !== 1) this.verifyFutureCreators(inventory);
     const outer = this.enrolledEpoch()?.outerRuntime;
@@ -135,7 +161,7 @@ export class HostedReadonlyHostKernel {
   /** Exact initial-host supervisor only, before installation or origin creation.
    * Runtime children cannot migrate identities using their CLI arguments. */
   operatorSession(): { hostId: string; bootId: string; supervisorId: string } {
-    const inventory = readHostedReadonlyHostInventory();
+    const inventory = this.inventory();
     const supervisor = inventory.units.find(row => row.name === inventory.supervisorUnit)!;
     if (collectSelfCgroup() !== `0::${supervisor.controlGroup}` || inventory.schemaVersion === 5 && collectProcessBirth(String(process.pid)) !== (inventory as unknown as HostedInventoryV5).supervisor.birth) invalid();
     return this.session();
@@ -212,12 +238,17 @@ export class HostedReadonlyHostKernel {
   /** A same-boot reservation needs the trusted --wait completion receipt. PID
    * absence or a killed proxy is deliberately insufficient. Failed/ambiguous
    * starts stay held; this adapter does not fabricate a terminal receipt. */
-  fenceCreator(reservation: HostedCustodyReservation, recordedBootId: string): void {
+  fenceCreator(reservation: HostedCustodyReservation, recordedBootId: string, recoveryFence?: HostedActivationFence): void {
     if (recordedBootId !== this.session().bootId) return;
     const bytes = readHostedPrivateBytes(completionPath(reservation), 4096);
-    if (!bytes || !bytes.equals(completionBytes(reservation, 0))) {
+    if (bytes?.equals(completionBytes(reservation, 0))) return;
+    // Outer remains status0-only. A token-less legacy call still fails closed;
+    // only the trusted recovery owner can pass its already-held genuine fence.
+    assertUnitReservation(reservation);
+    if (!recoveryFence || reservation.unit !== `subscription-runtime-hosted-${reservation.startId}.service`) {
       throw new Error("hosted_custody_creator_not_fenced");
     }
+    assertHostedManagedProviderFailureCreator(recoveryFence,reservation.startId);
   }
   drainQueuedStart(reservation: HostedCustodyReservation): void {
     assertUnitReservation(reservation);
@@ -260,11 +291,17 @@ export class HostedReadonlyHostKernel {
     }
     if (failed) throw new Error("hosted_custody_stop_incomplete");
   }
-  fenceOrdinaryCreator(reservation: HostedOrdinaryReservation, recordedBoot: string, startSha256: string): void {
+  fenceOrdinaryCreator(reservation: HostedOrdinaryReservation, recordedBoot: string, startSha256: string, fence?: HostedActivationFence): void {
     assertOrdinaryReservation(reservation);
     if (recordedBoot !== this.operatorSession().bootId) return;
     const bytes = readHostedPrivateBytes(ordinaryCompletionPath(reservation.startId), 4096);
     if (!bytes || !bytes.equals(ordinaryCompletionBytes(reservation.startId, startSha256))) {
+      if (!bytes && fence && reservation.unit === `subscription-runtime-hosted-${reservation.startId}.service`) {
+        assertHostedOrdinaryProviderFailureCreator(fence,reservation.startId,startSha256); return;
+      }
+      if (!bytes && fence && reservation.unit===`subscription-runtime-ordinary-${reservation.startId}.service`) {
+        readHostedOrdinaryReaderParentCompletion(fence,reservation.startId,startSha256);return;
+      }
       throw new Error("hosted_custody_creator_not_fenced");
     }
   }

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "purpose": "TEST_completed_immutable_idle_retry_baseline_only",
+  "sourceCommit": "798edef247cfd43fbc7a07745b3cf8384374624d",
+  "sourcePath": "src/worker-codex/hosted-dependency-removal-ownership.ts",
+  "sourceBlob": "4ac41a8cd1c33a91d51f34c1a9bda5e1dbf11d08",
+  "fixturePath": "scripts/dependency-retention-os-test/fixtures/completed-removal-retry/hosted-dependency-removal-ownership.ts.txt",
+  "fixtureSha256": "436f411ffb51cd47ad105545d62d83c7627dee26134f2b8929780e7bdf2f08b2",
+  "fixtureBytes": 17201,
+  "historyImported": false,
+  "nativeAuthority": "NONE"
+}

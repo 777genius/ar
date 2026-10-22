@@ -4,11 +4,20 @@ import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, r
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DependencyReceiptState, type DependencyReceipt, type DependencyWorkspaceIdentity } from "../../../worker-core/dependency-environment/domain/dependency-receipt";
 import { DependencyTreeObservationStatus as Status } from "../../../worker-core/dependency-environment/domain/dependency-tree-manifest";
 import { observeDependencyTree } from "../observe-dependency-tree";
-import { openCommittedDependencyTrashRemoval, openDependencyTreeRename, readDependencyTreeEffectReferenceAnchors, type DependencyTreeEffectInput } from "../dependency-tree-effects";
+import { openCommittedDependencyTrashAbsence, openCommittedDependencyTrashRemoval, openDependencyTreeRename, readDependencyTreeEffectReferenceAnchors, type DependencyTreeEffectInput } from "../dependency-tree-effects";
+
+const durabilityFailure = vi.hoisted(() => ({ nextSync: false }));
+vi.mock("node:fs", async importOriginal => {
+  const real = await importOriginal<typeof import("node:fs")>();
+  return { ...real, fsyncSync(fd: number): void {
+    if (durabilityFailure.nextSync) { durabilityFailure.nextSync = false; throw new Error("TEST-step-fsync-uncertain"); }
+    real.fsyncSync(fd);
+  } };
+});
 
 const run = promisify(execFile);
 const limits = { maxEntries: 128, maxTotalBytes: 65536, maxManifestBytes: 65536, maxDurationMs: 30000 };
@@ -48,6 +57,61 @@ async function fixture(raw = false) {
 // real user project. Protected fixture commits model only the adapter contract;
 // actual admission, grant exclusion and kernel mount coverage require hosted TEST.
 describe.skipIf(process.platform !== "linux")("anchored dependency effects", () => {
+  // Red if last-unlink recovery reuses the existing-root opener, invents a
+  // removal count, accepts a replacement name, or loses uncertain durability.
+  it("observes durable last-unlink absence without deleting or inventing a count", async () => {
+    const f = await fixture();
+    try {
+      await f.stage(); const commit = await f.commit(), original = await readFile(commit.path);
+      const remover = await openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 });
+      try { expect((await remover.remove()).removedEntries).toBe(4); } finally { await remover.close(); }
+      await expect(openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 })).rejects.toThrow();
+      const absence = await openCommittedDependencyTrashAbsence({ ...f.input, commit });
+      try {
+        expect(absence.confirmAbsence()).toEqual({ operationId: f.input.trash.operationId });
+        expect(await readFile(commit.path)).toEqual(original);
+        expect(await readFile(join(f.workspacePath, ".git/config"), "utf8")).toBe("TEST-source-git");
+        await absence.close(); expect(() => absence.confirmAbsence()).toThrow("closed");
+      } finally { await absence.close(); }
+    } finally { await f.cleanup(); }
+  });
+  it("preserves a reappearing last-unlink name and holds the session after repair", async () => {
+    const f = await fixture();
+    try {
+      const commit = await f.commit(), absence = await openCommittedDependencyTrashAbsence({ ...f.input, commit });
+      try {
+        await mkdir(f.target); await writeFile(join(f.target, "TEST-sentinel"), "replacement");
+        expect(() => absence.confirmAbsence()).toThrow("conflict");
+        expect(await readFile(join(f.target, "TEST-sentinel"), "utf8")).toBe("replacement");
+        await rm(f.target, { recursive: true }); expect(() => absence.confirmAbsence()).toThrow("closed");
+      } finally { await absence.close(); }
+    } finally { await f.cleanup(); }
+  });
+  it("rejoins the exact protected commit on every name-negative observation", async () => {
+    const f = await fixture();
+    try {
+      const commit = await f.commit(), original = await readFile(commit.path), absence = await openCommittedDependencyTrashAbsence({ ...f.input, commit });
+      try {
+        await writeFile(commit.path, Buffer.from(original.toString().replace("TEST-generation", "TEST-substitute")));
+        expect(() => absence.confirmAbsence()).toThrow("invalid_commit");
+        await writeFile(commit.path, original); expect(() => absence.confirmAbsence()).toThrow("closed");
+        expect(await readFile(join(f.pkg, "a.js"), "utf8")).toBe("original-a");
+      } finally { await absence.close(); }
+    } finally { await f.cleanup(); }
+  });
+  it("holds uncertain absence fsync until a fresh verified observer", async () => {
+    const f = await fixture();
+    try {
+      const commit = await f.commit(), absence = await openCommittedDependencyTrashAbsence({ ...f.input, commit });
+      try {
+        durabilityFailure.nextSync = true; expect(() => absence.confirmAbsence()).toThrow("TEST-step-fsync-uncertain");
+        expect(() => absence.confirmAbsence()).toThrow("closed");
+      } finally { durabilityFailure.nextSync = false; await absence.close(); }
+      const retry = await openCommittedDependencyTrashAbsence({ ...f.input, commit });
+      try { expect(retry.confirmAbsence()).toEqual({ operationId: f.input.trash.operationId }); } finally { await retry.close(); }
+      expect(await readFile(join(f.pkg, "a.js"), "utf8")).toBe("original-a");
+    } finally { durabilityFailure.nextSync = false; await f.cleanup(); }
+  });
   it("only a live exact operation can exempt its actual retained directory descriptors", async () => {
     // Copying a receipt or retaining it after close must not hide an unrelated
     // supervisor reference from the final retiring-tree veto.
@@ -128,6 +192,88 @@ describe.skipIf(process.platform !== "linux")("anchored dependency effects", () 
       try { expect((await retry.remove()).removedEntries).toBeGreaterThan(0); } finally { await retry.close(); }
       await expect(lstat(f.target)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(join(f.workspacePath, ".git/config"), "utf8")).toBe("TEST-source-git");
+    } finally { await f.cleanup(); }
+  });
+  it("submits exactly one synchronous removal, closes its handles, then resumes the verified remainder", async () => {
+    // A bulk/async submission would cross the caller's next fence boundary.
+    // A retained closed session must never permit another effect after a crash.
+    const f = await fixture();
+    try {
+      await f.stage(); const commit = await f.commit(), commitBytes = await readFile(commit.path);
+      const operation = await openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 });
+      const steps = await operation.prepareSynchronousRemoval();
+      const expected = { workspace: f.input.workspace, trashPath: f.target, operationId: f.input.trash.operationId };
+      expect(readDependencyTreeEffectReferenceAnchors(steps.referenceSession, expected).length).toBeGreaterThan(0);
+      expect(steps.progress()).toEqual({ operationId: f.input.trash.operationId, removedEntries: 0, remainingEntries: 4 });
+      const progress = steps.removeNext();
+      expect(steps.progress()).toEqual(progress);
+      expect(progress).toEqual({ operationId: f.input.trash.operationId, removedEntries: 1, remainingEntries: 3 });
+      await expect(lstat(join(f.target, "pkg/b.js"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(f.target, "pkg/a.js"), "utf8")).toBe("original-a");
+      expect(await operation.close()).toEqual({ closeFailures: 0 });
+      expect(() => steps.removeNext()).toThrow("closed");
+      expect(() => readDependencyTreeEffectReferenceAnchors(steps.referenceSession, expected)).toThrow("closed");
+      expect(await readFile(join(f.target, "pkg/a.js"), "utf8")).toBe("original-a");
+      const retry = await openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 });
+      try { expect((await retry.remove()).removedEntries).toBe(3); } finally { await retry.close(); }
+      await expect(lstat(f.target)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(commit.path)).toEqual(commitBytes);
+      expect(await readFile(join(f.workspacePath, ".git/config"), "utf8")).toBe("TEST-source-git");
+    } finally { await f.cleanup(); }
+  });
+  it("holds the same session after a post-unlink durability failure until close and verified reopen", async () => {
+    // Regression: incrementing progress before fsync must not permit the next
+    // effect after an uncertain step. All physical reads/unlinks remain real.
+    const f = await fixture();
+    try {
+      await f.stage(); const commit = await f.commit(), operation = await openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 });
+      try {
+        const steps = await operation.prepareSynchronousRemoval(); durabilityFailure.nextSync = true;
+        expect(() => steps.removeNext()).toThrow("TEST-step-fsync-uncertain");
+        await expect(lstat(join(f.target, "pkg/b.js"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(() => steps.removeNext()).toThrow("closed");
+        expect(() => steps.progress()).toThrow("closed");
+        expect(await readFile(join(f.target, "pkg/a.js"), "utf8")).toBe("original-a");
+      } finally { durabilityFailure.nextSync = false; await operation.close(); }
+      const retry = await openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 });
+      try { expect((await retry.remove()).removedEntries).toBe(3); } finally { await retry.close(); }
+      await expect(lstat(f.target)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(f.workspacePath, ".git/config"), "utf8")).toBe("TEST-source-git");
+    } finally { durabilityFailure.nextSync = false; await f.cleanup(); }
+  });
+  it("requires a fresh opener after failed preparation even when the remaining content is repaired", async () => {
+    const f = await fixture();
+    try {
+      await f.stage(); const commit = await f.commit(), operation = await openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 });
+      try {
+        await writeFile(join(f.target, "pkg/b.js"), "modified-b");
+        await expect(operation.prepareSynchronousRemoval()).rejects.toThrow();
+        await writeFile(join(f.target, "pkg/b.js"), "original-b");
+        await expect(operation.prepareSynchronousRemoval()).rejects.toThrow("closed");
+        expect(await readFile(join(f.target, "pkg/a.js"), "utf8")).toBe("original-a");
+      } finally { await operation.close(); }
+      const retry = await openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 });
+      try { expect((await retry.remove()).removedEntries).toBe(4); } finally { await retry.close(); }
+    } finally { await f.cleanup(); }
+  });
+  it.each(["identity", "content", "hardlink"])("rejects next leaf %s after preparation before any synchronous effect", async change => {
+    const f = await fixture();
+    try {
+      await f.stage(); const commit = await f.commit(), operation = await openCommittedDependencyTrashRemoval({ ...f.input, commit, maxRemovals: 128 });
+      try {
+        const steps = await operation.prepareSynchronousRemoval(), next = join(f.target, "pkg/b.js");
+        if (change === "identity") { await rename(next, join(f.root, "TEST-retained-original")); await writeFile(next, "original-b"); }
+        if (change === "content") await writeFile(next, "modified-b");
+        if (change === "hardlink") await link(next, join(f.root, "TEST-external-hardlink"));
+        expect(() => steps.removeNext()).toThrow();
+        expect(await readFile(join(f.target, "pkg/a.js"), "utf8")).toBe("original-a");
+        expect(await readFile(next, "utf8")).toBe(change === "content" ? "modified-b" : "original-b");
+        if (change === "identity") { await rm(next); await rename(join(f.root, "TEST-retained-original"), next); }
+        if (change === "content") await writeFile(next, "original-b");
+        if (change === "hardlink") await rm(join(f.root, "TEST-external-hardlink"));
+        expect(() => steps.removeNext()).toThrow("closed"); // Repair never revives a held session.
+        expect(await readFile(next, "utf8")).toBe("original-b");
+      } finally { await operation.close(); }
     } finally { await f.cleanup(); }
   });
   it.each(["addition", "mode", "content", "external-link", "hardlink"])("preserves unexplained committed trash %s", async change => {

@@ -1,4 +1,6 @@
-import { collectRegisteredCodexGoalJobStatus } from "./codex-goal-registered-job-observation";
+import { workspaceChangedFilesCount } from "../codex-goal-changed-files-report";
+import { collectRegisteredCodexGoalJobStatus, CodexGoalObservationMode } from "./codex-goal-registered-job-observation";
+import { jobRetirementAnswer, observeJobRetirement } from "../job-retirement/job-retirement-records";
 import {
   codexGoalJobToArgs,
   readCodexGoalJob,
@@ -23,15 +25,17 @@ export type CodexGoalOverviewItemInput = {
   readonly staleAfterMs: number;
   readonly tailLines: number;
   readonly observation?: CodexGoalObservationContext;
+  readonly mode?: CodexGoalObservationMode;
 };
 
 export async function buildCodexGoalOverviewItems(
   inputs: readonly CodexGoalOverviewItemInput[],
+  mode = CodexGoalObservationMode.Reconcile,
 ): Promise<readonly JsonObject[]> {
   const observation = createCodexGoalObservationContext();
   return mapCodexGoalObservations(
     inputs,
-    (input) => buildCodexGoalOverviewItem({ ...input, observation }),
+    (input) => buildCodexGoalOverviewItem({ ...input, mode, observation }),
   );
 }
 
@@ -42,12 +46,19 @@ export async function buildCodexGoalOverviewItem(
     const manifest = await readCodexGoalJob({
       registryRootDir: input.registryRootDir,
       jobId: input.jobId,
+      includeRetired: true,
     });
+    // A retired job holds no writer and its output is preserved: report it from
+    // its records, so a deleted workspace is never observed as debt.
+    const retirement = observeJobRetirement(input.registryRootDir, manifest.jobId);
+    if (retirement) return { ok: true, jobId: manifest.jobId, retired: true, workspacePath: manifest.workspacePath,
+      taskId: manifest.taskId, workerAlive: false, workspaceDirty: false, ...jobRetirementAnswer(retirement) };
     const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
     const status = await collectRegisteredCodexGoalJobStatus({
-      registryRootDir: input.registryRootDir, launch, ...(input.observation ? { observation: input.observation } : {}),
+      registryRootDir: input.registryRootDir, launch, ...(input.mode ? { mode: input.mode } : {}), ...(input.observation ? { observation: input.observation } : {}),
     });
     const accounts = await listCodexGoalAccountStatuses({
+      readOnly: input.mode === CodexGoalObservationMode.ReadOnly,
       authRootDir: launch.config.authRootDir,
       accounts: launch.config.accounts.map((account) => account.name),
       stateRootDir: launch.config.stateRootDir ?? join(launch.config.jobRootDir, "state"),
@@ -106,7 +117,7 @@ export async function buildCodexGoalOverviewItem(
       progressPid: status.progressPid,
       progressProcessAlive: status.progressProcessAlive,
       workspaceDirty: status.workspaceDirty,
-      changedFilesCount: (status.changedFiles ?? []).length,
+      changedFilesCount: workspaceChangedFilesCount(status),
       changedFiles: status.changedFiles ?? [],
       lastProgressAt: brief.lastProgressAt,
       lastProgressAgeMs: brief.lastProgressAgeMs,

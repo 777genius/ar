@@ -11,19 +11,19 @@ export async function createLinkedGitWorktree(
 ): Promise<void> {
   const repoPath = join(root, "repo");
   await mkdir(repoPath, { recursive: true });
-  await execFileAsync("git", ["init"], { cwd: repoPath });
-  await execFileAsync("git", ["config", "user.email", "test@example.com"], {
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "init"], { cwd: repoPath });
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.email", "test@example.com"], {
     cwd: repoPath,
   });
-  await execFileAsync("git", ["config", "user.name", "Test User"], {
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "config", "user.name", "Test User"], {
     cwd: repoPath,
   });
   await writeFile(join(repoPath, "README.md"), "fixture\n");
-  await execFileAsync("git", ["add", "README.md"], { cwd: repoPath });
-  await execFileAsync("git", ["commit", "-m", "test fixture"], {
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "add", "README.md"], { cwd: repoPath });
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "commit", "-m", "test fixture"], {
     cwd: repoPath,
   });
-  await execFileAsync("git", ["worktree", "add", "-b", "worker", worktreePath], {
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "worktree", "add", "-b", "worker", worktreePath], {
     cwd: repoPath,
   });
 }
