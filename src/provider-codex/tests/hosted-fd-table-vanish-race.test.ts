@@ -25,7 +25,7 @@ vi.mock("node:fs", async importOriginal => {
     readlinkSync: ((path: unknown) => state.links.get(fdOf(path)) ?? fail("ENOENT")) as unknown as typeof import("node:fs").readlinkSync,
     readFileSync: ((path: unknown) => {
       const queue = state.reads.get(fdOf(path));
-      if (!queue?.length) fail("ENOENT");
+      if (!queue || !queue.length) return fail("ENOENT");
       return queue.length > 1 ? queue.shift()! : queue[0]!;
     }) as unknown as typeof import("node:fs").readFileSync,
     statSync: ((path: unknown) => {
