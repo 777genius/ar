@@ -15,6 +15,13 @@ export function hostedFdTable(pid: number): readonly HostedFdFact[] {
       const target = readlinkSync(path), info = readFileSync(`/proc/${pid}/fdinfo/${name}`, "utf8");
       const flags = /^flags:\s+([0-7]{1,12})$/m.exec(info);
       const actual = readFileSync(`/proc/${pid}/fdinfo/${name}`, "utf8");
+      // An empty fdinfo read is the same vanish as ENOENT below: the kernel
+      // prints nothing when the descriptor is no longer held at read time.
+      if (info === "" || actual === "") {
+        try { statSync(directory); }
+        catch { invalid(); }
+        continue;
+      }
       if (!flags || /^flags:\s+([0-7]{1,12})$/m.exec(actual)?.[1] !== flags[1] || target !== readlinkSync(path)) invalid();
       // No proc FD is opened for IO, including O_PATH handles to directories.
       const s = pid === process.pid ? fstatSync(fd, { bigint: true }) : statSync(path, { bigint: true });
