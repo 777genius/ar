@@ -8,6 +8,7 @@ import { mimoResponseProofHash, observeMimoResponseCompletion, type HostedMimoCa
 import { codexMimoConfirmedBaseUrl } from "./codex-model-backend";
 import { MimoProxyFailureReason as FailureReason, MimoProxyFailurePhase as FailurePhase,
   mimoProxyTransportCode, mimoProxyValidationCode, type MimoProxyFailure } from "./mimo-proxy-failure";
+import { createProviderCallObservation, type ProviderCallObserver } from "../provider-usage/provider-call-observation";
 
 /** Start-lifetime observations only; never a provider failure classification. */
 export enum MimoProxyFailureKind {
@@ -75,6 +76,7 @@ export async function startMimoCredentialProxy(input: {
   readonly fetchUpstream?: typeof fetch;
   /** Retained owner observation, supplied by the trusted producer, not HTTP. */
   readonly assertCurrent?: () => void;
+  readonly observeProviderCall?: ProviderCallObserver;
 }): Promise<MimoCredentialProxy> {
   const limits = Object.freeze({ ...input.limits });
   const remaining = limits.deadlineMs - Date.now();
@@ -143,6 +145,8 @@ export async function startMimoCredentialProxy(input: {
     const started = performance.now();
     let phase = FailurePhase.Input, timedOut = false, clientDisconnected = false, upstreamStreamFailed = false;
     let upstreamStatus: number | undefined;
+    let usageCall: ReturnType<typeof createProviderCallObservation> | undefined;
+    let usageFailed = false;
     const failure = (reason: FailureReason, error?: unknown): MimoProxyFailure => {
       const elapsed = performance.now() - started;
       latestFailure = Object.freeze({ reason, phase, request_number: requestNumber,
@@ -191,12 +195,15 @@ export async function startMimoCredentialProxy(input: {
       const observedRequestSha256 = mimoResponseProofHash("request", requestBody);
       const observation = observeMimoResponseCompletion(model);
       phase = FailurePhase.Transport;
+      usageCall = createProviderCallObservation(model, input.observeProviderCall);
+      await usageCall.dispatched();
       const upstreamResponse = await transport(upstream, {
         method: "POST", redirect: "manual", signal: controller.signal,
         headers: { "content-type": "application/json", authorization: `Bearer ${key.toString("utf8")}` },
         body: requestBody,
       }).catch(error => { if (!controller.signal.aborted) noteFailure(MimoProxyFailureKind.UpstreamRequestFailed); throw error; });
       phase = FailurePhase.Response;
+      usageCall.status(upstreamResponse.status);
       if (bounded(upstreamResponse.status, 100, 599)) upstreamStatus = upstreamResponse.status;
       if (!upstreamResponse.ok) {
         proofInvalid = true;
@@ -225,7 +232,8 @@ export async function startMimoCredentialProxy(input: {
       // Keep only enough trailing bytes to detect a secret split across chunks.
       // Reconstruct matches, never forward any upstream headers or error bodies.
       const secrets = [Buffer.from(key), Buffer.from(capability)];
-      const stream = Readable.from(redactedBody(upstreamResponse.body, secrets, limits.maxResponseBytes, contentType, observation.observe, controller.signal, noteFailure), { objectMode: false });
+      const stream = Readable.from(redactedBody(upstreamResponse.body, secrets, limits.maxResponseBytes, contentType,
+        (value, event) => { observation.observe(value, event); usageCall?.observe(value); }, controller.signal, noteFailure), { objectMode: false });
       // A pipeline source failure can close the downstream as a consequence.
       stream.once("error", () => { if (!clientDisconnected && !controller.signal.aborted) upstreamStreamFailed = true; });
       try { await pipeline(stream, response, { signal: controller.signal }); }
@@ -239,6 +247,7 @@ export async function startMimoCredentialProxy(input: {
         responseIdSha256 = mimoResponseProofHash("response-id", responseId);
       }
     } catch (error) {
+      usageFailed = true;
       proofInvalid = true;
       observeFailure(failureKind ?? (revoked ? revocationKind : MimoProxyFailureKind.Unknown));
       const reason = revoked ? FailureReason.Revoked : timedOut ? FailureReason.Timeout
@@ -248,6 +257,7 @@ export async function startMimoCredentialProxy(input: {
       reply(response, controller.signal.aborted || revoked ? 503 : 502,
         controller.signal.aborted || revoked ? "proxy_aborted" : "proxy_upstream_failed", undefined, details);
     } finally {
+      await usageCall?.finish(usageFailed, controller.signal.aborted);
       clearTimeout(timeout); active.delete(controller);
       response.off("close", disconnected);
       controller.signal.removeEventListener("abort", abortInput);
