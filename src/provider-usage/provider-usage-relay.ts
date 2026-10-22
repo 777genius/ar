@@ -21,11 +21,11 @@ export async function startProviderUsageRelay(input: {
   const server = createServer((request, response) => {
     const flight = (async () => {
       // Capability lives only in the private URL path supplied to this child.
-      const path = request.url?.split("?")[0] ?? "";
+      const [path = "", query = ""] = (request.url ?? "").split("?", 2);
       const prefix = `/${capability}`;
       const supplied = Buffer.from(path.slice(1, 1 + capability.length));
       if (closed || supplied.length !== auth.length || !timingSafeEqual(supplied, auth) ||
-        !path.startsWith(prefix + "/") || request.method !== "POST" || request.url?.includes("?")) {
+        !path.startsWith(prefix + "/") || request.method !== "POST" || !["", "beta=true"].includes(query)) {
         response.writeHead(404).end(); return;
       }
       const suffix = path.slice(prefix.length);
@@ -55,7 +55,7 @@ export async function startProviderUsageRelay(input: {
         if (!suffix.endsWith("/count_tokens")) call = createProviderCallObservation(input.model, input.observe,
           suffix.endsWith("/messages") ? ProviderCallProtocol.AnthropicMessages : suffix === "/chat/completions" ? ProviderCallProtocol.ChatCompletions : ProviderCallProtocol.Responses);
         await call?.dispatched();
-        const upstream = await (input.fetchUpstream ?? fetch)(target.href.replace(/\/$/, "") + suffix, {
+        const upstream = await (input.fetchUpstream ?? fetch)(target.href.replace(/\/$/, "") + suffix + (query ? `?${query}` : ""), {
           method: "POST", headers, body: body.toString("utf8"), signal: controller.signal, redirect: "manual",
         });
         call?.status(upstream.status);

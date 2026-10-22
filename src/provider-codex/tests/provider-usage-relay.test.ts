@@ -86,3 +86,29 @@ it("passes resolved aliases and auxiliary token counting without changing bytes 
   expect(facts).toHaveLength(2);
   expect(facts[1]).toMatchObject({ requestedModel: "sonnet", actualModel: null });
 });
+
+it("forwards only the supported beta query upstream and still rejects unknown queries", async () => {
+  const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { headers: { "content-type": "application/json" } }));
+  const relay = await startProviderUsageRelay({ upstreamBaseUrl: "https://provider.test/v1", model: "claude-test", observe: () => {}, fetchUpstream: transport });
+  try {
+    const beta = await fetch(relay.baseUrl + "/messages?beta=true", { method: "POST", body: '{"model":"claude-test","messages":[]}' });
+    expect(beta.status).toBe(200); await beta.text();
+    for (const query of ["beta=false", "x=1", "beta=true&x=1"]) {
+      const rejected = await fetch(relay.baseUrl + "/messages?" + query, { method: "POST", body: '{"model":"claude-test"}' });
+      expect(rejected.status).toBe(404);
+    }
+  } finally { await relay.close(); }
+  expect(transport).toHaveBeenCalledOnce();
+  expect(transport.mock.calls[0]?.[0]).toBe("https://provider.test/v1/messages?beta=true");
+});
+
+it("marks a non-streaming Anthropic message with stop_reason completed", async () => {
+  const facts: ProviderCallObservation[] = [];
+  const relay = await startProviderUsageRelay({ upstreamBaseUrl: "https://provider.test/v1", model: "claude-test", observe: fact => { facts.push(fact); },
+    fetchUpstream: async () => new Response(JSON.stringify({ type: "message", model: "claude-test", stop_reason: "end_turn", usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 5 } }), { headers: { "content-type": "application/json" } }) });
+  try {
+    const response = await fetch(relay.baseUrl + "/messages", { method: "POST", body: '{"model":"claude-test","messages":[]}' });
+    expect(response.status).toBe(200); await response.text();
+  } finally { await relay.close(); }
+  expect(facts[1]).toMatchObject({ state: "completed", completeness: "complete", tokens: { inputTotal: 10, outputTotal: 5, cacheRead: 0, cacheWrite: 0, reasoning: null, total: 15 } });
+});

@@ -50,7 +50,8 @@ export function createProviderCallObservation(model: string, observer?: Provider
     observe(value: unknown) {
       const frame = record(value), response = record(frame?.response) ?? record(frame?.message) ?? frame;
       if (typeof response?.model === "string" && /^[A-Za-z0-9._:/@+-]{1,200}$/.test(response.model)) actualModel = response.model;
-      if (frame?.type === "message_stop" || Array.isArray(frame?.choices) && frame.choices.some(c => record(c)?.finish_reason != null)) state = ProviderCallState.Completed;
+      if (frame?.type === "message_stop" || frame?.type === "message" && typeof frame.stop_reason === "string" ||
+        Array.isArray(frame?.choices) && frame.choices.some(c => record(c)?.finish_reason != null)) state = ProviderCallState.Completed;
       if (response?.status === "completed" || frame?.type === "response.completed") state = ProviderCallState.Completed;
       if (["failed", "incomplete"].includes(String(response?.status)) || ["response.failed", "response.incomplete"].includes(String(frame?.type))) state = ProviderCallState.Failed;
       const usage = record(response?.usage); if (!usage) return;
