@@ -106,6 +106,11 @@ it("still refuses a non-empty fdinfo without a flags line", () => {
   expect(() => hostedFdTable(4242)).toThrow("hosted_fd_boundary_unresolved");
 });
 
+it("still refuses a non-empty second fdinfo body without a flags line", () => {
+  fixture(["pos:\t0\nflags:\t02\nmnt_id:\t22\nino:\t2\n", "pos:\t0\nmnt_id:\t22\nino:\t3\n"]);
+  expect(() => hostedFdTable(4242)).toThrow("hosted_fd_boundary_unresolved");
+});
+
 it("still refuses an empty vanished read once the process is gone", () => {
   fixture([""]);
   state.alive = false;

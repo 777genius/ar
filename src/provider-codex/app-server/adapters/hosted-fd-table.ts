@@ -31,9 +31,12 @@ export function hostedFdTable(pid: number): readonly HostedFdFact[] {
         continue;
       }
       if (!flags) invalid();
+      const actualFlags = /^flags:\s+([0-7]{1,12})$/m.exec(actual);
+      // An unknown fdinfo format in the second read stays fail-closed, not a drop.
+      if (!actualFlags) invalid();
       // A live process may replace the descriptor under the row's reads; the
       // torn row is unverifiable and stays unattested. Self churn is a custody break.
-      if (/^flags:\s+([0-7]{1,12})$/m.exec(actual)?.[1] !== flags[1] || target !== readlinkSync(path)) {
+      if (actualFlags[1] !== flags[1] || target !== readlinkSync(path)) {
         if (pid === process.pid) invalid();
         try { statSync(directory); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") invalid(); throw error; }
