@@ -7,6 +7,7 @@ import { parseSystemBusInfrastructure, SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, 
   SYSTEM_BUS_SOCKET_FRAGMENT, type SystemBusInfrastructure, type SystemBusFilePin } from "@vioxen/subscription-runtime/core";
 import { assertSystemdManagerOwner, observeSystemdServiceEmptyArrays, systemdObservationBudget,
   SystemdServiceArrayKind, SystemdArrayProperty, type SystemdEmptyArrayFact, type SystemdObservationRemaining } from "./systemd-service-arrays";
+import { AppServerObserverPoint as ObserverPoint, retainObserverFailure } from "../domain/app-server-observer-failure";
 
 function invalid(): never { throw new Error("system_bus_infrastructure_unqualified"); }
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -109,15 +110,17 @@ function processClosure(pid: string, pins: readonly SystemBusFilePin[], remainin
  * to the trusted issuer; every admission rechecks the pinned installed bytes,
  * effective manager state, live ELF closure and listener/daemon/PID1 linkage. */
 export function verifySystemBusInfrastructure(input: SystemBusInfrastructure, remaining?: SystemdObservationRemaining): void {
-  try { observeInfrastructure(input, systemdObservationBudget(remaining)); }
-  catch { invalid(); }
+  const began = process.hrtime.bigint(); let point = ObserverPoint.BusInitial;
+  try { observeInfrastructure(input, systemdObservationBudget(remaining), undefined, value => { point = value; }); }
+  catch (error) { const wrapped = new Error("system_bus_infrastructure_unqualified"); retainObserverFailure(error, point, Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - began) / 1000000n))), wrapped); throw wrapped; }
 }
 /** Same actual bus bracket around the seven finite managed-unit reads. Facts,
  * not admission: the FDA owner retains its final fence and lifetime checks. */
 export function observeSystemBusFdEmptyArrays(input: SystemBusInfrastructure, unit: string,
   remaining: SystemdObservationRemaining): readonly SystemdEmptyArrayFact[] {
-  try { return observeInfrastructure(input, systemdObservationBudget(remaining), unit); }
-  catch { invalid(); }
+  const began = process.hrtime.bigint(); let point = ObserverPoint.BusInitial;
+  try { return observeInfrastructure(input, systemdObservationBudget(remaining), unit, value => { point = value; }); }
+  catch (error) { const wrapped = new Error("system_bus_infrastructure_unqualified"); retainObserverFailure(error, point, Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - began) / 1000000n))), wrapped); throw wrapped; }
 }
 /** The legacy root row supplies no membership authority; the unified row must
  * identify this exact bus group. Check every row without trimming its bytes. */
@@ -133,7 +136,7 @@ function matchesSystemBusCgroup(text: string): boolean {
   return unified === 1 && legacy <= 1;
 }
 function observeInfrastructure(input: SystemBusInfrastructure, remaining: SystemdObservationRemaining,
-  managedUnit?: string): readonly SystemdEmptyArrayFact[] {
+  managedUnit: string | undefined, mark: (point: ObserverPoint) => void): readonly SystemdEmptyArrayFact[] {
   remaining();
   if (process.platform !== "linux" || process.getuid?.() !== 0 ||
       !/^0\s+0\s+4294967295$/.test(boundedProc("/proc/self/uid_map", remaining, 4096).trim())) invalid();
@@ -157,9 +160,10 @@ function observeInfrastructure(input: SystemBusInfrastructure, remaining: System
           bytes[4] !== 2 || bytes[5] !== 1 || bytes.readUInt16LE(18) !== 62) invalid();
     }
   };
-  verifyPins();
+  mark(ObserverPoint.BusPins); verifyPins();
   const common = "Id,Names,LoadState,ActiveState,SubState,FragmentPath,DropInPaths,Job";
   const serviceProperties = common + ",ControlGroup,MainPID,ExecStart,ExecStartPre,ExecStartPost,ExecReload,ExecStop,ExecStopPost,Environment,EnvironmentFiles,User,Group,Restart,Type,TriggeredBy";
+  mark(ObserverPoint.BusService);
   const service = show("dbus.service", serviceProperties, remaining);
   const expectedCommand = [SYSTEM_BUS_EXECUTABLE, ...SYSTEM_BUS_ARGUMENTS].join(" ");
   const exec = /^\{ path=([^;]+) ; argv\[\]=(.*?) ; ignore_errors=no ; [^{}]*\}$/.exec(service.ExecStart ?? "");
@@ -169,10 +173,12 @@ function observeInfrastructure(input: SystemBusInfrastructure, remaining: System
       !exec || exec[1] !== SYSTEM_BUS_EXECUTABLE || exec[2] !== expectedCommand ||
       service.Environment !== "") invalid();
   const socketProperties = common + ",Listen,Accept,Triggers,SocketMode,DirectoryMode,RemoveOnStop";
+  mark(ObserverPoint.BusSocket);
   const socket = show("dbus.socket", socketProperties, remaining);
   if (socket.FragmentPath !== descriptor.socket.fragmentPath || socket.Listen !== `${SYSTEM_BUS_ENDPOINT} (Stream)` ||
       socket.Accept !== "no" || socket.Triggers !== "dbus.service" || socket.SocketMode !== "0600" ||
       socket.DirectoryMode !== "0755" || socket.RemoveOnStop !== "yes") invalid();
+  mark(ObserverPoint.BusProcess);
   const pid = service.MainPID!, initialBirth = birth(pid, remaining);
   const verifyProcess = () => {
     if (birth(pid, remaining) !== initialBirth || readlinkSync(`/proc/${pid}/exe`) !== SYSTEM_BUS_EXECUTABLE ||
@@ -182,6 +188,7 @@ function observeInfrastructure(input: SystemBusInfrastructure, remaining: System
     processClosure(pid, descriptor.elfClosure, remaining);
   };
   verifyProcess();
+  mark(ObserverPoint.BusEndpoint);
   protectedParents(SYSTEM_BUS_ENDPOINT, remaining);
   const endpoint = lstatSync(SYSTEM_BUS_ENDPOINT);
   if (!endpoint.isSocket() || endpoint.uid !== 0 || (endpoint.mode & 0o777) !== 0o600) invalid();
@@ -199,10 +206,13 @@ function observeInfrastructure(input: SystemBusInfrastructure, remaining: System
     if (ownedListeners.length !== 1 || ownedListeners[0]![6] !== inode) invalid();
     return inode;
   };
+  mark(ObserverPoint.BusListener);
   const listenerInode = verifyListener();
   // PID1's actual registered connection, not a successfully created child bus
   // or a reachable /run/systemd/private manager socket, supplies --wait/--pipe.
+  mark(ObserverPoint.BusManager);
   assertSystemdManagerOwner(descriptor.queryTool, remaining);
+  mark(ObserverPoint.BusArrays);
   const arrays = observeSystemdServiceEmptyArrays(descriptor.queryTool, "dbus.service", SystemdServiceArrayKind.Infrastructure, remaining);
   for (const fact of arrays) {
     if (fact.property in service && service[fact.property] !== "") invalid();
@@ -210,13 +220,17 @@ function observeInfrastructure(input: SystemBusInfrastructure, remaining: System
   }
   if (Object.keys(service).sort().join(",") !== serviceProperties.split(",").sort().join(",") ||
       emptyArrays.some(key => service[key] !== "")) invalid();
+  mark(ObserverPoint.BusManagedArrays);
   const requested = managedUnit === undefined ? arrays : observeSystemdServiceEmptyArrays(descriptor.queryTool,
     managedUnit, SystemdServiceArrayKind.FdManaged, remaining);
+  mark(ObserverPoint.BusRecheck);
   const freshService = show("dbus.service", serviceProperties, remaining), freshSocket = show("dbus.socket", socketProperties, remaining);
   if (serviceProperties.split(",").some(key => !emptyArrays.some(name => name === key) && freshService[key] !== service[key]) ||
       socketProperties.split(",").some(key => freshSocket[key] !== socket[key])) invalid();
-  assertSystemdManagerOwner(descriptor.queryTool, remaining);
-  verifyProcess(); verifyPins();
+  mark(ObserverPoint.BusFinalManager); assertSystemdManagerOwner(descriptor.queryTool, remaining);
+  mark(ObserverPoint.BusFinalProcess); verifyProcess();
+  mark(ObserverPoint.BusFinalPins); verifyPins();
+  mark(ObserverPoint.BusFinalListener);
   if (verifyListener() !== listenerInode) invalid();
   const after = lstatSync(SYSTEM_BUS_ENDPOINT);
   if (after.dev !== endpoint.dev || after.ino !== endpoint.ino || !after.isSocket() || after.uid !== 0 || (after.mode & 0o777) !== 0o600) invalid();

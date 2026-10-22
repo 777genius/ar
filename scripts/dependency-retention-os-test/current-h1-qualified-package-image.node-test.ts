@@ -5,7 +5,7 @@ import {exactH1PackageSeeds,ToolInputArchitecture} from "./current-h1-tool-input
 import {qualifiedH1PackagePins,qualifiedH1PackageRequestArguments,qualifiedH1PackageVectorSha256} from "./current-h1-qualified-package-image.ts";
 
 test("qualified package lock reproduces the previously measured complete signed image",()=>{
- const measured="d89a9c1fd845ec3123839f3d223e24d3a1a1c02ce36c3bb36637d6902a839d5b";
+ const measured="76a701735a773c8a1909ea320a711c7b9f521796c383191c985ac67854024187";
  assert.equal(qualifiedH1PackageVectorSha256,measured);
  assert.equal(createHash("sha256").update(JSON.stringify(qualifiedH1PackagePins)).digest("hex"),measured);
  assert.equal(qualifiedH1PackagePins.length,41);
@@ -22,6 +22,6 @@ test("qualified acquisition pins every dependency and retains all five original 
   assert(argument.startsWith(pin.package+(pin.arch===ToolInputArchitecture.All?"=":":amd64=")));
   assert(/^[a-z0-9][a-z0-9+.-]*(?::amd64)?=[A-Za-z0-9.+:~_-]+$/.test(argument));
  }
- assert(qualifiedH1PackageRequestArguments.includes("libsystemd0:amd64=255.4-1ubuntu8.17"));
- assert(qualifiedH1PackageRequestArguments.includes("tzdata=2026c-0ubuntu0.24.04.1"));
+ assert(qualifiedH1PackageRequestArguments.includes("libsystemd0:amd64=255.4-1ubuntu8.18"));
+ assert(qualifiedH1PackageRequestArguments.includes("tzdata=2026e-0ubuntu0.24.04.1"));
 });

@@ -71,7 +71,7 @@ describe("actual shared managed start route (synthetic host/process facts)", () 
     const processChild = child();
     const pending = startCodexGoalTmux(input);
     await vi.waitFor(() => expect(f.spawn).toHaveBeenCalledOnce());
-    expect(f.launch).toHaveBeenCalledWith("node", expect.arrayContaining(["cli.js", "run", "--no-tmux", "--job-id", "TEST"]), "/workspace", expect.any(Function));
+    expect(f.launch).toHaveBeenCalledWith("node", expect.arrayContaining(["cli.js", "run", "--no-tmux", "--job-id", "TEST"]), "/workspace", expect.any(Function), undefined);
     expect(f.mkdir).not.toHaveBeenCalled(); expect(f.exec).not.toHaveBeenCalled();
     expect(f.receipt).not.toHaveBeenCalled();
     processChild.emit("exit", 0, null);
@@ -125,7 +125,7 @@ describe("public direct/tmux CLI ordering with actual parser", () => {
     const pending = runCodexGoalCli([...argv, ...flags], io);
     await vi.waitFor(() => expect(f.spawn).toHaveBeenCalledOnce());
     expect(f.upsert).not.toHaveBeenCalled(); expect(f.mkdir).not.toHaveBeenCalled();
-    expect(f.launch).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining(["--registry-root", "/registry"]), "/workspace", expect.any(Function));
+    expect(f.launch).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining(["--registry-root", "/registry"]), "/workspace", expect.any(Function), undefined);
     processChild.emit("exit", 0, null);
     expect(await pending).toBe(0);
   });

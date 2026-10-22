@@ -170,13 +170,25 @@ export class LocalFileAttemptJournal implements AttemptJournal {
     readonly taskId: TaskRunId;
   }): Promise<SafeExecutionTaskRecord | null> {
     try {
-      return parseLocalSafeExecutionTaskRecord(
+      const record = parseLocalSafeExecutionTaskRecord(
         await readFile(this.taskPath(input.taskId), "utf8"),
       );
+      return this.hidesTaskRecord(record) ? null : record;
     } catch (error) {
       if (isNodeErrorCode(error, "ENOENT")) return null;
       throw error;
     }
+  }
+
+  // A completed record stamped by another execution generation is historical
+  // output; a new generation must start a fresh attempt sequence over it.
+  private hidesTaskRecord(record: SafeExecutionTaskRecord): boolean {
+    return (
+      record.status === "completed" &&
+      this.executionGeneration !== undefined &&
+      record.executionGeneration !== undefined &&
+      record.executionGeneration !== this.executionGeneration
+    );
   }
 
   async startTask(input: {

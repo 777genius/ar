@@ -18,6 +18,16 @@ export class AppServerProcessCleanupUnresolvedError extends AppServerProcessClea
   }
 }
 
+/** Bounded window in which a clean stdin-EOF exit may win before the first
+ * stop signal; tests advance their clocks by exactly this much. */
+export const cleanExitGraceMs = 500;
+
+/** A signal permanently forbids the hosted ordinary wait's zero completion
+ * record, so hosted job runs yield the first signal to a bounded clean-exit
+ * race. Elsewhere no such record exists and stop stays immediate. */
+const hostedJobRun = (): boolean =>
+  process.env.SUBSCRIPTION_RUNTIME_SANDBOX_KIND === "hosted-codex-job";
+
 export async function stopAppServerProcess(input: {
   readonly child: CodexAppServerChildProcess | null;
   readonly exited: boolean;
@@ -63,6 +73,7 @@ export async function stopAppServerProcess(input: {
   void exit.catch(() => undefined);
   let escalation: NodeJS.Timeout | undefined;
   let deadline: NodeJS.Timeout | undefined;
+  let graceTimer: NodeJS.Timeout | undefined;
   const failures: unknown[] = [];
   try {
     try {
@@ -70,21 +81,34 @@ export async function stopAppServerProcess(input: {
     } catch {
       // The process may have already closed stdin.
     }
-    signal("SIGTERM");
-    await Promise.race([
-      exit,
-      new Promise<never>((_, reject) => {
-        escalation = setTimeout(() => {
-          if (exited) return;
-          try { signal("SIGKILL"); } catch (error) { reject(error); }
-        }, 5_000);
-        escalation.unref();
-        deadline = setTimeout(() => reject(new Error("codex_app_server_stop_timeout")), 10_000);
-      }),
-    ]);
+    // Escalation and deadline keep their original schedule from the stop
+    // start; in hosted job runs only the first signal yields to a bounded
+    // race, so a clean stdin-EOF exit may win it: signaling invalidates the
+    // hosted ordinary wait and forbids its completion record forever, while
+    // an EOF exit keeps that clean completion provable.
+    const escalated = new Promise<never>((_, reject) => {
+      escalation = setTimeout(() => {
+        if (exited) return;
+        try { signal("SIGKILL"); } catch (error) { reject(error); }
+      }, 5_000);
+      escalation.unref();
+      deadline = setTimeout(() => reject(new Error("codex_app_server_stop_timeout")), 10_000);
+    });
+    void escalated.catch(() => undefined);
+    if (hostedJobRun()) {
+      await Promise.race([exit, escalated, new Promise<void>(resolve => {
+        graceTimer = setTimeout(resolve, cleanExitGraceMs);
+        graceTimer.unref();
+      })]);
+      if (!exited) signal("SIGTERM");
+    } else {
+      signal("SIGTERM");
+    }
+    await Promise.race([exit, escalated]);
   } catch (error) {
     failures.push(error);
   } finally {
+    if (graceTimer !== undefined) clearTimeout(graceTimer);
     if (escalation !== undefined) clearTimeout(escalation);
     if (deadline !== undefined) clearTimeout(deadline);
     // Local parent exit does not prove an empty hosted unit or process group.

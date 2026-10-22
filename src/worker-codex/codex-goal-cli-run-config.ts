@@ -3,6 +3,8 @@ import { assertVerifiedHostedChildConfig } from "./hosted-child-slot-files";
 import { parseChildLifetimeJson } from "@vioxen/subscription-runtime/core";
 import { assertChildGoalConfig } from "./child-execution-confinement";
 import { CODEX_WORKER_DEFAULT_MODEL, CODEX_WORKER_DEFAULT_REASONING_EFFORT } from "./codex-worker-defaults";
+import { CodexModelBackend, codexModelBackendDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
+import { codexReasoningEfforts, type CodexReasoningEffort } from "../provider-codex/codex-json-execution-engine";
 import { join } from "node:path";
 import { assertJobStorageIntent, JobStorageHomeStateRequirement, JobStorageIntentKind } from "@vioxen/subscription-runtime/worker-core";
 import { assertCodexSessionHomeProfile, CodexSessionHomeProfileKind, type CodexSessionHomeProfile } from "./codex-session-home-profile";
@@ -70,9 +72,13 @@ export function runConfigFromFlags(
       requiredOption(values, env, "--accounts", ["CODEX_ACCOUNTS"]),
     ),
   );
-  const reasoningEffort = (option(values, env, "--effort", [
+  const effortValue = option(values, env, "--effort", [
     "CODEX_REASONING_EFFORT",
-  ]) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT) as CodexGoalRunConfig["reasoningEffort"];
+  ]) ?? CODEX_WORKER_DEFAULT_REASONING_EFFORT;
+  if (!codexReasoningEfforts.includes(effortValue as CodexReasoningEffort)) {
+    throw new Error(`--effort must be one of ${codexReasoningEfforts.join(", ")}`);
+  }
+  const reasoningEffort = effortValue as CodexGoalRunConfig["reasoningEffort"];
   const serviceTier = (option(values, env, "--service-tier", [
     "CODEX_SERVICE_TIER",
   ]) ?? "default") as CodexGoalRunConfig["serviceTier"];
@@ -152,6 +158,9 @@ export function runConfigFromFlags(
   const childLifetime = childLifetimeJson === undefined ? undefined : parseChildLifetimeJson(childLifetimeJson);
   const storageData = parseStorageData(values);
   const { logPath: _logPath, ...configPaths } = paths;
+  const model = option(values, env, "--model", ["CODEX_MODEL"]) ??
+    codexModelBackendDefaultModel(modelBackend.modelBackend ?? CodexModelBackend.OpenAiChatGpt, CODEX_WORKER_DEFAULT_MODEL);
+  if (model === "" || model !== model.trim()) throw new Error("--model requires a non-empty value");
   const config: CodexGoalRunConfigWithAppServerStartupTimeout = {
     ...storageData,
     ...configPaths,
@@ -205,7 +214,7 @@ export function runConfigFromFlags(
       paths.progressPath ??
         join(resolvedJobRootDir, ...(storageData.storage ? ["output"] : []), `${taskId}.progress.json`),
     ),
-    model: option(values, env, "--model", ["CODEX_MODEL"]) ?? CODEX_WORKER_DEFAULT_MODEL,
+    model,
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
     ...(executionEngine ? { executionEngine } : {}),

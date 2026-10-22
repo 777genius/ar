@@ -61,7 +61,7 @@ async function prepareRoots(evidence: Record<string, unknown>, accountName: stri
   const sourceSha = process.env.TEST_SOURCE_SHA; assert(sourceSha && /^[a-f0-9]{40}$/.test(sourceSha));
   const bus = await issueActualSystemBusInfrastructure(evidence);
   assert(!existsSync(policy)); directory(policy);
-  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
+  for (const name of ["ordinary-origins", "ordinary-starts", "ordinary-completed", "scoped-terminating", "codex-readonly-custody", "codex-readonly-revoked", "codex-readonly-inputs"])
     directory(policy + "/" + name);
   const candidateJobId = "TEST-os-" + randomUUID(), readonlyJobId = "TEST-os-" + randomUUID();
   const jobRoot = hostedDependencyJobRoot(candidateJobId), workspace = jobRoot + "/workspace";

@@ -50,6 +50,7 @@ export async function preparedResearchScratch(job: string, home: string, partial
     mkdir: (path, mode) => { if (partialCaches && path === `${home}/cache/remote_plugin_catalog`) throw cacheFailure; mutations.push(path); nodes.set(path, directory(mode)); },
     chmod: (path, mode) => { mutations.push(path); nodes.set(path, { ...nodes.get(path)!, mode }); },
     entries: () => [], removeLock: path => { mutations.push(path); nodes.delete(path); },
+    write: path => { mutations.push(path); }, isProcessAlive: () => true, sleep: () => {},
     bind: (source, target) => { const physical = backing(target); if (physical) fs.mkdirSync(physical, { recursive: true, mode: 0o701 }); mutations.push(target); prepared.push({ source, target }); nodes.set(target, { ...nodes.get(source)! });
       mounts.set(target, { target, uuid, fsroot: source.slice(root.length), mountId: mountId++, isPrivate: false });
       for (const [path, info] of nodes) if (path === root || path.startsWith(root + "/") || prepared.some(bind => bind.target === path || dirname(bind.target) === path && path !== job)) researchHost.scratchNodes.set(path, info);

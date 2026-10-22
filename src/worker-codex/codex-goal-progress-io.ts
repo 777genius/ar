@@ -1,5 +1,5 @@
 import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { CodexGoalProgressSnapshot } from "./codex-goal-runner";
 
@@ -8,12 +8,14 @@ export async function writeCodexGoalProgress(
   snapshot: CodexGoalProgressSnapshot,
 ): Promise<void> {
   assertHostedOrdinaryEffectPaths([path]);
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
   assertHostedOrdinaryEffectPaths([path, tempPath]);
-  await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, {
+  // The heartbeat may run beside a launch census. Close its private temporary
+  // write before yielding, so the census cannot observe an in-flight file FD.
+  writeFileSync(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, {
     encoding: "utf8", mode: 0o600,
   });
   assertHostedOrdinaryEffectPaths([path, tempPath]);
-  await rename(tempPath, path);
+  renameSync(tempPath, path);
 }

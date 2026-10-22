@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { AgentRuntimeTool, DefaultRedactor } from "@vioxen/subscription-runtime/core";
-import { AppServerExecutionLifetime, CodexModelBackend, HostedMimoProfile, type CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
+import { AppServerExecutionLifetime, CodexModelBackend, codexMimoDefaultModel, HostedMimoProfile, type CodexAppServerProcessFactory } from "@vioxen/subscription-runtime/provider-codex";
 import { captureHostedMimoCodingProxyCredential } from "../../provider-codex/hosted-mimo-credential-source";
 import { startMimoCredentialProxy, type MimoCredentialProxy } from "../../provider-codex/hosted-mimo-credential-proxy";
 import { LocalFileWorkerAccountCapacityStore } from "@vioxen/subscription-runtime/store-local-file";
@@ -55,7 +55,7 @@ vi.mock("node:fs", async original => {
 });
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); native.factories.clear(); native.key = ""; native.root = ""; native.current = undefined; native.live = true; native.fullGuardCalls = 0; });
-const demand = { provider: "codex", model: "mimo-v2.6-pro", reasoningEffort: "high", serviceTier: "default" } as const;
+const demand = { provider: "codex", model: codexMimoDefaultModel, reasoningEffort: "high", serviceTier: "default" } as const;
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 

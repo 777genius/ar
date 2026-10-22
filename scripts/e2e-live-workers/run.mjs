@@ -318,6 +318,9 @@ async function codexProjectControllerStartsChildWorker() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: sourceWorkspace,
     });
@@ -327,6 +330,8 @@ async function codexProjectControllerStartsChildWorker() {
     await mkdir(registryRootDir, { recursive: true });
     await mkdir(jobsRoot, { recursive: true });
     await mkdir(worktreesRoot, { recursive: true });
+    await mkdir(join(root, "control", "consumed-output-ledger"), { recursive: true });
+    await mkdir(join(root, "control", "archives"), { recursive: true });
 
     const prefix = "pc-live-e2e-";
     const controllerJobId = `${prefix}controller`;
@@ -360,9 +365,11 @@ async function codexProjectControllerStartsChildWorker() {
       allowedBranches: ["main", "master"],
       allowedGitRemotes: ["origin"],
       allowedAccountIds: codexAccounts,
+      consumedOutputLedgerRoots: [join(root, "control", "consumed-output-ledger")],
+      consumedOutputEvidenceRoots: [join(root, "control", "archives")],
     };
 
-    await codexGoalTool("codex_goal_create_job", {
+    assertToolOk(codexGoalTool("codex_goal_create_job", {
       registryRootDir,
       jobId: controllerJobId,
       description: "Sandbox project-scoped controller live e2e",
@@ -385,16 +392,16 @@ async function codexProjectControllerStartsChildWorker() {
       projectAccessScope,
       networkAccess: "restricted",
       confirmCreate: true,
-    });
+    }), "create project controller job");
 
-    await codexGoalTool("codex_goal_project_create_worktree", {
+    assertToolOk(codexGoalTool("codex_goal_project_create_worktree", {
       registryRootDir,
       controllerJobId,
       sourceWorkspacePath: sourceWorkspace,
       path: childWorkspace,
       confirmCreateWorktree: true,
-    });
-    await codexGoalTool("codex_goal_project_create_job", {
+    }), "create project child worktree");
+    assertToolOk(codexGoalTool("codex_goal_project_create_job", {
       registryRootDir,
       controllerJobId,
       jobId: childJobId,
@@ -417,13 +424,13 @@ async function codexProjectControllerStartsChildWorker() {
       accessBoundary: "isolated_workspace_write",
       networkAccess: "restricted",
       confirmCreate: true,
-    });
-    await codexGoalTool("codex_goal_project_start", {
+    }), "create project child job");
+    assertToolOk(codexGoalTool("codex_goal_project_start", {
       registryRootDir,
       controllerJobId,
       jobId: childJobId,
       confirmStart: true,
-    });
+    }), "start project child worker");
 
     const result = await waitForCodexProjectChildResult({
       registryRootDir,
@@ -525,6 +532,8 @@ async function codexProjectControllerStartsChildWorker() {
 }
 
 async function codexProjectIntegrationLifecycleTools() {
+  const skip = codexProjectControlSkipReason();
+  if (skip) return { skipped: true, reason: skip };
   const root = await sandboxRoot("codex-project-integration-");
   try {
     const workspacePath = await gitSandbox(join(root, "workspace"), {
@@ -535,6 +544,9 @@ async function codexProjectIntegrationLifecycleTools() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: workspacePath,
     });
@@ -554,7 +566,9 @@ async function codexProjectIntegrationLifecycleTools() {
     const registryRootDir = join(root, "registry");
     const controllerJobId = "pc-integration-controller";
     const controllerJobRoot = join(root, "jobs", controllerJobId);
-    await codexGoalTool("codex_goal_create_job", {
+    await mkdir(join(root, "control", "consumed-output-ledger"), { recursive: true });
+    await mkdir(join(root, "control", "archives"), { recursive: true });
+    assertToolOk(codexGoalTool("codex_goal_create_job", {
       registryRootDir,
       jobId: controllerJobId,
       description: "Sandbox project integration lifecycle e2e",
@@ -575,9 +589,11 @@ async function codexProjectIntegrationLifecycleTools() {
         tmuxSessionPrefixes: ["pc-integration-"],
         allowedBranches: [branch],
         allowedGitRemotes: ["origin"],
+        consumedOutputLedgerRoots: [join(root, "control", "consumed-output-ledger")],
+        consumedOutputEvidenceRoots: [join(root, "control", "archives")],
       },
       confirmCreate: true,
-    });
+    }), "create project integration controller job");
 
     const attemptId = "pc-integration-attempt";
     assertToolOk(codexGoalTool("codex_goal_project_open_integration_attempt", {
@@ -744,11 +760,22 @@ async function codexProjectControllerManifestLivenessContract() {
       skipDoctor: true,
     });
     assertEqual(ordinaryStart.ok, false);
-    assert(
-      String(ordinaryStart.error).includes("codex_goal_access_boundary_blocked"),
-      "ordinary controller launch must fail closed without a broker-only LLM surface",
+    assertEqual(
+      ordinaryStart.reason,
+      "project_control_broker_required",
+    );
+    assertEqual(
+      ordinaryStart.requiredTool,
+      "codex_goal_project_controller_start",
     );
 
+    const custodySkip = linuxKernelCustodySkipReason();
+    if (custodySkip) {
+      return {
+        skipped: true,
+        reason: `broker-required fail-closed verified; ${custodySkip}`,
+      };
+    }
     assertToolOk(codexGoalTool("codex_goal_project_create_worktree", {
       registryRootDir,
       controllerJobId,
@@ -1036,7 +1063,7 @@ async function codexCommandPolicyRejectsProjectBypass() {
 }
 
 async function claudeControlledControllerRealCliLauncher() {
-  const skip = claudeSkipReason();
+  const skip = claudeProjectControlSkipReason();
   if (skip) return { skipped: true, reason: skip };
   const root = await sandboxRoot("claude-controlled-controller-");
   let provider = null;
@@ -1348,7 +1375,7 @@ async function claudeProjectControllerProductionMcpStart() {
 }
 
 async function claudeControlledControllerIntegratesReviewedOutput() {
-  const skip = claudeSkipReason();
+  const skip = claudeProjectControlSkipReason();
   if (skip) return { skipped: true, reason: skip };
   const root = await sandboxRoot("claude-controller-integration-");
   let provider = null;
@@ -1363,6 +1390,9 @@ async function claudeControlledControllerIntegratesReviewedOutput() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: workspacePath,
     });
@@ -1597,6 +1627,9 @@ async function claudeControlledControllerStartsChildWorker() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: sourceWorkspace,
     });
@@ -1606,6 +1639,8 @@ async function claudeControlledControllerStartsChildWorker() {
     const authRoot = codexAuthRoot;
     await mkdir(registryRootDir, { recursive: true });
     await mkdir(jobsRoot, { recursive: true });
+    await mkdir(join(root, "control", "consumed-output-ledger"), { recursive: true });
+    await mkdir(join(root, "control", "archives"), { recursive: true });
     await mkdir(worktreesRoot, { recursive: true });
 
     const prefix = "claude-pc-live-e2e-";
@@ -1640,6 +1675,8 @@ async function claudeControlledControllerStartsChildWorker() {
       allowedBranches: ["main", "master"],
       allowedGitRemotes: ["origin"],
       allowedAccountIds: codexAccounts,
+      consumedOutputLedgerRoots: [join(root, "control", "consumed-output-ledger")],
+      consumedOutputEvidenceRoots: [join(root, "control", "archives")],
     };
     assertToolOk(codexGoalTool("codex_goal_create_job", {
       registryRootDir,
@@ -1879,6 +1916,9 @@ async function codexRealAppServerCommandApprovalDeniesRawPush() {
     }).stdout.trim();
     const remotePath = join(root, "remote.git");
     runChecked("git", ["init", "--bare", remotePath]);
+    runChecked("git", ["config", "core.hooksPath", join(remotePath, "e2e-no-hooks")], {
+      cwd: remotePath,
+    });
     runChecked("git", ["remote", "add", "origin", remotePath], {
       cwd: workspacePath,
     });
@@ -2051,18 +2091,26 @@ async function claudeInboxReadOnly() {
     await worker.seedClaudeOAuth({
       oauthToken: "dummy-token-not-used-by-real-cli-engine",
     });
-    const first = await worker.run({
-      jobId: "claude-live-readonly-job",
-      runId: "claude-live-readonly-run-1",
-      prompt:
-        "If an updated task from operator is present, follow it exactly. If no operator update is present, return exactly CLAUDE_WORKER_BASE.",
-    });
-    const second = await worker.run({
-      jobId: "claude-live-readonly-job",
-      runId: "claude-live-readonly-run-2",
-      prompt: "Return exactly CLAUDE_WORKER_SECOND.",
-    });
-    await worker.dispose();
+    let first, second;
+    try {
+      first = await worker.run({
+        jobId: "claude-live-readonly-job",
+        runId: "claude-live-readonly-run-1",
+        prompt:
+          "If an updated task from operator is present, follow it exactly. If no operator update is present, return exactly CLAUDE_WORKER_BASE.",
+      });
+      second = await worker.run({
+        jobId: "claude-live-readonly-job",
+        runId: "claude-live-readonly-run-2",
+        prompt: "Return exactly CLAUDE_WORKER_SECOND.",
+      });
+    } catch (error) {
+      const providerSkip = claudeRunProviderUnavailableSkip(error);
+      if (providerSkip) return providerSkip;
+      throw error;
+    } finally {
+      await worker.dispose();
+    }
     const views = await controlInbox.listSignals({
       target: { jobId: "claude-live-readonly-job" },
       includeBodies: false,
@@ -2112,13 +2160,21 @@ async function claudeInboxEdit() {
     await worker.seedClaudeOAuth({
       oauthToken: "dummy-token-not-used-by-real-cli-engine",
     });
-    const result = await worker.run({
-      jobId: "claude-live-edit-job",
-      runId: "claude-live-edit-run-1",
-      prompt:
-        "Create claude-result.txt with exactly two lines: CLAUDE_EDIT_BASE and base-instruction-used. Verify the file exists before finishing.",
-    });
-    await worker.dispose();
+    let result;
+    try {
+      result = await worker.run({
+        jobId: "claude-live-edit-job",
+        runId: "claude-live-edit-run-1",
+        prompt:
+          "Create claude-result.txt with exactly two lines: CLAUDE_EDIT_BASE and base-instruction-used. Verify the file exists before finishing.",
+      });
+    } catch (error) {
+      const providerSkip = claudeRunProviderUnavailableSkip(error);
+      if (providerSkip) return providerSkip;
+      throw error;
+    } finally {
+      await worker.dispose();
+    }
     const content = await readFile(join(workspacePath, "claude-result.txt"), "utf8");
     const views = await controlInbox.listSignals({
       target: { jobId: "claude-live-edit-job" },
@@ -2169,7 +2225,17 @@ function claudeProjectControlSkipReason() {
 }
 
 function codexProjectControlSkipReason() {
-  return codexSkipReason() ?? (!hasCommand("tmux") ? "tmux command not found" : null);
+  return codexSkipReason() ??
+    (!hasCommand("tmux") ? "tmux command not found" : linuxKernelCustodySkipReason());
+}
+
+function linuxKernelCustodySkipReason() {
+  // Project-control custody and scoped admission read Linux procfs/mountinfo
+  // backings and fail closed on any other kernel by design
+  // (project_control_evidence_custody_platform_unsupported).
+  return process.platform === "linux"
+    ? null
+    : "project_control_evidence_custody_platform_unsupported: linux-only kernel custody";
 }
 
 function realCodexAccount(root, suffix, options = {}) {
@@ -2194,7 +2260,12 @@ function codexWorker(root, suffix, overrides = {}) {
     model: process.env.CODEX_LIVE_MODEL ?? "gpt-5.5",
     reasoningEffort: process.env.CODEX_LIVE_EFFORT ?? "xhigh",
     serviceTier: process.env.CODEX_LIVE_SERVICE_TIER ?? "fast",
-    sourceEnv: process.env,
+    // The trusted refresh bootstrap enforces the job-root temp boundary.
+    sourceEnv: {
+      ...process.env,
+      SUBSCRIPTION_RUNTIME_JOB_ROOT: join(root, "job-root"),
+      SUBSCRIPTION_RUNTIME_TMPDIR: join(root, "job-root", "tmp"),
+    },
     capacityPolicy: {
       quotaCooldownMs: 60_000,
       reconnectCooldownMs: 60_000,
@@ -2423,6 +2494,10 @@ async function gitSandbox(path, files) {
     await writeFile(join(path, relativePath), content);
   }
   runChecked("git", ["init"], { cwd: path });
+  // Fixture sandboxes stay hermetic: user-global hooks must not gate synthetic test commits.
+  runChecked("git", ["config", "core.hooksPath", join(path, ".git", "e2e-no-hooks")], {
+    cwd: path,
+  });
   runChecked("git", ["config", "user.email", "subscription-runtime-e2e@example.test"], {
     cwd: path,
   });
@@ -2736,6 +2811,28 @@ function claudeControlledProviderUnavailableSkip(status) {
     return {
       skipped: true,
       reason: `Claude live account unavailable: ${safeTail(status.safeMessage ?? status.status)}`,
+    };
+  }
+  return null;
+}
+
+function claudeRunProviderUnavailableSkip(error) {
+  const details = error?.details ?? {};
+  const code = String(details.code ?? "");
+  const message = String(error?.message ?? "").toLowerCase();
+  if (
+    code === "quota_limited" ||
+    code === "account_unavailable" ||
+    message.includes("usage limit") ||
+    message.includes("quota") ||
+    message.includes("rate limit") ||
+    message.includes("not authenticated") ||
+    message.includes("oauth") ||
+    message.includes("login")
+  ) {
+    return {
+      skipped: true,
+      reason: `Claude live account unavailable: ${safeTail(String(error?.message ?? code))}`,
     };
   }
   return null;

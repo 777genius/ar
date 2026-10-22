@@ -56,3 +56,60 @@ export function classifyTransientStartFailure(bytes: Uint8Array, sample: Transie
   facts.numericTokenCount = tokens.filter(token => /^[0-9]+$/.test(token)).length;
   return { ...facts, state: "complete", message: known.get(body) ?? TransientStartMessage.Unknown };
 }
+
+// Observed message prefixes only, never inferred errno, failure cause or retry
+// authority. The proxy can reject argv before it asks the manager to start a unit.
+export const OwnedProxyMessagePrefix = {
+  Unknown: "unknown", Parse: "failed_to_parse", UnknownAssignment: "unknown_assignment",
+  SetUnitProperties: "failed_to_set_unit_properties", CreateBusConnection: "failed_to_create_bus_connection",
+  Connect: "failed_to_connect", FindExecutable: "failed_to_find_executable", Execute: "failed_to_execute",
+  StartTransientUnit: "failed_to_start_transient_service_unit", UnrecognizedOption: "unrecognized_option",
+  InvalidOption: "invalid_option",
+} as const;
+export type OwnedProxyMessagePrefix = typeof OwnedProxyMessagePrefix[keyof typeof OwnedProxyMessagePrefix];
+// Stable bit positions describe fixed trusted recipe identifiers, not captured
+// words or values. Unknown options/properties never enter exported evidence.
+export const ownedProxyOptionNames = Object.freeze([
+  "--quiet", "--wait", "--pipe", "--collect", "--unit", "--service-type",
+  "--working-directory", "--expand-environment", "--property",
+] as const);
+export const ownedProxyPropertyNames = Object.freeze([
+  "FileDescriptorStoreMax", "PassEnvironment", "UnsetEnvironment", "SystemCallFilter",
+  "SystemCallArchitectures", "NoNewPrivileges", "Slice", "KillMode", "SendSIGKILL", "Delegate",
+  "Restart", "JobTimeoutSec", "TimeoutStartSec", "RuntimeMaxSec", "TimeoutStopSec",
+] as const);
+export interface OwnedProxyStderrFacts {
+  state: TransientStartFacts["state"]; prefix: OwnedProxyMessagePrefix;
+  optionPresenceBits: number; propertyPresenceBits: number;
+}
+export function classifyOwnedProxyStderr(bytes: Uint8Array, sample: TransientStartSample): OwnedProxyStderrFacts {
+  const shape = classifyTransientStartFailure(bytes, sample);
+  const unknown: OwnedProxyStderrFacts = { state: shape.state, prefix: OwnedProxyMessagePrefix.Unknown,
+    optionPresenceBits: 0, propertyPresenceBits: 0 };
+  if (shape.state === "oversize" || shape.state === "partial" || !shape.ascii || shape.lineCount !== 1 ||
+      bytes[bytes.length - 1] !== 10 || sample.offset !== 0 || sample.fullBytes !== bytes.length ||
+      sample.initialBytes !== bytes.length || sample.currentBytes !== bytes.length) return unknown;
+  const line = Buffer.from(bytes).toString("ascii");
+  const prefixes: readonly (readonly [string, OwnedProxyMessagePrefix])[] = [
+    ["Failed to parse ", OwnedProxyMessagePrefix.Parse],
+    ["Unknown assignment", OwnedProxyMessagePrefix.UnknownAssignment],
+    ["Failed to set unit properties", OwnedProxyMessagePrefix.SetUnitProperties],
+    ["Failed to create bus connection", OwnedProxyMessagePrefix.CreateBusConnection],
+    ["Failed to connect to ", OwnedProxyMessagePrefix.Connect],
+    ["Failed to find executable ", OwnedProxyMessagePrefix.FindExecutable],
+    ["Failed to execute ", OwnedProxyMessagePrefix.Execute],
+    ["Failed to start transient service unit: ", OwnedProxyMessagePrefix.StartTransientUnit],
+    ["/usr/bin/systemd-run: unrecognized option ", OwnedProxyMessagePrefix.UnrecognizedOption],
+    ["systemd-run: unrecognized option ", OwnedProxyMessagePrefix.UnrecognizedOption],
+    ["/usr/bin/systemd-run: invalid option ", OwnedProxyMessagePrefix.InvalidOption],
+    ["systemd-run: invalid option ", OwnedProxyMessagePrefix.InvalidOption],
+  ];
+  const matched = prefixes.find(([prefix]) => line.startsWith(prefix) &&
+    (prefix.endsWith(" ") || /[: .\n]/.test(line[prefix.length] ?? "")));
+  const bits = (names: readonly string[]) => names.reduce((value, name, index) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return value | (new RegExp(`(?:^|[^A-Za-z0-9_-])${escaped}(?=$|[^A-Za-z0-9_-])`).test(line) ? 2 ** index : 0);
+  }, 0);
+  return { state: "complete", prefix: matched?.[1] ?? OwnedProxyMessagePrefix.Unknown,
+    optionPresenceBits: bits(ownedProxyOptionNames), propertyPresenceBits: bits(ownedProxyPropertyNames) };
+}

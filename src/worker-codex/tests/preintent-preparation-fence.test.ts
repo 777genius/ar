@@ -1,4 +1,5 @@
 import { ScopedTerminationValidator } from "../hosted-controller/scoped-termination-validation";
+import { codexMimoDefaultModel } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedKeyedScopedStopAdapter, type ScopedTerminationKernelPort } from "../hosted-controller/scoped-termination-adapter";
 import { ScopedTerminationKind, ScopedSignal, stableChildDigest, scopedDigest,
   ScopedEnqueueActorRole, ScopedActorDischargeMethod, type ScopedActorChain, type ScopedTerminationMember, type RuntimeValidatedTermination, type RuntimeValidatedOrdinaryTermination } from "../../worker-core/hosted-custody/domain/scoped-termination";
@@ -144,7 +145,7 @@ function fixture(production = false, deadline = Date.now() + 60000, stopMode: "u
       "--job-root", jobRootDir, "--job-id", jobId, "--task-id", jobId, "--auth-root", jobRootDir + "/capacity", "--codex-binary", "/TEST/pinned-codex",
       "--accounts", lifetime.accountId, "--max-account-cycles", "1", "--max-attempts", "1", "--continuation-mode", "disabled", "--max-goal-turns", "2",
       "--child-lifetime-json", JSON.stringify(lifetime), "--execution-engine", "app-server-goal", "--model-backend", "xiaomi-mimo-token-plan",
-      "--model", "mimo-v2.6-pro", "--access-boundary", "read_only", "--edit-mode", "read-only",
+      "--model", codexMimoDefaultModel, "--access-boundary", "read_only", "--edit-mode", "read-only",
       "--project-access-scope-json", JSON.stringify({ projectId: jobId, readRoots: [workspacePath] })] };
     const slot = parseImmutableChildSlot({ schemaVersion: 1, slotId, creatorId, jobId, jobRootDir, workspacePath, promptPath,
       sourceSha: "c".repeat(40), artifactSha: "d".repeat(40), grantSha256: digest(grantBytes), launch, lifetime });

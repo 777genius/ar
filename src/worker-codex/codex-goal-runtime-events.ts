@@ -1,5 +1,5 @@
 import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
   ObservabilityPort,
@@ -34,7 +34,7 @@ export function createCodexGoalRuntimeEventWriter(input: {
     writes = writes.then(async () => {
       const publish = async () => {
         assertHostedOrdinaryEffectPaths([input.eventPath]);
-        await mkdir(dirname(input.eventPath), { recursive: true, mode: 0o700 });
+        mkdirSync(dirname(input.eventPath), { recursive: true, mode: 0o700 });
         const compactedAttributes = compactEventAttributes(attributes);
         const entry: CodexGoalRuntimeEvent = {
           schemaVersion: 1,
@@ -48,7 +48,9 @@ export function createCodexGoalRuntimeEventWriter(input: {
             : { attributes: compactedAttributes }),
         };
         assertHostedOrdinaryEffectPaths([input.eventPath]);
-        await appendFile(input.eventPath, `${JSON.stringify(entry)}\n`, {
+        // Fire-and-forget observability may overlap the next native FD census.
+        // Close publication descriptors before this callback yields to it.
+        appendFileSync(input.eventPath, `${JSON.stringify(entry)}\n`, {
           encoding: "utf8",
           mode: 0o600,
         });

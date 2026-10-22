@@ -512,11 +512,21 @@ class RuntimeKernel {
       refresh.status === "skipped" &&
       refresh.reason === "refresh_not_required"
     ) {
-      const task = await this.runTaskWithSession({
+      let task = await this.runTaskWithSession({
         session: null,
         task: input.task,
         runContext: input.runContext,
       });
+      // No session exists to refresh, but a reconnect-class transient failure
+      // can clear on a fresh run: mirror the rotating plan's guarded repair
+      // with one same-task re-run.
+      if (task.status === "failed" && shouldGuardedRefresh(task.failure)) {
+        task = await this.runTaskWithSession({
+          session: null,
+          task: input.task,
+          runContext: input.runContext,
+        });
+      }
       return {
         status: "completed",
         refresh,

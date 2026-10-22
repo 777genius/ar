@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { ChildContinuationMode, AgentRuntimeTool, parseChildLifetime } from "@vioxen/subscription-runtime/core";
-import { CodexProviderEgressProfileId, CodexModelBackend, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
+import { CodexProviderEgressProfileId, CodexModelBackend, codexMimoDefaultModel, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
 import { HostedInstallationActivationStore } from "../hosted-installation-activation";
 import { enrollHostedChildSlot } from "../hosted-child-slot-files";
 
@@ -22,7 +22,7 @@ export function enrolledTestChild(runtimeDirectory: string, inventory: Record<st
     "--auth-root", jobRootDir + "/capacity", "--codex-binary", "/TEST/pinned-codex", "--accounts", "account-s",
     "--max-account-cycles", "1", "--max-attempts", "1", "--continuation-mode", "disabled", "--max-goal-turns", "2",
     "--child-lifetime-json", JSON.stringify(lifetime), "--execution-engine", "app-server-goal", "--model-backend", "xiaomi-mimo-token-plan",
-    "--model", "mimo-v2.6-pro", "--access-boundary", "read_only", "--edit-mode", "read-only",
+    "--model", codexMimoDefaultModel, "--access-boundary", "read_only", "--edit-mode", "read-only",
     "--project-access-scope-json", JSON.stringify({ projectId: jobId, readRoots: [workspacePath] })] };
   const slot = { schemaVersion: 1, slotId: "finite-test-slot", creatorId: "ordinary-creator", jobId, jobRootDir, workspacePath, promptPath,
     sourceSha: "c".repeat(40), artifactSha: "a".repeat(40), grantSha256: hash(JSON.stringify(grant) + "\n"), launch, lifetime };

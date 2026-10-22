@@ -284,6 +284,268 @@ describe("local safe execution state stores", () => {
     expect(resumedPrompt).toContain("- journal.txt");
   });
 
+  it("starts a fresh attempt sequence for a completed record from another execution generation", async () => {
+    const workspacePath = await tempDir(
+      "local-safe-execution-generation-workspace-",
+    );
+    const stateRoot = await tempDir("local-safe-execution-generation-state-");
+    const first = await new SafeExecutionRunner({
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal: new LocalFileAttemptJournal(
+        stateRoot,
+        undefined,
+        "TEST-generation-first",
+      ),
+      snapshotter: new SequenceSnapshotter([]),
+    }).run({
+      taskId: "task-generation",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "read_only",
+      provider: "codex",
+      pool: {
+        async run(): Promise<PromptResult> {
+          return { output: "first" };
+        },
+      },
+      job: { prompt: "finish generation task", workspacePath },
+      originalPrompt: "finish generation task",
+      policy: { maxAttempts: 1 },
+    });
+    expect(first.status).toBe("completed");
+
+    let poolRuns = 0;
+    const second = await new SafeExecutionRunner({
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal: new LocalFileAttemptJournal(
+        stateRoot,
+        undefined,
+        "TEST-generation-second",
+      ),
+      snapshotter: new SequenceSnapshotter([]),
+    }).run({
+      taskId: "task-generation",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "read_only",
+      provider: "codex",
+      pool: {
+        async run(): Promise<PromptResult> {
+          poolRuns += 1;
+          return { output: "second" };
+        },
+      },
+      job: { prompt: "finish generation task", workspacePath },
+      originalPrompt: "finish generation task",
+      policy: { maxAttempts: 1 },
+    });
+
+    expect(poolRuns).toBe(1);
+    expect(second).toMatchObject({
+      status: "completed",
+      replayed: false,
+      result: { output: "second" },
+    });
+    expect(second.attempts).toHaveLength(1);
+    const record = await new LocalFileAttemptJournal(stateRoot).readTask({
+      taskId: "task-generation",
+    });
+    expect(record?.executionGeneration).toBe("TEST-generation-second");
+    expect(record?.attempts).toHaveLength(1);
+    expect(record?.attempts[0]?.attemptNumber).toBe(1);
+  });
+
+  it("replays a completed record through a journal without an execution generation", async () => {
+    const workspacePath = await tempDir(
+      "local-safe-execution-ungenerated-workspace-",
+    );
+    const stateRoot = await tempDir("local-safe-execution-ungenerated-state-");
+    const first = await new SafeExecutionRunner({
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal: new LocalFileAttemptJournal(stateRoot),
+      snapshotter: new SequenceSnapshotter([]),
+    }).run({
+      taskId: "task-ungenerated",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "read_only",
+      provider: "codex",
+      pool: {
+        async run(): Promise<PromptResult> {
+          return { output: "first" };
+        },
+      },
+      job: { prompt: "finish ungenerated task", workspacePath },
+      originalPrompt: "finish ungenerated task",
+      policy: { maxAttempts: 1 },
+    });
+    expect(first.status).toBe("completed");
+
+    let poolRuns = 0;
+    const second = await new SafeExecutionRunner({
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal: new LocalFileAttemptJournal(stateRoot),
+      snapshotter: new SequenceSnapshotter([]),
+    }).run({
+      taskId: "task-ungenerated",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "read_only",
+      provider: "codex",
+      pool: {
+        async run(): Promise<PromptResult> {
+          poolRuns += 1;
+          throw new Error("TEST replay must not invoke the provider");
+        },
+      },
+      job: { prompt: "finish ungenerated task", workspacePath },
+      originalPrompt: "finish ungenerated task",
+      policy: { maxAttempts: 1 },
+    });
+
+    expect(poolRuns).toBe(0);
+    expect(second).toMatchObject({
+      status: "completed",
+      replayed: true,
+      result: { output: "first" },
+    });
+  });
+
+  it("replays a completed record from its own execution generation", async () => {
+    const workspacePath = await tempDir(
+      "local-safe-execution-same-generation-workspace-",
+    );
+    const stateRoot = await tempDir(
+      "local-safe-execution-same-generation-state-",
+    );
+    const first = await new SafeExecutionRunner({
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal: new LocalFileAttemptJournal(
+        stateRoot,
+        undefined,
+        "TEST-generation-same",
+      ),
+      snapshotter: new SequenceSnapshotter([]),
+    }).run({
+      taskId: "task-same-generation",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "read_only",
+      provider: "codex",
+      pool: {
+        async run(): Promise<PromptResult> {
+          return { output: "first" };
+        },
+      },
+      job: { prompt: "finish same generation task", workspacePath },
+      originalPrompt: "finish same generation task",
+      policy: { maxAttempts: 1 },
+    });
+    expect(first.status).toBe("completed");
+
+    let poolRuns = 0;
+    const second = await new SafeExecutionRunner({
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal: new LocalFileAttemptJournal(
+        stateRoot,
+        undefined,
+        "TEST-generation-same",
+      ),
+      snapshotter: new SequenceSnapshotter([]),
+    }).run({
+      taskId: "task-same-generation",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "read_only",
+      provider: "codex",
+      pool: {
+        async run(): Promise<PromptResult> {
+          poolRuns += 1;
+          throw new Error("TEST same-generation replay must not invoke the provider");
+        },
+      },
+      job: { prompt: "finish same generation task", workspacePath },
+      originalPrompt: "finish same generation task",
+      policy: { maxAttempts: 1 },
+    });
+
+    expect(poolRuns).toBe(0);
+    expect(second).toMatchObject({
+      status: "completed",
+      replayed: true,
+      result: { output: "first" },
+    });
+  });
+
+  it("resumes a failed record from another execution generation with a continuation packet", async () => {
+    const workspacePath = await tempDir(
+      "local-safe-execution-failed-generation-workspace-",
+    );
+    const stateRoot = await tempDir(
+      "local-safe-execution-failed-generation-state-",
+    );
+    await new SafeExecutionRunner({
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal: new LocalFileAttemptJournal(
+        stateRoot,
+        undefined,
+        "TEST-generation-failed-first",
+      ),
+      snapshotter: new SequenceSnapshotter([]),
+    }).run({
+      taskId: "task-failed-generation",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "workspace_patch",
+      provider: "codex",
+      pool: {
+        async run(): Promise<PromptResult> {
+          throw new SubscriptionWorkerError(
+            "subscription_worker_run_failed",
+            "Quota limited.",
+            { details: { reason: "quota_limited" } },
+          );
+        },
+      },
+      job: { prompt: "finish failed generation task", workspacePath },
+      originalPrompt: "finish failed generation task",
+      policy: { maxAttempts: 1 },
+    });
+
+    let resumedPrompt = "";
+    const second = await new SafeExecutionRunner({
+      lockStore: new InMemoryWorkspaceLockStore(),
+      journal: new LocalFileAttemptJournal(
+        stateRoot,
+        undefined,
+        "TEST-generation-failed-second",
+      ),
+      snapshotter: new SequenceSnapshotter([
+        snapshot({
+          workspacePath,
+          fingerprint: "resume-dirty",
+          dirty: true,
+          changedFiles: ["journal.txt"],
+          summary: "Git workspace has 1 changed file(s).",
+        }),
+      ]),
+    }).run({
+      taskId: "task-failed-generation",
+      workspace: { mode: "existing_locked", path: workspacePath },
+      effectMode: "workspace_patch",
+      provider: "codex",
+      pool: {
+        async run(job: PromptJob): Promise<PromptResult> {
+          resumedPrompt = job.prompt;
+          return { output: "resumed" };
+        },
+      },
+      job: { prompt: "finish failed generation task", workspacePath },
+      originalPrompt: "finish failed generation task",
+      policy: { maxAttempts: 2 },
+    });
+
+    expect(second.status).toBe("completed");
+    expect(second.attempts).toHaveLength(2);
+    expect(resumedPrompt).toContain("Continue the same task");
+    expect(resumedPrompt).toContain(
+      "Previous attempt stopped because: quota_limited",
+    );
+  });
+
   async function tempDir(prefix: string): Promise<string> {
     const path = await mkdtemp(join(tmpdir(), prefix));
     cleanupPaths.push(path);

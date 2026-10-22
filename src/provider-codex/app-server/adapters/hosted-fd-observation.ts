@@ -13,6 +13,7 @@ export { hostedFdTable, type HostedFdFact } from "./hosted-fd-table";
 import { observeSystemBusFdEmptyArrays } from "./system-bus-infrastructure";
 import { SystemdArrayProperty, SystemdArraySignature, type SystemdEmptyArrayFact,
   type SystemdObservationRemaining } from "./systemd-service-arrays";
+import { AppServerObserverPoint as ObserverPoint, retainObserverFailure } from "../domain/app-server-observer-failure";
 
 export type HostedFdProcess = Readonly<{ pid: number; parentPid: number; birth: string; argv: readonly string[]; exe: string; group: string;
   net: string; user: string; mount: string; pidNamespace: string; uidMap: string; gidMap: string; status: string;
@@ -183,11 +184,14 @@ export function decodeHostedFdUnitFields(text: string, facts?: readonly SystemdE
 }
 
 export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[], remaining: SystemdObservationRemaining): HostedFdUnit {
+  const began = process.hrtime.bigint(); let point = ObserverPoint.UnitInventory;
+  try {
   if (!/^subscription-runtime-(?:outer|ordinary|hosted|installer|research-provider|dependency-remove)-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
   const installed = readInstalledFdInventory(remaining);
   if (!installed) invalid();
   const bus = readSystemBusInfrastructureField(installed.inventory);
   if (!bus || bus.version !== 2) invalid();
+  point = ObserverPoint.UnitQuery;
   const result = spawnSync("/usr/bin/systemctl", ["show", "--all", `--property=${unitProperties.join(",")}`, "--", unit],
     { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
@@ -195,10 +199,14 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   if (result.error || result.signal || result.status !== 0 || result.stderr) invalid();
   // Reject conflicting/unknown text before any structured query. These are
   // provisional fields, not a permission derived from systemctl omission.
+  point = ObserverPoint.UnitDecode;
   decodeHostedFdUnitFields(result.stdout);
+  point = ObserverPoint.UnitArrays;
   const facts = observeSystemBusFdEmptyArrays(bus, unit, remaining);
+  point = ObserverPoint.UnitLifecycle;
   const rows = decodeHostedFdUnitFields(result.stdout, facts);
   const lifecycle = decodeHostedFdUnitLifecycle(rows);
+  point = ObserverPoint.UnitGuards;
   if (rows.size !== unitProperties.length || rows.get("Id") !== unit || !/^[a-f0-9]{32}$/.test(rows.get("InvocationID") ?? "") ||
       rows.get("ActiveState") !== "active" || rows.get("FileDescriptorStoreMax") !== "0" ||
       rows.get("NFileDescriptorStore") !== "0" || rows.get("TriggeredBy") !== "" || rows.get("PassEnvironment") !== "" ||
@@ -213,17 +221,20 @@ export function observeHostedFdUnit(unit: string, expectedArgv: readonly string[
   if (group !== `/subscription.slice/subscription-runtime.slice/subscription-runtime-hosted.slice/${unit}` &&
       group !== `/system.slice/${unit}`) invalid();
   // Bind the policy bracket to the same launch instance, not merely its name.
+  point = ObserverPoint.UnitRequery;
   const after = spawnSync("/usr/bin/systemctl", ["show", "--all", `--property=${unitProperties.join(",")}`, "--", unit],
     { env: cleanEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: observationTimeout(5000, remaining), maxBuffer: 65536 });
   observationTimeout(5000, remaining);
   if (after.error || after.signal || after.status !== 0 || after.stderr || after.stdout !== result.stdout) invalid();
+  point = ObserverPoint.UnitRejoin;
   const current = readInstalledFdInventory(remaining);
   if (!current || !current.inventoryBytes.equals(installed.inventoryBytes) ||
       !current.installationBytes.equals(installed.installationBytes)) invalid();
   observationTimeout(5000, remaining);
   return Object.freeze({ unit, invocation: rows.get("InvocationID")!, group, mainPid: Number(rows.get("MainPID")),
     root: rows.get("RootDirectory")!, lifecycle });
+  } catch (error) { retainObserverFailure(error, point, Math.min(60000, Math.max(0, Number((process.hrtime.bigint() - began) / 1000000n)))); throw error; }
 }
 
 export function collectHostedFdPeers(profile: FdCollectorProfile, remaining?: SystemdObservationRemaining): ReadonlyMap<string, FdCollectorPeer> {

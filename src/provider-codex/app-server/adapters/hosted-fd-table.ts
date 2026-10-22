@@ -22,10 +22,18 @@ export function hostedFdTable(pid: number): readonly HostedFdFact[] {
         rdev: String(s.rdev), socket: s.isSocket(), pipe: s.isFIFO(), character: s.isCharacterDevice(),
         file: s.isFile(), directory: s.isDirectory() }));
     } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
       // Only our already-closed enumeration descriptor can vanish from self.
-      if (pid === process.pid && ["ENOENT", "EBADF"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+      if (pid === process.pid && ["ENOENT", "EBADF"].includes(code)) {
         try { fstatSync(fd); }
         catch (closed) { if ((closed as NodeJS.ErrnoException).code === "EBADF") continue; }
+      } else if (pid !== process.pid && code === "ENOENT") {
+        // A live process may close a transient descriptor between enumeration
+        // and readlink; the vanished row is simply no longer held. A dead
+        // process stays a hard failure: its whole fd directory is gone.
+        try { statSync(directory); }
+        catch { throw error; }
+        continue;
       }
       throw error;
     }
