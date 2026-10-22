@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest";
 // the descriptor is no longer held at read time, so the read succeeds with an
 // empty body instead of ENOENT.
 const state = vi.hoisted(() => ({
-  links: new Map<number, string>(),
+  links: new Map<number, string[]>(),
   reads: new Map<number, string[]>(),
   rows: new Map<number, Readonly<{ dev: bigint; ino: bigint; rdev: bigint; socket: boolean; pipe: boolean;
     character: boolean; file: boolean; directory: boolean }>>(),
@@ -22,7 +22,11 @@ vi.mock("node:fs", async importOriginal => {
   return {
     ...actual,
     readdirSync: (() => ["0", "3"]) as unknown as typeof import("node:fs").readdirSync,
-    readlinkSync: ((path: unknown) => state.links.get(fdOf(path)) ?? fail("ENOENT")) as unknown as typeof import("node:fs").readlinkSync,
+    readlinkSync: ((path: unknown) => {
+      const queue = state.links.get(fdOf(path));
+      if (!queue || !queue.length) return fail("ENOENT");
+      return queue.length > 1 ? queue.shift()! : queue[0]!;
+    }) as unknown as typeof import("node:fs").readlinkSync,
     readFileSync: ((path: unknown) => {
       const queue = state.reads.get(fdOf(path));
       if (!queue || !queue.length) return fail("ENOENT");
@@ -54,7 +58,7 @@ function fixture(fdinfo3: readonly string[]) {
   state.alive = true;
   state.directoryError = undefined;
   state.selfProbe = new Map();
-  state.links = new Map([[0, "/dev/null"], [3, "/dev/null"]]);
+  state.links = new Map([[0, ["/dev/null"]], [3, ["/dev/null"]]]);
   state.reads = new Map([
     [0, ["pos:\t0\nflags:\t02\nmnt_id:\t22\nino:\t1\n"]],
     [3, [...fdinfo3]],
@@ -112,4 +116,23 @@ it("propagates unexpected directory stat errors instead of masking them", () => 
   fixture([""]);
   state.directoryError = "EACCES";
   expect(() => hostedFdTable(4242)).toThrow(/EACCES/);
+});
+
+it("drops a row whose link target changes between the two reads instead of failing the whole table", () => {
+  fixture(["pos:\t0\nflags:\t02\nmnt_id:\t22\nino:\t2\n", "pos:\t0\nflags:\t02\nmnt_id:\t22\nino:\t2\n"]);
+  state.links.set(3, ["/dev/null", "pipe:[777]"]);
+  const facts = hostedFdTable(4242);
+  expect(facts.map(fact => fact.fd)).toEqual([0]);
+});
+
+it("drops a row whose fdinfo flags change between the two reads instead of failing the whole table", () => {
+  fixture(["pos:\t0\nflags:\t02\nmnt_id:\t22\nino:\t2\n", "pos:\t0\nflags:\t0100000\nmnt_id:\t22\nino:\t3\n"]);
+  const facts = hostedFdTable(4242);
+  expect(facts.map(fact => fact.fd)).toEqual([0]);
+});
+
+it("still refuses a self row whose reads disagree", () => {
+  fixture(["pos:\t0\nflags:\t02\nmnt_id:\t22\nino:\t2\n", "pos:\t0\nflags:\t02\nmnt_id:\t22\nino:\t2\n"]);
+  state.links.set(3, ["/dev/null", "pipe:[777]"]);
+  expect(() => hostedFdTable(process.pid)).toThrow("hosted_fd_boundary_unresolved");
 });

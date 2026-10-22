@@ -30,7 +30,15 @@ export function hostedFdTable(pid: number): readonly HostedFdFact[] {
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") invalid(); throw error; }
         continue;
       }
-      if (!flags || /^flags:\s+([0-7]{1,12})$/m.exec(actual)?.[1] !== flags[1] || target !== readlinkSync(path)) invalid();
+      if (!flags) invalid();
+      // A live process may replace the descriptor under the row's reads; the
+      // torn row is unverifiable and stays unattested. Self churn is a custody break.
+      if (/^flags:\s+([0-7]{1,12})$/m.exec(actual)?.[1] !== flags[1] || target !== readlinkSync(path)) {
+        if (pid === process.pid) invalid();
+        try { statSync(directory); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") invalid(); throw error; }
+        continue;
+      }
       // No proc FD is opened for IO, including O_PATH handles to directories.
       const s = pid === process.pid ? fstatSync(fd, { bigint: true }) : statSync(path, { bigint: true });
       facts.push(Object.freeze({ fd, target, flags: Number.parseInt(flags[1]!, 8), dev: String(s.dev), ino: String(s.ino),
