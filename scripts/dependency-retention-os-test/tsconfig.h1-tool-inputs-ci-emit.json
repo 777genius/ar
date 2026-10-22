@@ -22,6 +22,7 @@
     "./current-h1-tool-inputs-ci-index.node-test.ts",
     "./current-h1-tool-inputs-package.node-test.ts",
     "./current-h1-tool-inputs-ci-publication.node-test.ts",
+    "./current-h1-tool-inputs-ci-root-tap.node-test.ts",
     "./current-h1-archive-format-census.node-test.ts",
     "./current-h1-archive-members.node-test.ts",
     "./current-h1-archive-path-graph.node-test.ts",

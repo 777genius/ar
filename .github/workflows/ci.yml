@@ -646,6 +646,7 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-publication.node-test.ts \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-root-tap.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-archive-format-census.ts \
             scripts/dependency-retention-os-test/current-h1-archive-format-census.node-test.ts \
             scripts/dependency-retention-os-test/current-h1-archive-members-TEST.ts \
@@ -690,6 +691,7 @@ jobs:
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-package.node-test.js \
             scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-publication.node-test.js \
+            scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-root-tap.node-test.js \
             scripts/dependency-retention-os-test/current-h1-archive-format-census.js \
             scripts/dependency-retention-os-test/current-h1-archive-format-census.node-test.js \
             scripts/dependency-retention-os-test/current-h1-archive-members-TEST.js \
@@ -950,6 +952,10 @@ jobs:
           grep -Eq '^ok [0-9]+ - selected ROOT mechanics refuses substituted retained parent and preserves outside TEST sentinel$' "$TAP"
           grep -Eq '^ok [0-9]+ - selected ROOT mechanics holds on real write fsync readback and post-I/O deadline faults$' "$TAP"
           test "$(grep -c ' # SKIP ' "$TAP")" -eq 1
+          "$TEST_NODE" --test --test-reporter=tap "$GITHUB_WORKSPACE/scripts/dependency-retention-os-test/current-h1-tool-inputs-ci-root-tap.node-test.js" > dependency-h1-tool-inputs-ci-source-evidence/root-tap-parser.tap
+          grep -Fxq '# tests 2' dependency-h1-tool-inputs-ci-source-evidence/root-tap-parser.tap
+          grep -Fxq '# pass 2' dependency-h1-tool-inputs-ci-source-evidence/root-tap-parser.tap
+          grep -Fxq '# fail 0' dependency-h1-tool-inputs-ci-source-evidence/root-tap-parser.tap
       - name: Retain curated signed DATA and exact workflow evidence even on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
