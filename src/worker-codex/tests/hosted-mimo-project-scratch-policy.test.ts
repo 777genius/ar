@@ -22,6 +22,7 @@ it("existing scratch mount policy hashes protected control paths without requiri
     read: () => JSON.stringify({ schemaVersion: 1, root: "/srv/workers", uuid }),
     inspectMount: path => path === "/srv/workers" ? { target: path, uuid, fsroot: "/" } : undefined,
     statfs: () => ({ bavail: 10 * 1024 ** 3, bsize: 1 }), mkdir: mutation, removeLock: mutation, chmod: mutation,
+    write: mutation, isProcessAlive: () => true, sleep: () => {},
     entries: () => [], bind: mutation, makePrivate: mutation, unmount: mutation };
   expect(resolveHostScratchTempRoot(stateRoot + "/jobs/test-job", host)).toMatchObject({ uuid, source: expect.stringMatching(/^\/srv\/workers\/runtime-tmp\/[a-f0-9]{64}$/) });
   expect(mutation).not.toHaveBeenCalled();
