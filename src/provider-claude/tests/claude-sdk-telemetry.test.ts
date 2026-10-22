@@ -92,4 +92,13 @@ describe("Claude SDK task telemetry", () => {
     error.cause = error;
     expect(classifyClaudeFailure(error).code).toBe("unknown_runtime_failure");
   });
+  it("classifies wrapper causes instead of masking them as unknown runtime failures", () => {
+    const limit = "claude exited 1: You've hit your weekly limit \u00b7 resets 2pm (Europe/Kiev)";
+    expect(classifyClaudeFailure(new Error(limit)).code).toBe("quota_limited");
+    expect(classifyClaudeFailure(new Error("wrapper", { cause: new Error(limit) })).code).toBe("quota_limited");
+    expect(classifyClaudeFailure(new Error("outer", { cause: new Error("middle", { cause: new Error(limit) }) })).code).toBe("quota_limited");
+    // A known outer state still wins over its cause.
+    expect(classifyClaudeFailure(new Error("claude task timeout", { cause: new Error(limit) })).code).toBe("task_timeout");
+    expect(classifyClaudeFailure(new Error("wrapper", { cause: new Error("mystery") })).code).toBe("unknown_runtime_failure");
+  });
 });

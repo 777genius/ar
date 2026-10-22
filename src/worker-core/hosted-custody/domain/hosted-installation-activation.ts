@@ -1,4 +1,6 @@
-import { parseScopedReceipt, type ScopedTerminationReceipt } from "./scoped-termination";
+export { parseHostedInstallation, type HostedInstallation } from "../../../core/host-infrastructure/hosted-installation";
+import { assertOrdinaryReaderFinalSuccessor } from "./ordinary-reader-final-successor";
+import { parseScopedReceipt, parseScopedProviderOnlyReceipt, parseScopedOrdinaryReaderFinalReceipt, type ScopedOrdinaryReaderFinalReceipt, type ScopedTerminationReceipt, type ScopedProviderOnlyReceipt } from "./scoped-termination";
 /** Closed scheduling records, not proof of host authority. Adapters must bind
  * inspected bytes and independent creator/queue/descendant observations under
  * the common host mutex before publishing these transitions. */
@@ -12,11 +14,6 @@ export enum HostedActivationPhase {
   LeavingExclusive = "LEAVING_EXCLUSIVE",
 }
 export enum HostedOriginKind { Ordinary = "ordinary" }
-export type HostedInstallation = {
-  readonly schemaVersion: 1; readonly installationId: string; readonly hostId: string;
-  readonly runtimeDirectory: string; readonly runtimeSha: string;
-  readonly runtimeManifestSha256: string; readonly inventorySha256: string;
-};
 export type HostedOrdinaryBirth = {
   readonly schemaVersion: 1; readonly installationId: string; readonly jobId: string;
   readonly jobRootDir: string; readonly workspacePath: string; readonly origin: HostedOriginKind.Ordinary;
@@ -36,6 +33,9 @@ export type HostedActivation = {
   readonly phase: HostedActivationPhase; readonly ordinaryOriginsSha256: string;
   readonly exclusiveEnrollmentSha256: string | null;
   readonly ordinaryStarts: readonly HostedOrdinaryReservation[];
+  /** Optional; present only after an installation SUCCESSOR was published. It selects (by digest) the content-addressed
+   * `installation-successors/<digest>.json` record. Absent means the original fixed installation/inventory records. */
+  readonly installationSelectionSha256?: string;
 };
 export type HostedOrdinaryStart = Omit<HostedOrdinaryBirth, "origin"> & {
   readonly activationGeneration: number; readonly bootId: string; readonly supervisorId: string;
@@ -69,13 +69,6 @@ function job(input: Record<string, unknown>): void {
 function unique(rows: readonly Record<string, unknown>[], keys: readonly string[]): void {
   for (const key of keys) if (new Set(rows.map(row => row[key])).size !== rows.length) invalid();
 }
-export function parseHostedInstallation(value: unknown): HostedInstallation {
-  const input = record(value, "schemaVersion,installationId,hostId,runtimeDirectory,runtimeSha,runtimeManifestSha256,inventorySha256");
-  base(input);
-  if (!id(input.hostId) || !path(input.runtimeDirectory) || typeof input.runtimeSha !== "string" ||
-      !/^[a-f0-9]{40}$/.test(input.runtimeSha) || !digest(input.runtimeManifestSha256) || !digest(input.inventorySha256)) invalid();
-  return Object.freeze({ ...input }) as HostedInstallation;
-}
 export function parseHostedOrdinaryBirth(value: unknown): HostedOrdinaryBirth {
   const input = record(value, "schemaVersion,installationId,jobId,jobRootDir,workspacePath,origin");
   job(input);
@@ -106,8 +99,11 @@ export function parseHostedOrdinaryStart(value: unknown): HostedOrdinaryStart {
   return Object.freeze({ ...input }) as HostedOrdinaryStart;
 }
 export function parseHostedActivation(value: unknown): HostedActivation {
-  const input = record(value, "schemaVersion,installationId,hostId,bootId,supervisorId,generation,phase,ordinaryOriginsSha256,exclusiveEnrollmentSha256,ordinaryStarts");
+  const selecting = !!value && typeof value === "object" && !Array.isArray(value) && "installationSelectionSha256" in value;
+  const input = record(value, "schemaVersion,installationId,hostId,bootId,supervisorId,generation,phase,ordinaryOriginsSha256,exclusiveEnrollmentSha256,ordinaryStarts" +
+    (selecting ? ",installationSelectionSha256" : ""));
   base(input);
+  if (selecting && !digest(input.installationSelectionSha256)) invalid();
   if (!id(input.hostId) || !id(input.bootId) || !id(input.supervisorId) || !generation(input.generation) ||
       !Object.values(HostedActivationPhase).includes(input.phase as HostedActivationPhase) ||
       !digest(input.ordinaryOriginsSha256) || (input.exclusiveEnrollmentSha256 !== null && !digest(input.exclusiveEnrollmentSha256)) ||
@@ -128,15 +124,34 @@ export function parseHostedActivation(value: unknown): HostedActivation {
 /** Structural publication guard only. Positive OS evidence remains mandatory.
  * Each mutation advances exactly once; crash recovery may publish only that
  * retained immediate successor, never reconstruct or discard reservations. */
-export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, evidence?: ScopedTerminationReceipt): void {
+export function assertHostedActivationSuccessor(before: HostedActivation, after: HostedActivation, evidence?: ScopedTerminationReceipt | ScopedProviderOnlyReceipt | ScopedOrdinaryReaderFinalReceipt): void {
   const prior = parseHostedActivation(before), next = parseHostedActivation(after);
   if (prior.installationId !== next.installationId || prior.hostId !== next.hostId ||
       next.generation !== prior.generation + 1 ||
       (prior.exclusiveEnrollmentSha256 !== null && prior.exclusiveEnrollmentSha256 !== next.exclusiveEnrollmentSha256)) invalid();
-  const receipt = evidence ? parseScopedReceipt(evidence) : null;
+  if (evidence!==undefined && (!evidence || evidence.schemaVersion!==1 && evidence.schemaVersion!==2 && evidence.schemaVersion!==3)) invalid();
+  const providerReceipt=evidence?.schemaVersion===2 ? parseScopedProviderOnlyReceipt(evidence):null;
+  const finalReaderReceipt=evidence?.schemaVersion===3 ? parseScopedOrdinaryReaderFinalReceipt(evidence):null;
+  if (finalReaderReceipt) assertOrdinaryReaderFinalSuccessor(prior,next,finalReaderReceipt);
+  const receipt = evidence?.schemaVersion===1 ? parseScopedReceipt(evidence) : null;
+  if (providerReceipt) {
+    const identity=providerReceipt.identity,parent=prior.ordinaryStarts.find(row=>row.startId===providerReceipt.parent.startId);
+    const provider=prior.ordinaryStarts.find(row=>row.startId===providerReceipt.provider.startId);
+    const nextProvider=next.ordinaryStarts.find(row=>row.startId===providerReceipt.provider.startId);
+    const exact=(row:HostedOrdinaryReservation|undefined,facts:ScopedProviderOnlyReceipt["parent"])=>row &&
+      row.unit===facts.unit && row.creatorId===facts.creatorId && row.originSha256===facts.originSha256 && row.generation===facts.generation;
+    if (prior.phase!==HostedActivationPhase.Ordinary || next.phase!==HostedActivationPhase.Ordinary ||
+        identity.installationId!==prior.installationId || identity.hostId!==prior.hostId || identity.bootId!==prior.bootId || identity.supervisorId!==prior.supervisorId ||
+        providerReceipt.publicationGeneration!==next.generation || !exact(parent,providerReceipt.parent) || !exact(provider,providerReceipt.provider) ||
+        parent!.state!==HostedCustodyReservationState.Reserved || provider!.state!==HostedCustodyReservationState.Reserved ||
+        nextProvider?.state!==HostedCustodyReservationState.Terminal ||
+        next.ordinaryStarts.length!==prior.ordinaryStarts.length || next.ordinaryOriginsSha256!==prior.ordinaryOriginsSha256) invalid();
+  }
   if (receipt && (receipt.operation.identity.installationId !== prior.installationId || receipt.operation.identity.hostId !== prior.hostId ||
       receipt.operation.identity.bootId !== prior.bootId || receipt.operation.identity.supervisorId !== prior.supervisorId)) invalid();
-  const authorized = new Map(receipt?.operation.members.map(m => [m.startId, m]) ?? []);
+  const authorized = new Map<string,{unit:string;reservationGeneration:number}>(receipt?.operation.members.map(m => [m.startId, m]) ?? []);
+  if (providerReceipt) authorized.set(providerReceipt.provider.startId,{unit:providerReceipt.provider.unit,reservationGeneration:providerReceipt.provider.generation});
+  if (finalReaderReceipt) authorized.set(finalReaderReceipt.reader.startId,{unit:finalReaderReceipt.reader.unit,reservationGeneration:finalReaderReceipt.reader.generation});
   const phaseChanged = prior.phase !== next.phase;
   const edges: Record<HostedActivationPhase, readonly HostedActivationPhase[]> = {
     CLOSED: [HostedActivationPhase.Ordinary, HostedActivationPhase.EnteringExclusive],
@@ -151,6 +166,13 @@ export function assertHostedActivationSuccessor(before: HostedActivation, after:
       prior.ordinaryStarts.some(row => row.state !== HostedCustodyReservationState.Terminal))) invalid();
   if (prior.ordinaryOriginsSha256 !== next.ordinaryOriginsSha256 &&
       (prior.phase !== HostedActivationPhase.Closed || next.phase !== HostedActivationPhase.Closed)) invalid();
+  // Selecting another installation record is the ONE successor transition: CLOSED to CLOSED, every start terminal, a new
+  // supervisor session, the origin catalog untouched, and never a removal of an earlier selection.
+  if (prior.installationSelectionSha256 !== next.installationSelectionSha256 &&
+      (next.installationSelectionSha256 === undefined || prior.phase !== HostedActivationPhase.Closed || next.phase !== HostedActivationPhase.Closed ||
+        !sessionChanged || prior.ordinaryOriginsSha256 !== next.ordinaryOriginsSha256 ||
+        prior.ordinaryStarts.some(row => row.state !== HostedCustodyReservationState.Terminal) ||
+        next.ordinaryStarts.length !== prior.ordinaryStarts.length)) invalid();
   if (prior.exclusiveEnrollmentSha256 !== next.exclusiveEnrollmentSha256 &&
       (prior.phase !== HostedActivationPhase.EnteringExclusive ||
         ![HostedActivationPhase.EnteringExclusive, HostedActivationPhase.Exclusive].includes(next.phase))) invalid();

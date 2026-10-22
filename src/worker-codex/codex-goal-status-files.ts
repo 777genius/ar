@@ -1,10 +1,17 @@
+import { gitReadBudgetBytes } from "./codex-goal-handoff-preservation-budget";
+import { WorkspaceChangedFilesWarning, boundedChangedFiles } from "./codex-goal-changed-files-report";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, open, readFile, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { parseMimoProxyFailureDetails, type MimoProxyFailure } from "@vioxen/subscription-runtime/provider-codex";
 import { readHostedForegroundResultRecord } from "./hosted-foreground-result";
 import { readHostedFdProfile } from "../provider-codex/app-server/adapters/hosted-fd-observation";
+import { captureManagedDependencyGitContext, runManagedDependencyGitBuffer } from "./managed-dependency-git";
+import { originalHostedProjectControlAllocationPathPresent } from "./hosted-project-control-native-allocation";
+import { defaultProjectControlGitPort } from "./application/project-control/adapters/host-command-adapters";
+import { parseCodexGoalAvailabilityFailure, type CodexGoalAvailabilityFailure } from "./application/codex-goal-availability-failure";
 
 const execFileAsync = promisify(execFile);
 const gitStatusTimeoutMs = 5_000;
@@ -16,6 +23,8 @@ export const CODEX_GOAL_RUNTIME_EVENT_MAX_READ_BYTES = 256 * 1024;
 export async function readCodexGoalResultSummary(path: string): Promise<{
   readonly status?: string;
   readonly reason?: string;
+  readonly proxyFailure?: MimoProxyFailure;
+  readonly availabilityFailure?: CodexGoalAvailabilityFailure;
   readonly foregroundOutput?: Readonly<{ unit: string; exitCode: number; stdout: string; stderr: string }>;
 }> {
   let governed = false;
@@ -25,12 +34,18 @@ export async function readCodexGoalResultSummary(path: string): Promise<{
     const parsed: unknown = record ? record.value : JSON.parse(await readFile(path, "utf8"));
     if (!isRecord(parsed)) return {};
     const foregroundOutput = record?.output;
+    const proxyFailure = parsed.status === "failed" || parsed.status === "partial" ? parseMimoProxyFailureDetails(parsed.details) : undefined;
+    const availabilityFailure = parsed.reason === "account_unavailable" &&
+      (parsed.status === "blocked" || parsed.status === "failed" || parsed.status === "partial")
+      ? parseCodexGoalAvailabilityFailure(parsed.details) : undefined;
     return {
       ...(typeof parsed.status === "string" ? { status: parsed.status } : {}),
       ...(typeof parsed.reason === "string"
         ? { reason: redactStatusText(parsed.reason) }
         : {}),
       ...(foregroundOutput ? { foregroundOutput } : {}),
+      ...(proxyFailure ? { proxyFailure } : {}),
+      ...(availabilityFailure ? { availabilityFailure } : {}),
     };
   } catch {
     if (governed) throw new Error("hosted_foreground_result_unresolved");
@@ -156,33 +171,58 @@ function isMissingFileError(error: unknown): boolean {
 export type CodexGoalWorkspaceStatus = {
   readonly exists?: boolean;
   readonly dirty?: boolean;
+  /** At most a bounded sample (see boundedChangedFiles); statuses are returned through size-limited responses. */
   readonly changedFiles?: readonly string[];
+  /** The exact number of changed paths, present only when `changedFiles` is a truncated sample. */
+  readonly changedFilesCount?: number;
   readonly warning?: string;
 };
 
 export async function gitWorkspaceStatus(
   path: string,
 ): Promise<CodexGoalWorkspaceStatus> {
+  // Original custody failures must escape the legacy catch, which otherwise
+  // turns a failed Git read into a misleading clean-workspace observation.
+  if (originalHostedProjectControlAllocationPathPresent(path)) {
+    const { stdout } = await defaultProjectControlGitPort.run({
+      args: ["-C", path, "status", "--porcelain", "--untracked-files=all"],
+      timeoutMs: gitStatusTimeoutMs,
+    });
+    return workspaceStatusFromOutput(stdout);
+  }
+  // Protected origin/path selection precedes the legacy catch. Missing purpose
+  // or governed read failure must never become a clean workspace observation.
+  const context = captureManagedDependencyGitContext(path);
+  if (context !== undefined) {
+    const { stdout } = await runManagedDependencyGitBuffer(context,
+      ["status", "--porcelain", "--untracked-files=all"], { timeoutMs: gitStatusTimeoutMs });
+    return workspaceStatusFromOutput(stdout.toString("utf8"));
+  }
   try {
     const { stdout } = await execFileAsync("git", [
+      "--no-optional-locks",
       "-C",
       path,
       "status",
       "--porcelain",
       "--untracked-files=all",
-    ], { timeout: gitStatusTimeoutMs });
-    const changedFiles = stdout
+    ], { timeout: gitStatusTimeoutMs, maxBuffer: gitReadBudgetBytes });
+    const reported = boundedChangedFiles(stdout
       .split(/\r?\n/)
       .filter((line) => line.trim().length > 0)
       .map((line) => statusPorcelainPath(line))
-      .filter((path) => path.length > 0)
-      .sort((left, right) => left.localeCompare(right));
+      .filter((path) => path.length > 0));
     return {
       exists: true,
-      dirty: changedFiles.length > 0,
-      changedFiles,
+      dirty: reported.count > 0,
+      changedFiles: reported.changedFiles,
+      ...(reported.truncated ? { changedFilesCount: reported.count } : {}),
     };
-  } catch {
+  } catch (error) {
+    // Output beyond the Git read budget proves a dirty workspace; it must not read as clean.
+    if (Object.getOwnPropertyDescriptor(error ?? {}, "code")?.value === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      return { exists: true, dirty: true, changedFiles: [], warning: WorkspaceChangedFilesWarning.OutputLimit };
+    }
     let exists = false;
     try {
       await access(path, constants.F_OK);
@@ -199,6 +239,14 @@ export async function gitWorkspaceStatus(
         : path + " workspace_missing",
     };
   }
+}
+
+function workspaceStatusFromOutput(stdout: string): CodexGoalWorkspaceStatus {
+  const changedFiles = stdout.split(/\r?\n/)
+    .filter(line => line.trim().length > 0)
+    .map(line => statusPorcelainPath(line)).filter(path => path.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+  return { exists: true, dirty: changedFiles.length > 0, changedFiles };
 }
 
 export async function logFileStatus(path: string): Promise<{

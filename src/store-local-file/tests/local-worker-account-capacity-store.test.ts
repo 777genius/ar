@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -445,6 +445,24 @@ describe("Local file worker account capacity store", () => {
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
+  });
+
+  it.each(["json", "record", "account", "claim"] as const)("strict reads preserve unreadable %s evidence", async fault => {
+    const rootDir = await tempRoot(), now = new Date("2026-06-01T02:00:00Z");
+    try {
+      const writer = new LocalFileWorkerAccountCapacityStore({ rootDir });
+      const state = writer.observe({ accountId: "account-a", observedAt: new Date("2026-06-01T00:00:00Z"),
+        capacity: { availability: "quota_exhausted", reason: "quota_limited", cooldownUntil: new Date("2026-06-01T01:00:00Z") } });
+      if (!state) throw Error("TEST persisted state missing");
+      const path = fault === "claim" ? state.recordId + ".recheck-claim.json" : state.recordId;
+      const before = fault === "json" || fault === "claim" ? "{invalid TEST json" : JSON.stringify(fault === "record" ? {} : {
+        ...JSON.parse(await readFile(path, "utf8")), accountId: "TEST-other-account",
+      });
+      await writeFile(path, before);
+      expect(() => new LocalFileWorkerAccountCapacityStore({ rootDir, strictReads: true }).read({ accountId: "account-a", now }))
+        .toThrow("worker_account_capacity_query_unreadable");
+      expect(await readFile(path, "utf8")).toBe(before);
+    } finally { await rm(rootDir, { recursive: true, force: true }); }
   });
 
   it("self-heals malformed account records", async () => {

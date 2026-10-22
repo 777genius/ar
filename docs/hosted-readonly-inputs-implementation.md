@@ -171,8 +171,11 @@ from hosted workers by existing `InaccessiblePaths`:
   retained evidence; a policy's digest alone does not supply that approval.
 - `codex-readonly-stages/<SHA256(runtimeDirectory)>.json`: closed record with
   `schemaVersion: 1`, `runtimeDirectory`, `runtimeSha`, `runtimeManifestSha256`.
-  The stage curator supplies it only after verifying the immutable deployed
-  stage and its manifest. Runtime derives its directory from its own module URL,
+  `runtimeManifestSha256` is the SHA-256 of the exact bytes of the admitted
+  `ordinary-qualification-source.json` (equal to the qualification candidate's
+  `sourceScopeSha256`). `hosted-runtime-stage-curator.ts` writes it create-once
+  after re-deriving that manifest (see `docs/hosted-runtime-issuers.md`).
+  Runtime derives its directory from its own module URL,
   never from job configuration or environment. A copied policy cannot create
   this independent qualification receipt.
 - `codex-readonly/<SHA256(jobId)>.json`: the decision's unchanged closed policy,
@@ -615,7 +618,11 @@ Reference: `agent-teams-ai/get-modular` at
 document SHA-256
 `ea54578ebe69fc410bf973b6112dcefc4ad7c163e563e0ee307cd7b5f8b8723d`.
 The local copy is evidence, not an independent source of authority. No upstream
-path or accepting ADR identity is inferred from the copy.
+path or accepting ADR identity is inferred from the copy. This is a historical
+checkpoint: the current reference (`4728b276b87378ca9d72a7be2b89a5fd49b97eea`,
+complete SHA-256 `859fbca1e8a0c61b6ae873bea0057735a55b80230100e6e73a74de22e123165a`)
+and the deltas since `6b31f20f` and `d6127e2d` are recorded in
+`retained-nonqualified-attempt.md`.
 
 Searched tracked docs, source, scripts and package metadata for Get Modular,
 Assembly, consumer-module/adoption references and the supplied pins. No existing
@@ -1351,3 +1358,25 @@ ORDINARY and the current exact grant digest. Managed identity takes priority;
 stop publishes CLOSED while fenced, requests OS stops after unlocking, retains
 reservations and cannot assert terminal custody or reopen admission. No new
 public composition or arbitrary mount option is introduced by this repair.
+
+### R Ready publication after preserving Maintenance
+
+The protected Ready gate authenticates the current private Maintenance idle
+before selecting an old R Consumer. A preserving Maintenance operation advances
+the owner epoch, so that original R attempt is intentionally stale against the
+current owner. The Maintenance reader joins the exact released owner and fenced
+original operation to the original R SourceClosed and freshly rereads creator,
+provider and installer discharge, baseline actors and native census. The release
+preflight also requires current v3 baseline continuity, the original custody
+binding, exact workspace/material/binding and unchanged protected records. It
+accepts only unrevoked Closed/Ready epochs with null or Terminal outer runtime
+and all provider reservations Terminal. It performs no owner or custody write;
+neither a null owner nor a Terminal status independently authorizes publication.
+
+Native qualification remains unproven for the causal R1 SourceClosed -> preserving
+Maintenance -> Closed-to-Ready -> R2 route. Required genuine Root controls are
+changed or foreign Maintenance idle, live provider descendants, and queued starts;
+each must refuse before Ready/R2 publication and preserve the current owner epoch
+and original custody. Existing pure owner-contract coverage supplies no physical
+Ready authority. This source repair adds no synthetic positive guard fixture and
+does not establish the separate ColdV2-to-Maintenance-to-first-R scenario.

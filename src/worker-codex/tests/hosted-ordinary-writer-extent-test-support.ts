@@ -27,7 +27,7 @@ import { observeHostedOrdinaryJobWriterAuthority } from "../hosted-ordinary-writ
 import { codexAuthJsonForAccount } from "./file-backend-codex-worker-test-support";
 
 type Context = {
-  fixture: { root: string; runtimeUnit: string; group: string; spawn: ReturnType<typeof vi.fn> };
+  fixture: { root: string; runtimeUnit: string; group: string; spawn: ReturnType<typeof vi.fn>; kernelMountInfoSnapshot: string };
   creator: () => HostedOrdinaryCreator;
   runtimeDirectory: string;
   read: (name: string) => Record<string, unknown>;
@@ -38,6 +38,9 @@ type Context = {
  * /tmp is overlay. Only the parent suite's finite proc/systemd facts are synthetic. */
 export function modernOrdinaryFixture(context: Context, sharedPublication = false, lifecycle?: HostedGoalLifecycleOperation) {
   const allocated = mkdtempSync("/dev/shm/TEST-ordinary-extent-"), jobId = "ordinary-job";
+  // Native FD readers and file readers consume the same private, captured Linux
+  // mount DATA while retaining real directory descriptors, devices and IDs.
+  context.fixture.kernelMountInfoSnapshot = join(context.fixture.root, "kernel-mountinfo.DATA");
   const jobRootDir = join(allocated, "jobs", jobId), workspacePath = join(jobRootDir, "workspace"), promptPath = join(jobRootDir, "prompt.md");
   try {
     mkdirSync(workspacePath, { recursive: true, mode: 0o700 });

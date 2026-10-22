@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": [
+      "node"
+    ]
+  },
+  "files": [
+    "./stage-current-h1-public.mts",
+    "./bootstrap-current-h1-public.mts",
+    "./run-current-h1-public.mts",
+    "./inspect-current-h1-public.mts",
+    "./send-current-h1-public.mts",
+    "./current-h1-public-transport.test.mts",
+    "./stage-current-h1-public.test.ts",
+    "./current-h1-scoped-guard.node-test.mts",
+    "./current-positive-public-transport.test.mts",
+    "./current-positive-scoped-guard.node-test.mts",
+    "./current-positive-stage-progress.node-test.mts",
+    "./bootstrap-current-positive-public.mts",
+    "./run-current-positive-public.mts",
+    "./inspect-current-positive-public.mts",
+    "./mount-fence.node-test.mts",
+    "./current-h1-mount-fence-data.node-test.mts",
+    "./current-h1-mount-fence.node-test.mts"
+  ]
+}

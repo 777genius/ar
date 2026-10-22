@@ -1,3 +1,4 @@
+import type { DependencyParentRecipeReader } from "../../../core/dependency-environment/dependency-parent-recipe-reader";
 import type { HostedOrdinaryProviderJobRoot } from "./hosted-ordinary-writer-extent";
 import { join } from "node:path";
 import { HostedMimoProfile } from "../../hosted-mimo-profile";
@@ -25,6 +26,7 @@ import { encodeHostedAppServerLaunchFrame } from "./hosted-app-server-launch-fra
 import { hostedReadonlyMountProperties, type HostedReadonlyMounts } from "./hosted-readonly-mounts";
 import { codexProviderEgressProfileEnvVar, CodexProviderEgressProfileId } from "../../codex-provider-egress-policy";
 import { assertHostedBaselineIdentity, isHostedContainment } from "./hosted-host-policy";
+import { AppServerProviderSetupStage, retainAppServerProviderSetupFailure } from "../domain/app-server-provider-setup-observation";
 
 const hostedSandboxKind = "hosted-codex-job";
 const managedLauncherNodePath = process.execPath;
@@ -183,7 +185,7 @@ export const spawnCodexAppServerProcess = Object.assign(function spawnCodexAppSe
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
   readonly storageContext?: OriginalProviderStorageContext;
-}, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object): CodexAppServerChildProcess {
+}, admittedMounts?: HostedReadonlyMounts, reservedSystemdUnit?: string, submission?: object, parentRecipeReader?: DependencyParentRecipeReader): CodexAppServerChildProcess {
   const contained = isHostedContainment(input.env);
   if (contained &&
       input.env[codexProviderEgressProfileEnvVar] === CodexProviderEgressProfileId.MimoTokenPlan) {
@@ -200,7 +202,7 @@ export const spawnCodexAppServerProcess = Object.assign(function spawnCodexAppSe
       codexAppServerProcessInvocation({ ...ordinaryInput, env: { ...ordinaryInput.env,
         SUBSCRIPTION_RUNTIME_JOB_ID: identity.jobId }, systemdUnit: unit,
         ...(identity.ordinaryJobRoot ? { ordinaryJobRoot: identity.ordinaryJobRoot } : {}) }),
-      (child, release) => releaseHostedOrdinaryProcess(child, release)));
+      (child, release) => releaseHostedOrdinaryProcess(child, release)), parentRecipeReader);
   }
   const invocation = codexAppServerProcessInvocation({
     command: input.command, args: input.args, cwd: input.cwd, env: input.env,
@@ -231,12 +233,12 @@ export const spawnCodexAppServerProcess = Object.assign(function spawnCodexAppSe
 /** Trusted worker composition captures established Ready history. The worker
  * executor separately brands this exact returned factory; accepting this port
  * as a public caller option is never sufficient for v2 admission. */
-export function admittedDependencyToolCodexProcessFactory(readyReader: DependencyToolReadyReader): CodexAppServerProcessFactory {
+export function admittedDependencyToolCodexProcessFactory(readyReader: DependencyToolReadyReader, parentRecipeReader?: DependencyParentRecipeReader): CodexAppServerProcessFactory {
   return input => submitHostedOrdinaryProcess(input, (unit, _identity, fence) => {
     const invocation = hostedDependencyProviderInvocation(fence, unit, input, readyReader);
     if (!invocation) throw new Error("hosted_dependency_tool_binding_required");
     return spawnInvocation(input, invocation, (child, release) => releaseHostedOrdinaryProcess(child, release));
-  });
+  }, parentRecipeReader);
 }
 
 function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
@@ -262,9 +264,14 @@ function spawnInvocation(input: { readonly cwd: string; readonly env: Readonly<R
     } catch (error) { abandonHostedDependencyToolInvocation(invocation); throw error; }
     hostedSystemdUnits.set(child, invocation.systemdUnit);
     const guard = hostedFdLaunch(child);
-    void guard.observe().then(() => retryHostedFenceAcquisition(() =>
-      finalRelease(child, (fence, revalidate) => guard.release(fence, invocation.stdinBootstrap!, false, revalidate)), guard.remainingSetupMs()))
-      .catch(() => { guard.invalidate(); invalidateHostedOrdinaryWait(child); signalCodexAppServerChildGroup(child, "SIGTERM"); });
+    let setupStage = AppServerProviderSetupStage.Observing;
+    void guard.observe().then(() => {
+      setupStage = AppServerProviderSetupStage.FinalRelease;
+      return retryHostedFenceAcquisition(() => finalRelease(child,
+        (fence, revalidate) => guard.release(fence, invocation.stdinBootstrap!, false, revalidate)), guard.remainingSetupMs()); })
+      .catch(error => {
+        try { retainAppServerProviderSetupFailure(child, guard.providerSetupFailureFact(setupStage, error)); } catch { /* Diagnostic only. */ }
+        guard.invalidate(); invalidateHostedOrdinaryWait(child); signalCodexAppServerChildGroup(child, "SIGTERM"); });
     return child;
   }
   const child = spawn(invocation.command, invocation.args, {

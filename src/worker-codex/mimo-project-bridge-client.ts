@@ -7,10 +7,10 @@ import { MimoProjectBridgeOperation, parseMimoProjectBridgeRequest, type MimoPro
 export type MimoProjectClientRoute = Readonly<{ projectId: string; workstreamId: string; host: string; machineId: string; socketDir: string }>;
 export interface MimoProjectClientTransport { request(request: MimoProjectBridgeRequest): Promise<unknown> }
 export type MimoProjectRemoteArgs = Readonly<{ mimoProjectId?: string; mimoWorkstreamId?: string; jobId?: string;
-  promptBody?: string; sourceCommit?: string; expectedSourceCommit?: string; modelBackend?: CodexModelBackend | undefined; reasoningEffort?: CodexReasoningEffort | undefined; thinking?: boolean | undefined;
+  promptBody?: string; sourceCommit?: string; expectedSourceCommit?: string; modelBackend?: CodexModelBackend | undefined; reasoningEffort?: CodexReasoningEffort | undefined; thinking?: boolean | undefined; ownedPaths?: readonly string[] | undefined;
   confirmCreate?: boolean; confirmRefill?: boolean; confirmStart?: boolean; confirmStop?: boolean }>;
 const identifier = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
-const remoteKeys = new Set(["mimoProjectId", "mimoWorkstreamId", "jobId", "promptBody", "sourceCommit", "expectedSourceCommit", "modelBackend", "reasoningEffort", "thinking", "confirmCreate", "confirmRefill", "confirmStart", "confirmStop", "startWorker"]);
+const remoteKeys = new Set(["mimoProjectId", "mimoWorkstreamId", "jobId", "promptBody", "sourceCommit", "expectedSourceCommit", "modelBackend", "reasoningEffort", "thinking", "ownedPaths", "confirmCreate", "confirmRefill", "confirmStart", "confirmStop", "startWorker"]);
 export function parseMimoProjectClientRoutes(value: unknown): readonly MimoProjectClientRoute[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("mimo_project_client_config_invalid");
   const record = value as Record<string, unknown>;
@@ -56,12 +56,12 @@ async function defaultTransport(route: MimoProjectClientRoute): Promise<MimoProj
 export async function delegateMimoProjectOperation(operation: MimoProjectBridgeOperation, args: MimoProjectRemoteArgs,
   deps: { routes?: readonly MimoProjectClientRoute[]; transport?: (route: MimoProjectClientRoute) => Promise<MimoProjectClientTransport> } = {}): Promise<Readonly<Record<string, unknown>> | undefined> {
   if (args.mimoProjectId === undefined && args.mimoWorkstreamId === undefined) {
-    if (args.thinking !== undefined) throw new Error("mimo_project_remote_backend_conflict");
+    if (args.thinking !== undefined || args.ownedPaths !== undefined) throw new Error("mimo_project_remote_backend_conflict");
     return undefined;
   }
   if (!args.mimoProjectId || !args.mimoWorkstreamId || !args.jobId) throw new Error("mimo_project_remote_identity_required");
   for (const [key, value] of Object.entries(args)) if (value !== undefined && !remoteKeys.has(key)) throw new Error("mimo_project_remote_override_denied");
-  if ((args.reasoningEffort !== undefined || args.thinking !== undefined) && operation !== MimoProjectBridgeOperation.Create) throw new Error("mimo_project_remote_override_denied");
+  if ((args.reasoningEffort !== undefined || args.thinking !== undefined || args.ownedPaths !== undefined) && operation !== MimoProjectBridgeOperation.Create) throw new Error("mimo_project_remote_override_denied");
   if (args.modelBackend !== undefined && args.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan) throw new Error("mimo_project_remote_backend_conflict");
   if ((operation === MimoProjectBridgeOperation.Create && args.confirmCreate !== true && args.confirmRefill !== true) ||
       (operation === MimoProjectBridgeOperation.Start && args.confirmStart !== true) ||
@@ -73,7 +73,8 @@ export async function delegateMimoProjectOperation(operation: MimoProjectBridgeO
     projectId: route.projectId, workstreamId: route.workstreamId, operation, jobId: args.jobId,
     ...(operation === MimoProjectBridgeOperation.Create ? { prompt: args.promptBody, sourceCommit: args.sourceCommit ?? args.expectedSourceCommit,
       ...(args.reasoningEffort === undefined ? {} : { reasoningEffort: args.reasoningEffort }),
-      ...(args.thinking === undefined ? {} : { thinking: args.thinking }) } : {}) });
+      ...(args.thinking === undefined ? {} : { thinking: args.thinking }),
+      ...(args.ownedPaths === undefined ? {} : { ownedPaths: args.ownedPaths }) } : {}) });
   const response = await (await (deps.transport ?? defaultTransport)(route)).request(request);
   if (!response || typeof response !== "object" || Array.isArray(response)) throw new Error("mimo_project_remote_response_invalid");
   const record = response as Readonly<Record<string, unknown>>;

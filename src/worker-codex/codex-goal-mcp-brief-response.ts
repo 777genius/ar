@@ -1,3 +1,4 @@
+import { WorkspaceChangedFilesWarning } from "./codex-goal-changed-files-report";
 import { createHash } from "node:crypto";
 import { boundCodexGoalBriefCompactMcpEnvelope } from "./codex-goal-mcp-compact-bounds";
 import { CodexGoalBriefDetail } from "./codex-goal-mcp-inputs";
@@ -23,7 +24,7 @@ const briefKeys = [
   "handoffManifestSha256", "handoffArtifactError", "activeWriterRisk",
   "activeWriterRiskReasons", "isStale", "silentStale", "heartbeatOnlyNoOutput",
   "progressStatus", "progressResultStatus", "progressResultReason", "progressAttemptCount",
-  "progressCurrentAccount", "currentAccount", "lastFailureReason", "changedFiles",
+  "progressCurrentAccount", "currentAccount", "lastFailureReason", "changedFiles", "changedFilesCount",
   "safeToContinue", "hasAvailableAccount", "availableDedupedAccounts",
   "needsHumanRelogin", "invalidAccounts", "duplicateAccounts", "lifecycleMarkers",
   "lifecycleMarkerTypes", "maintenancePaused", "capacityBlockedAccounts",
@@ -31,13 +32,13 @@ const briefKeys = [
 ] as const;
 
 const statusKeys = [
-  "tmuxAlive", "resultExists", "resultStatus", "resultReason", "workspaceExists",
+  "tmuxAlive", "resultExists", "resultStatus", "resultReason", "resultProxyFailure", "resultAvailabilityFailure", "workspaceExists",
   "workspaceDirty", "changedFiles", "logExists", "progressExists",
   "progressStatus", "progressProcessAlive", "appServerProcessAlive",
   "progressResultStatus", "progressResultReason", "progressAttemptCount",
   "progressCurrentAccount", "runtimeEventsExists",
   "lastRuntimeEvent", "lastRuntimeEventLevel", "recommendedAction", "warnings",
-  "dirtyFileCount", "dirtyFilesCount",
+  "dirtyFileCount", "dirtyFilesCount", "changedFilesCount",
 ] as const;
 
 const workerHealthKeys = [
@@ -66,14 +67,18 @@ function pick(source: JsonObject, keys: readonly string[]): Record<string, unkno
 }
 
 function withChangedFileCounts(brief: Record<string, unknown>, status: Record<string, unknown>): void {
+  // A listing over the Git read budget has no paths and no count: the counters stay absent, not zero.
+  if (Array.isArray(status.warnings) && status.warnings.includes(WorkspaceChangedFilesWarning.OutputLimit)) return;
   const briefChangedFiles = brief.changedFiles;
   const statusChangedFiles = status.changedFiles;
   if (Array.isArray(briefChangedFiles) && brief.changedFileCount === undefined) {
-    brief.changedFileCount = briefChangedFiles.length;
+    brief.changedFileCount = typeof brief.changedFilesCount === "number" ? brief.changedFilesCount : briefChangedFiles.length;
   }
   if (Array.isArray(statusChangedFiles)) {
-    if (status.changedFileCount === undefined) status.changedFileCount = statusChangedFiles.length;
-    if (status.dirtyFileCount === undefined) status.dirtyFileCount = statusChangedFiles.length;
+    // A truncated sample carries the exact count next to it.
+    const exact = typeof status.changedFilesCount === "number" ? status.changedFilesCount : statusChangedFiles.length;
+    if (status.changedFileCount === undefined) status.changedFileCount = exact;
+    if (status.dirtyFileCount === undefined) status.dirtyFileCount = exact;
   }
 }
 

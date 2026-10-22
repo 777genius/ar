@@ -1,6 +1,7 @@
 import { delegateMimoProjectOperation } from "../mimo-project-bridge-client";
 import { MimoProjectBridgeOperation } from "../hosted-mimo-project-bridge-contract";
 import { collectRegisteredCodexGoalJobStatus } from "./codex-goal-registered-job-observation";
+import { jobRetirementAnswer, observeJobRetirement } from "../job-retirement/job-retirement-records";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -188,10 +189,10 @@ export async function getCodexGoalStatusByIdUseCase(
   const remote = await delegateMimoProjectOperation(MimoProjectBridgeOperation.Status, args);
   if (remote !== undefined) return remote;
   const registryRootDir = registryRootFromInput(args);
-  const manifest = await readCodexGoalJob({
-    registryRootDir,
-    jobId: requiredRawString(args.jobId, "jobId"),
-  });
+  const jobId = requiredRawString(args.jobId, "jobId");
+  const retirement = observeJobRetirement(registryRootDir, jobId);
+  if (retirement) return { ok: true, registryRootDir, jobId, ...jobRetirementAnswer(retirement) };
+  const manifest = await readCodexGoalJob({ registryRootDir, jobId });
   const launch = await goalLaunchInput(codexGoalJobToArgs(manifest));
   const status = await collectRegisteredCodexGoalJobStatus({ registryRootDir, launch });
   return {

@@ -53,10 +53,12 @@ type TargetInput = {
 // Exact native containers, not a dot-directory or arbitrary-name exemption:
 // broker authority, jobs' durable handoffs, consumed-ledger adapter/lock,
 // project integration archive custody, native retirement receipts, and runtime state.
-const registryInfrastructure = new Set([
+/** Registry directories that are not job registrations. */
+export const codexGoalRegistryInfrastructureEntries: ReadonlySet<string> = new Set([
   ".project-authority", ".project-control", "durable-handoffs", "consumed-output-ledger",
   ".consumed-output-ledger-mutation-locks", "archives", "state", ".run-events",
 ]);
+const registryInfrastructure = codexGoalRegistryInfrastructureEntries;
 
 function sameOwnedPaths(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
   return Boolean(left?.length && right?.length && isDeepStrictEqual([...left].sort(), [...right].sort()) &&
@@ -550,7 +552,7 @@ export async function assertAdmissionRegistryComplete(input: TargetInput & {
     }
     const manifestStat = await lstat(manifestPath);
     if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error(`registry manifest not regular: ${entry.name}`);
-    const manifest = await readCodexGoalJob({ registryRootDir: input.registryRootDir, jobId: entry.name });
+    const manifest = await readCodexGoalJob({ registryRootDir: input.registryRootDir, jobId: entry.name, includeRetired: true });
     const summaries = input.summaries.filter((summary) => summary.jobId === entry.name);
     if (manifest.jobId !== entry.name || summaries.length !== 1 ||
       resolve(summaries[0]!.manifestPath) !== resolve(manifestPath) ||

@@ -1,9 +1,11 @@
+import { assertOriginalProtectedBirthPublicationPathsCurrent, publishOriginalProtectedBirthManifest } from "./protected-job-birth";
 import { resolveCodexGoalJobRegistryRoot, type CodexGoalJobRegistryInput } from "./codex-goal-job-registry-paths";
 export { defaultCodexGoalJobRegistryRoot, resolveCodexGoalJobRegistryRoot, type CodexGoalJobRegistryInput } from "./codex-goal-job-registry-paths";
+import { assertCodexGoalJobNotRetired, assertCodexGoalRegistryNotRetiring } from "./job-retirement/job-retirement-records";
 import { CodexModelBackend } from "@vioxen/subscription-runtime/provider-codex";
 import { assertCodexGoalStorageBindingUnchanged, assertCodexGoalStorageTransportSupported, parseCodexGoalStorageData } from "./application/codex-goal-storage-data";
 import { optionalWorkerMode } from "./project-control-worker-mode";
-import { childConfigFromRecord } from "./child-execution-confinement";
+import { goalExecutionConfigFromRecord } from "./goal-execution-config";
 import { createHash } from "node:crypto";
 import { initializeControllerStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { publishCodexGoalJobWithProtectedBirth, type ProtectedCodexGoalJobBirthPreparation } from "./protected-job-birth";
@@ -191,10 +193,7 @@ export async function listCodexGoalJobs(
       .filter((entry) => entry.isDirectory())
       .map(async (entry) => {
         try {
-          const manifest = await readCodexGoalJob({
-            registryRootDir,
-            jobId: entry.name,
-          });
+          const manifest = await readCodexGoalJob({ registryRootDir, jobId: entry.name, includeRetired: true });
           return summarizeCodexGoalJob(manifest, registryRootDir);
         } catch {
           return null;
@@ -206,13 +205,16 @@ export async function listCodexGoalJobs(
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
+/** Refuses a closed or retired job unless `includeRetired`, which only read-only projections may pass. */
 export async function readCodexGoalJob(input: {
   readonly registryRootDir?: string;
   readonly jobId: string;
   readonly cwd?: string;
+  readonly includeRetired?: true;
 }): Promise<CodexGoalJobManifest> {
   const registryRootDir = resolveCodexGoalJobRegistryRoot(input);
   const path = codexGoalJobManifestPath({ registryRootDir, jobId: input.jobId });
+  if (input.includeRetired !== true) assertCodexGoalJobNotRetired(registryRootDir, input.jobId);
   return parseStoredCodexGoalJobManifest(
     JSON.parse(await readFile(path, "utf8")),
   );
@@ -258,7 +260,9 @@ export async function createCodexGoalJob(input: {
   if (existedBeforeAdmission && !input.overwrite) {
     throw codexGoalJobManifestAlreadyExists(path);
   }
+  assertCodexGoalRegistryNotRetiring(registryRootDir);
   if (existedBeforeAdmission) {
+    assertCodexGoalJobNotRetired(registryRootDir, manifest.jobId);
     const previous: unknown = JSON.parse(await readFile(path, "utf8"));
     assertCodexGoalStorageBindingUnchanged(previous, manifest);
     if (!previous || typeof previous !== "object" ||
@@ -270,6 +274,7 @@ export async function createCodexGoalJob(input: {
     registryRootDir,
     effect: async assertPublicationCurrent => {
       assertPublicationCurrent([join(registryRootDir, manifest.jobId), path], manifest.jobRootDir);
+      if (existedBeforeAdmission) assertCodexGoalJobNotRetired(registryRootDir, manifest.jobId); else assertCodexGoalRegistryNotRetiring(registryRootDir);
       if ((await pathExists(path)) && !existedBeforeAdmission) {
         throw codexGoalJobManifestAlreadyExists(path);
       }
@@ -291,13 +296,14 @@ export async function createCodexGoalJob(input: {
         );
         try {
           assertPublicationCurrent([join(registryRootDir, manifest.jobId)]);
+          assertOriginalProtectedBirthPublicationPathsCurrent([join(registryRootDir, manifest.jobId)]);
           await mkdir(join(registryRootDir, manifest.jobId), {
             recursive: true,
             mode: 0o700,
           });
           await custodyCertification?.revalidate();
           assertPublicationCurrent([path]);
-          await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
+          if (!publishOriginalProtectedBirthManifest(path, manifest)) await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
             encoding: "utf8",
             mode: 0o600,
             flag: input.overwrite ? "w" : "wx",
@@ -475,7 +481,7 @@ export function codexGoalJobToArgs(
     appServerStartupTimeoutMs: manifest.appServerStartupTimeoutMs,
     staleLockMs: manifest.staleLockMs,
     maxAccountCycles: manifest.maxAccountCycles,
-    ...childConfigFromRecord(manifest as unknown as Readonly<Record<string, unknown>>),
+    ...goalExecutionConfigFromRecord(manifest as unknown as Readonly<Record<string, unknown>>),
     editMode: manifest.editMode,
     providerSandboxMode: manifest.providerSandboxMode,
     accessBoundary: manifest.accessBoundary,
@@ -652,7 +658,7 @@ function parseCodexGoalJobManifestValue(
     ),
     ...optionalPositiveIntegerProperty(value.staleLockMs, "staleLockMs"),
     ...optionalPositiveIntegerProperty(value.maxAccountCycles, "maxAccountCycles"),
-    ...childConfigFromRecord(value),
+    ...goalExecutionConfigFromRecord(value),
     ...(editMode === undefined ? {} : { editMode }),
     ...(providerSandboxMode === undefined ? {} : { providerSandboxMode }),
     ...(accessBoundary === undefined ? {} : { accessBoundary }),

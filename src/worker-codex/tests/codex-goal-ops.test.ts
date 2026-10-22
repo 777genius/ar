@@ -563,7 +563,7 @@ describe("codex goal ops", () => {
     await execFileAsync("git", ["add", "tracked.txt"], {
       cwd: fixture.config.workspacePath,
     });
-    await execFileAsync("git", ["commit", "-m", "test fixture"], {
+    await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", "commit", "-m", "test fixture"], {
       cwd: fixture.config.workspacePath,
     });
     await writeFile(join(fixture.config.workspacePath, "tracked.txt"), "after\n");

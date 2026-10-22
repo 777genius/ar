@@ -194,9 +194,12 @@ export class FileBackendCodexSessionSeeder {
     return true;
   }
 
-  async exportAuthJsonFileQuietly(context: "prewarm" | "run"): Promise<void> {
+  async exportAuthJsonFileQuietly(context: "prewarm" | "run", requireAcknowledgement = false): Promise<void> {
     this.options.assertProviderAdmission?.();
-    if (this.options.shouldExportAuth?.() === false) return;
+    if (this.options.shouldExportAuth?.() === false) {
+      if (requireAcknowledgement) throw new Error("codex_auth_path_export_failed");
+      return;
+    }
     if (!this.sourceWriteback || this.sourceBytes === null) return;
     try {
       const session = await this.options.sessionStore.read({
@@ -204,7 +207,7 @@ export class FileBackendCodexSessionSeeder {
         expectedProviderId: "codex",
         purpose: "health-check",
       });
-      if (!session) return;
+      if (!session) { if (requireAcknowledgement) throw new Error("codex_auth_path_export_failed"); return; }
       const authJsonBytes = codexAuthJsonFromArtifact(session.artifact);
       validateCodexAuthJsonBytes({ authJsonBytes });
       if (this.writebackExpected === null) {
@@ -217,7 +220,10 @@ export class FileBackendCodexSessionSeeder {
         source: this.sourceBytes,
         expected: this.writebackExpected,
         next: authJsonBytes,
-      }))) return;
+      }))) {
+        if (requireAcknowledgement && authJsonBytes !== this.importedSessionBytes) throw new Error("codex_auth_path_export_failed");
+        return;
+      }
       this.writebackExpected = authJsonBytes;
       this.importedSessionBytes = authJsonBytes;
       this.importedSeedFingerprint = hashText(authJsonBytes);

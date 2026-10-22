@@ -205,6 +205,11 @@ export class QualificationChild {
     }
     qualificationHeld();
   }
+  assertLiveOriginal(): void {
+    if (this.closed || this.failed || !this.original) qualificationHeld();
+    this.association();
+    if (collectUnitShow(this.unit).MainPID === "0") qualificationHeld();
+  }
   private association(): void {
     const original = this.original; if (!original) qualificationHeld();
     if (readFileSync("/etc/machine-id", "utf8").trim() !== original.hostId || collectBootId() !== original.bootId) qualificationHeld();
@@ -262,13 +267,10 @@ type QualifiedCell = Readonly<{ operation: OrdinaryInstallationOperation; candid
 const qualified = new WeakMap<QualifiedOrdinaryLauncherPair, QualifiedCell>();
 // Keep failed original handles/streams reachable even after the awaited work rejects.
 const attempts = new Map<string, QualificationChild>();
-export function qualificationCandidate(candidate: OrdinaryLauncherCandidate, prefix = ""): Buffer {
-  if (!/^[a-f0-9]{40}$/.test(candidate.runtimeSha) || [candidate.runtimeManifestSha256, candidate.launcherSha256,
-    candidate.codecSha256, candidate.profileSha256, candidate.sourceScopeSha256].some(d => !digest.test(d))) qualificationHeld();
-  canonical(prefix + candidate.candidateArtifactPath);
-  const source = qualificationRead(prefix + candidate.candidateArtifactPath + "/ordinary-qualification-source.json");
-  if (qualificationSha(source) !== candidate.sourceScopeSha256) qualificationHeld();
-  const manifest = qualificationObject(qualificationJson(source), "schemaVersion,files");
+/** Finite closed-source manifest: every listed file is digest-bound and every module this role loads must be listed. `read` is the
+ * only injected edge; ownership/TOCTOU trust stays in `qualificationRead`. */
+export function admitQualificationSourceFiles(parsed: unknown, read: (artifactRelativePath: string) => Buffer): void {
+  const manifest = qualificationObject(parsed, "schemaVersion,files");
   if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.files) || manifest.files.length < 7 || manifest.files.length > 512) qualificationHeld();
   const seen = new Set<string>();
   for (const value of manifest.files) {
@@ -276,15 +278,27 @@ export function qualificationCandidate(candidate: OrdinaryLauncherCandidate, pre
     if (typeof file.path !== "string" || !/^(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/.test(file.path) ||
         file.path.split("/").some(p => p === "." || p === "..") || typeof file.sha256 !== "string" || !digest.test(file.sha256) || seen.has(file.path)) qualificationHeld();
     seen.add(file.path);
-    if (qualificationSha(qualificationRead(prefix + join(candidate.candidateArtifactPath, file.path), 32 * 1024 * 1024)) !== file.sha256) qualificationHeld();
+    if (qualificationSha(read(file.path)) !== file.sha256) qualificationHeld();
   }
-  for (const required of ["dist/worker-codex/hosted-ordinary-installation-qualification.js", "dist/worker-codex/hosted-ordinary-installation-qualification-guest.js",
-    "dist/worker-codex/hosted-installation-activation.js", "dist/worker-codex/hosted-ordinary-installation-census.js",
-    "dist/core/host-infrastructure/host-inventory.js", "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js",
-    ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-prelude", "hosted-process-activation", "hosted-process-descriptors",
-      "hosted-dependency-tool-plan", "hosted-blocking-output", "managed-provider-scratch-environment",
-      "system-bus-infrastructure", "systemd-service-arrays"].map(name => "dist/provider-codex/app-server/adapters/" + name + ".js"),
-    ...fixedCopiedCohort.map(path => "host-integration/" + path)]) if (!seen.has(required)) qualificationHeld();
+  for (const required of qualificationRequiredArtifacts) if (!seen.has(required)) qualificationHeld();
+}
+// Current-main integration: the retention checkpoint adds history.js and host-installation-successor.js; current main's own
+// hosted-blocking-output.js and managed-provider-scratch-environment.js stay required.
+export const qualificationRequiredArtifacts: readonly string[] = Object.freeze(["dist/worker-codex/hosted-ordinary-installation-qualification.js", "dist/worker-codex/hosted-ordinary-installation-qualification-guest.js",
+  "dist/worker-codex/hosted-installation-activation.js", "dist/worker-codex/hosted-ordinary-installation-census.js", "dist/worker-codex/hosted-ordinary-installation-history.js",
+  "dist/core/host-infrastructure/host-inventory.js", "dist/core/host-infrastructure/host-installation-successor.js", "dist/provider-codex/app-server/adapters/hosted-app-server-launcher.js",
+  ...["hosted-fd-launch", "hosted-fd-child", "hosted-fd-observation", "hosted-fd-unit-lifecycle", "hosted-fd-unit-policy", "hosted-fd-prelude", "hosted-process-activation", "hosted-process-descriptors",
+    "hosted-dependency-tool-plan", "hosted-blocking-output", "managed-provider-scratch-environment",
+    "system-bus-infrastructure", "systemd-service-arrays", "elf-closure"].map(name => "dist/provider-codex/app-server/adapters/" + name + ".js"),
+  ...["hosted-ordinary-installation-source-scope", "hosted-runtime-stage-curator", "hosted-fd-collector-profile-issuer", "hosted-runtime-issuer-cli"].map(name => "dist/worker-codex/" + name + ".js"),
+  ...fixedCopiedCohort.map(path => "host-integration/" + path)]);
+export function qualificationCandidate(candidate: OrdinaryLauncherCandidate, prefix = ""): Buffer {
+  if (!/^[a-f0-9]{40}$/.test(candidate.runtimeSha) || [candidate.runtimeManifestSha256, candidate.launcherSha256,
+    candidate.codecSha256, candidate.profileSha256, candidate.sourceScopeSha256].some(d => !digest.test(d))) qualificationHeld();
+  canonical(prefix + candidate.candidateArtifactPath);
+  const source = qualificationRead(prefix + candidate.candidateArtifactPath + "/ordinary-qualification-source.json");
+  if (qualificationSha(source) !== candidate.sourceScopeSha256) qualificationHeld();
+  admitQualificationSourceFiles(qualificationJson(source), (path) => qualificationRead(prefix + join(candidate.candidateArtifactPath, path), 32 * 1024 * 1024));
   for (const [name, sha] of [["launch.mjs", candidate.launcherSha256], ["host-inventory-codec.cjs", candidate.codecSha256]]) {
     if (qualificationSha(qualificationRead(prefix + join(candidate.candidateArtifactPath, "host-integration/managed-launcher", name!))) !== sha) qualificationHeld();
   }

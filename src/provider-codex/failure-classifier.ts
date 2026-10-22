@@ -1,13 +1,20 @@
+import { AgentRuntimeFailureCode } from "@vioxen/subscription-runtime/core";
+import { appServerSessionCleanupFacts, AppServerCleanupDiagnosticCode } from "./app-server/application/app-server-session-cleanup-error";
+import { AppServerProcessCleanupError, AppServerProcessCleanupUnresolvedError } from "./app-server/application/app-server-process-stopper";
+import { AppServerOutputValidationError, AppServerOutputValidationStage, AppServerOutputValidationCode } from "./app-server/application/app-server-output-validation-error";
 import { ChildLifetimeError } from "@vioxen/subscription-runtime/core";
 import { AppServerUsageError } from "./app-server/domain/app-server-usage-error";
+import { codexStructuredOutputFailureDetails } from "./codex-structured-output-schema";
 import { AppServerTurnCheckpointError } from "./app-server/application/app-server-turn-checkpoint";
-import type { ProviderFailure } from "@vioxen/subscription-runtime/core";
+import type { ProviderFailure, ProviderFailureCode } from "@vioxen/subscription-runtime/core";
 import { classifyCodexRuntimeFailure } from "./codex-cli-domain";
 import { CodexAppServerTurnError } from "./app-server/application/app-server-client";
 import { CodexAppServerThreadForkError } from "./app-server/application/app-server-thread-fork-error";
-import { codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
-import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
-import { isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
+import { CodexAppServerProviderError, CodexAppServerErrorKind, codexAppServerBudgetExceededError } from "./app-server/domain/app-server-errors";
+import { CodexModelUnavailableError, isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
+import { CodexAppServerRateLimitsRejectedError, isCodexAppServerRateLimitsRejectedError } from "./app-server/application/app-server-rate-limits-monitor";
+import { appServerLaunchStderrCauseFact } from "./app-server/application/app-server-launch-stderr";
+import { appServerProviderSetupCauseFact } from "./app-server/domain/app-server-provider-setup-observation";
 
 export function classifyCodexFailure(error: unknown): ProviderFailure {
   const seen = new Set<Error>();
@@ -39,6 +46,15 @@ export function classifyCodexFailure(error: unknown): ProviderFailure {
   ) {
     return classifyCodexFailure(error.cause);
   }
+  if (error instanceof AppServerOutputValidationError) return {
+    code: "unknown_runtime_failure", retryable: true, reconnectRequired: false,
+    safeMessage: "Codex completed output did not pass host validation.",
+    details: { rawCause: "codex_goal_completed_output_rejected",
+      outputValidationStage: Object.values(AppServerOutputValidationStage).includes(error.stage)
+        ? error.stage : AppServerOutputValidationStage.Unknown,
+      outputValidationCode: Object.values(AppServerOutputValidationCode).includes(error.validationCode)
+        ? error.validationCode : AppServerOutputValidationCode.Unknown },
+  };
   if (
     isCodexAppServerRateLimitsRejectedError(error) &&
     error.reason === "quota_limited"
@@ -198,6 +214,44 @@ function codexFailureDetails(
   error: unknown,
   message: string,
 ): Readonly<Record<string, string>> | undefined {
+  const cleanup = appServerSessionCleanupFacts(error);
+  if (cleanup) {
+    let primaryCode: ProviderFailureCode = AgentRuntimeFailureCode.UnknownRuntimeFailure;
+    let cleanupCode = AppServerCleanupDiagnosticCode.Unknown;
+    const primaryDetails: Record<string, string> = {};
+    // Optional projection must not replace the original fatal failure, even for hostile values.
+    try {
+      const primary = cleanup.primary;
+      const prototype = typeof primary === "object" && primary !== null ? Object.getPrototypeOf(primary) : null;
+      const own = (key: string): unknown => Object.getOwnPropertyDescriptor(primary, key)?.value;
+      // Only direct typed identities: no new message parsing, cause unwrapping or generic aggregate recursion.
+      if (prototype === AppServerOutputValidationError.prototype) {
+        const stage = own("stage"); const code = own("validationCode");
+        primaryDetails.outputValidationStage = Object.values(AppServerOutputValidationStage).includes(stage as AppServerOutputValidationStage)
+          ? stage as AppServerOutputValidationStage : AppServerOutputValidationStage.Unknown;
+        primaryDetails.outputValidationCode = Object.values(AppServerOutputValidationCode).includes(code as AppServerOutputValidationCode)
+          ? code as AppServerOutputValidationCode : AppServerOutputValidationCode.Unknown;
+      } else if (prototype === ChildLifetimeError.prototype ||
+          (prototype === CodexAppServerProviderError.prototype && own("kind") === CodexAppServerErrorKind.SessionBudgetExceeded)) {
+        primaryCode = AgentRuntimeFailureCode.BudgetExceeded;
+      } else if (prototype === CodexModelUnavailableError.prototype) {
+        primaryCode = AgentRuntimeFailureCode.ModelUnavailable;
+      } else if (prototype === CodexAppServerRateLimitsRejectedError.prototype && own("reason") === "quota_limited") {
+        primaryCode = AgentRuntimeFailureCode.QuotaLimited;
+      }
+    } catch { /* Unknown primary diagnostics leave the fatal failure unchanged. */ }
+    try {
+      const prototype = typeof cleanup.cleanup === "object" && cleanup.cleanup !== null
+        ? Object.getPrototypeOf(cleanup.cleanup) : null;
+      if (prototype === AppServerProcessCleanupUnresolvedError.prototype) {
+        cleanupCode = AppServerCleanupDiagnosticCode.OwnershipUnverified;
+      } else if (prototype === AppServerProcessCleanupError.prototype) {
+        cleanupCode = AppServerCleanupDiagnosticCode.ProcessCleanupFailed;
+      }
+    } catch { /* Diagnostics cannot change classification or cleanup blocking. */ }
+    return { rawCause: `codex_app_server_${cleanup.phase}_cleanup_failed`, appServerCleanupPhase: cleanup.phase,
+      appServerPrimaryFailureCode: primaryCode, appServerCleanupFailureCode: cleanupCode, ...primaryDetails };
+  }
   if (error instanceof CodexAppServerThreadForkError) {
     return {
       sourceThreadUnavailable: String(error.sourceThreadUnavailable),
@@ -205,6 +259,7 @@ function codexFailureDetails(
   }
   const details: Record<string, string> =
     error instanceof CodexAppServerTurnError ? { ...error.details() } : {};
+  Object.assign(details, codexStructuredOutputFailureDetails(error));
   const process = processFailureLike(error);
   if (process?.exitCode !== undefined) {
     details.exitCode = String(process.exitCode);
@@ -228,7 +283,13 @@ function codexFailureDetails(
     details.stderrTail = parsed.stderrTail;
   }
   if (message.trim()) {
-    details.rawCause = safeTail(message);
+    const factHop = (source: unknown): string | undefined =>
+      appServerProviderSetupCauseFact(source) ?? appServerLaunchStderrCauseFact(source);
+    // The turn wrapper adds one hop: its own cause is the carrier of the
+    // launch fact, so one more own-data hop stays inside the closed lookup.
+    const launchFact = factHop(error) ??
+      (error instanceof CodexAppServerTurnError ? factHop(error.cause) : undefined);
+    details.rawCause = safeTail(launchFact === undefined ? message : `${message} <- ${launchFact}`);
   }
 
   return Object.keys(details).length === 0 ? undefined : details;
@@ -286,4 +347,21 @@ function safeTail(value: string): string {
   // shrink an oversized secret-bearing message or change a multiline secret
   // before the store's exact-secret redactor sees it.
   return value.length > 1000 ? "[redacted:oversized-provider-detail]" : value;
+}
+
+export function codexFinishReasonForFailure(
+  code: ProviderFailure["code"],
+):
+  | "completed"
+  | "waiting_for_input"
+  | "max_turns"
+  | "cancelled"
+  | "timeout"
+  | "budget_exceeded"
+  | "provider_error" {
+  if (code === "task_cancelled") return "cancelled";
+  if (code === "task_timeout") return "timeout";
+  if (code === "goal_slice_exhausted") return "max_turns";
+  if (code === "budget_exceeded") return "budget_exceeded";
+  return "provider_error";
 }

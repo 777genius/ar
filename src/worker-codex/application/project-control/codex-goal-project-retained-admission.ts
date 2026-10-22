@@ -9,6 +9,7 @@ import {
   type ProjectDebtItem,
 } from "@vioxen/subscription-runtime/worker-core";
 import { readCodexGoalJob, type CodexGoalJobManifest, type CodexGoalJobSummary } from "../../codex-goal-jobs";
+import { JobRetirementState, observeJobRetirement } from "../../job-retirement/job-retirement-records";
 import { captureCodexGoalHandoffPatchFingerprint } from "../../codex-goal-handoff-artifacts";
 import { stringValue } from "../codex-goal-input-values";
 import { matchesProjectControlPrefix, pathInsideOrEqual } from "./codex-goal-project-utils";
@@ -72,6 +73,8 @@ export async function isolatedRequestedWorkspaceIdentity(
   const self = await admissionStartSelfIdentity({ ...bindingInput, summaries, overviewItems });
   for (const summary of summaries) {
     const historical = await optionalRealPathForAdmission(summary.workspacePath);
+    // A retired job's deleted workspace cannot collide; an existing one still can.
+    if (!historical && observeJobRetirement(input.registryRootDir, summary.jobId)?.state === JobRetirementState.Retired) continue;
     if (!historical) return false;
     if (historical === identity && !(self?.jobId === summary.jobId && self.workspacePath === identity)) return false;
   }
@@ -143,7 +146,7 @@ async function assertRetainedRegistryCustody(input: {
   if (!registration.isDirectory() || registration.isSymbolicLink() ||
     !file.isFile() || file.isSymbolicLink() || file.size > 1024 * 1024 ||
     await realpath(manifestPath) !== join(canonicalRegistry, jobId, "job.json") ||
-    !isDeepStrictEqual(await readCodexGoalJob({ registryRootDir: registry, jobId }), input.manifest)) {
+    !isDeepStrictEqual(await readCodexGoalJob({ registryRootDir: registry, jobId, includeRetired: true }), input.manifest)) {
     throw new Error("retained_admission_registry_custody_mismatch");
   }
   // Native creation permits a prefixed job root below the registry's parent,

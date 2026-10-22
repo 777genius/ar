@@ -95,15 +95,26 @@ export function codexProjectAdmissionGate(
       // under publication + the current leaf. Other callers retain preparation.
       const snapshot = input.targetBinding?.plannedAdoption ? undefined : await observe(request);
       let deps = input.deps;
-      if (input.deps.prepareWriterObservation && input.deps.readJob) {
+      const prepareWriter = input.deps.createWriterObservationPreparer?.() ?? input.deps.prepareWriterObservation;
+      if (prepareWriter && input.deps.readJob) {
         const prepared = new Map<string, { manifest: CodexGoalJobManifest;
           read: () => Promise<ProjectAdmissionWriterObservation> }>();
         const summaries = await input.deps.listJobs({ registryRootDir: input.registryRootDir }).catch(() => []);
+        // Preparations start in registry order but overlap; the ordered join
+        // below preserves that order and each job's own failure semantics.
+        const staged: Array<{ manifest: CodexGoalJobManifest;
+          preparation: ReturnType<typeof prepareWriter> }> = [];
         for (const summary of summaries) {
           try {
             const manifest = await input.deps.readJob({ registryRootDir: input.registryRootDir, jobId: summary.jobId });
-            prepared.set(manifest.jobId, { manifest, read: await input.deps.prepareWriterObservation(manifest) });
+            const preparation = prepareWriter(manifest);
+            preparation.catch(() => {}); // Joined in order below; keep rejection observed meanwhile.
+            staged.push({ manifest, preparation });
           } catch { /* Final census retains unknown for incomplete owner evidence. */ }
+        }
+        for (const { manifest, preparation } of staged) {
+          try { prepared.set(manifest.jobId, { manifest, read: await preparation }); }
+          catch { /* Final census retains unknown for incomplete owner evidence. */ }
         }
         deps = { ...input.deps, readWriterWritableRoots: async manifest => {
           const owner = prepared.get(manifest.jobId);

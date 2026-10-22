@@ -1,3 +1,6 @@
+export { SessionExecutionUseDisposition } from "./session-execution-lifecycle";
+export type { SessionExecutionUse, SessionExecutionLifecyclePort } from "./session-execution-lifecycle";
+import type { SessionExecutionUse, SessionExecutionLifecyclePort } from "./session-execution-lifecycle";
 import type {
   AgentCapabilities,
   FinalizedLease,
@@ -45,6 +48,7 @@ export interface ProviderSessionDriver {
   }): Promise<SessionValidationResult>;
 
   refreshSession(input: {
+    readonly sessionExecutionUse?: SessionExecutionUse;
     readonly session: SessionArtifact;
     readonly workspace: WorkspaceHandle;
     readonly runner: RunnerPort;
@@ -77,6 +81,7 @@ export interface AgentDriver {
   readonly capabilities: AgentCapabilities;
 
   runTask(input: {
+    readonly sessionExecutionUse?: SessionExecutionUse;
     readonly session: SessionArtifact | null;
     readonly task: ProviderTask;
     readonly workspace: WorkspaceHandle;
@@ -88,6 +93,9 @@ export interface AgentDriver {
     readonly logicalThread?: ProviderLogicalThreadExecution;
   }): Promise<ProviderTaskResult>;
 
+  /** Finalizes only the original private terminal entry for this exact use. */
+  finalizeTaskSession?(use:SessionExecutionUse):Promise<Exclude<ProviderTaskResult,{status:"waiting_for_input"}>>;
+  retireTaskSession?(use:SessionExecutionUse):Promise<void>;
   classifyRunFailure(error: unknown): ProviderFailure;
 }
 
@@ -281,6 +289,7 @@ export interface IdGeneratorPort {
 }
 
 export type RuntimeDeps = {
+  readonly sessionExecutionLifecycle?: SessionExecutionLifecyclePort;
   readonly policy: import("../domain/types").RuntimePolicy;
   readonly sessionDriver: ProviderSessionDriver | NoSessionDriver;
   readonly agentDriver: AgentDriver;

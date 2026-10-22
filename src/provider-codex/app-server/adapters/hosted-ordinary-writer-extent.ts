@@ -1,3 +1,4 @@
+import { observedProcessCgroup } from "../../../core/host-infrastructure/process-cgroup";
 import { CodexModelBackend } from "../../codex-model-backend";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
@@ -166,7 +167,7 @@ export function currentHostedOrdinaryWriterExtent(): HostedOrdinaryWriterExtent 
 }
 function withCurrentOrdinaryExtent(action: (extent: HostedOrdinaryWriterExtent, jobRootDir: string) => void): void {
   if (process.platform !== "linux") return;
-  const routed = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-([a-f0-9-]{36})\.service$/.exec(readFileSync("/proc/self/cgroup", "utf8").trim());
+  const routed = /^0::\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-ordinary-([a-f0-9-]{36})\.service$/.exec(observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8")));
   if (!routed) return;
   withHostedActivationFence(fence => {
     // Cgroup only selects whether a protected modern seal exists. It grants no

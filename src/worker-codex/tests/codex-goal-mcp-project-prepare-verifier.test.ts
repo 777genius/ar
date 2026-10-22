@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { expect, it } from "vitest";
+import { host } from "./research-launch-fixture";
 import {
   AccessBoundary,
   InMemoryAttemptJournal,
@@ -386,6 +387,12 @@ describe("project verifier preparation", () => {
         InMemoryTransport.createLinkedPair();
       const previousRunnerPath =
         process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH;
+      let runnerCount = 0;
+      const runnerExits: {
+        code: number | null;
+        signal: NodeJS.Signals | null;
+        error: boolean;
+      }[] = [];
 
       try {
         await git(root, ["init", "--bare", remotePath]);
@@ -486,6 +493,17 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
 `,
           );
           await chmod(fakeRunnerPath, 0o755);
+          host.operationRunnerObserver = (child, runnerPath) => {
+            if (runnerPath !== fakeRunnerPath) return;
+            runnerCount += 1;
+            let error = false;
+            child.once("error", () => {
+              error = true;
+            });
+            child.once("close", (code, signal) => {
+              runnerExits.push({ code, signal, error });
+            });
+          };
           process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH =
             fakeRunnerPath;
         }
@@ -840,6 +858,7 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
             "project_control_pre_start_launch_binding_mismatch",
           );
         } else {
+          expect(runnerCount).toBe(1);
           expect(result).toMatchObject({
             executionMode: "bounded",
             operationId: expect.any(String),
@@ -856,8 +875,21 @@ await writeFile(file, JSON.stringify(operation, null, 2) + "\\n");
           process.env.SUBSCRIPTION_RUNTIME_PROJECT_CONTROL_OPERATION_CLI_PATH =
             previousRunnerPath;
         }
-        await Promise.allSettled([client.close(), server.close()]);
-        await rm(root, { recursive: true, force: true });
+        let runnersClosed = false;
+        try {
+          // Join the real owned child before removing any files it can still write.
+          await expect.poll(() => runnerExits.length, { timeout: 5_000 })
+            .toBe(runnerCount);
+          runnersClosed = true;
+          for (const exit of runnerExits) {
+            expect(exit).toEqual({ code: 0, signal: null, error: false });
+          }
+        } finally {
+          host.operationRunnerObserver = undefined;
+          await Promise.allSettled([client.close(), server.close()]);
+          // A timed-out child retains its disposable input rather than racing rm.
+          if (runnersClosed) await rm(root, { recursive: true, force: true });
+        }
       }
     },
   );

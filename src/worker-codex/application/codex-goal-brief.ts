@@ -1,3 +1,4 @@
+import { optionalCount, workspaceChangedFilesCount, workspaceChangedFilesCountText } from "../codex-goal-changed-files-report";
 import {
   assessBaseRevision,
   assessWorkerHealth,
@@ -93,7 +94,8 @@ export async function buildCodexGoalBrief(input: {
     progressStale,
     silentStale,
     heartbeatOnlyNoOutput,
-    changedFilesCount: (input.status.changedFiles ?? []).length,
+    // Unknown (listing over budget) counts as 0 here; workspaceDirty carries the dirty fact.
+    changedFilesCount: workspaceChangedFilesCount(input.status) ?? 0,
     ...(input.status.progressStatus === undefined
       ? {}
       : { progressStatus: input.status.progressStatus }),
@@ -204,7 +206,7 @@ export async function buildCodexGoalBrief(input: {
     health: workerHealth,
     staleAfterMs: input.staleAfterMs,
     baseStatus: baseRevision.status,
-    dirtyFilesCount: (input.status.changedFiles ?? []).length,
+    ...optionalCount("dirtyFilesCount", workspaceChangedFilesCount(input.status)),
     nextBestActionHint: String(next.tool),
     ...(baseRevision.workerBaseCommit === undefined
       ? {}
@@ -244,9 +246,7 @@ export async function buildCodexGoalBrief(input: {
       input.status.workspaceDirty === undefined
         ? "workspace dirty unknown"
         : `workspace dirty ${input.status.workspaceDirty}`,
-      input.status.changedFiles?.length
-        ? `changed files ${input.status.changedFiles.length}`
-        : "changed files 0",
+      `changed files ${workspaceChangedFilesCountText(input.status)}`,
       silentStale ? "silentStale true" : "silentStale false",
       heartbeatOnlyNoOutput
         ? "heartbeatOnlyNoOutput true"
@@ -311,6 +311,7 @@ export async function buildCodexGoalBrief(input: {
     currentAccount: result.currentAccount,
     lastFailureReason: input.status.resultReason ?? result.lastFailureReason,
     changedFiles: input.status.changedFiles ?? [],
+    ...optionalCount("changedFilesCount", workspaceChangedFilesCount(input.status)),
     safeToContinue:
       workerHealth.safeToContinue &&
       safeStatusToContinue &&

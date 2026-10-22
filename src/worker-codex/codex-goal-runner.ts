@@ -1,13 +1,14 @@
+import { researchMimoTaskRecoveryOwner } from "./research-mimo-capacity-recovery";
 import { resolveCodexGoalRunInput } from "./application/codex-goal-storage-paths";
 import { assertHostedOrdinaryGoalExtent } from "./hosted-ordinary-writer-authority";
 import { recordRawGoalStateOrigin } from "./application/project-control/codex-goal-controller-state-location";
 import { codexRuntimeResultInput, codexExceptionRuntimeResultInput } from "./codex-goal-runtime-result-collection";
 import { resolveOpenWorkerLaunch, openWorkerEvidence, codexGoalOpenWorkerSystemPrompt } from "./project-control-worker-mode";
 import { progressFromResult, attemptCountFromResult, currentAccountFromResult } from "./codex-goal-progress-projection";
-import { isHostedDependencyWorkspace } from "../provider-codex/app-server/adapters/hosted-dependency-workspace";
 import { hostedGoalAdmissionIdentity, withHostedGoalIdentity } from "./hosted-readonly-goal-launch";
-import { ManagedDependencyGitRunner, isLinkedGitWorktree } from "./managed-dependency-git";
+import { ManagedDependencyGitRunner, isLinkedGitWorktree, requiresManagedDependencyGitRunner } from "./managed-dependency-git";
 import { DefaultWorkspaceSnapshotter } from "../worker-local/safe-execution/adapters/default-workspace-snapshotter";
+import { OwnedMimoSnapshotGitRunner, type MimoSnapshotTiming, ownedMimoWorkspaceSnapshotter, ownedMimoWorkspaceAccess } from "./owned-mimo-snapshot-git";
 import { NodeSafeExecutionWorkspaceAccess } from "../worker-local/safe-execution/adapters/node-safe-execution-workspace-access";
 import { admitHostedDependencyEntry, assertHostedDependencyExecutionWorkspace } from "./hosted-dependency-admission";
 import { readAdmittedHostedDependencyToolConfig, hostedDependencyToolInstruction,
@@ -306,6 +307,7 @@ async function runCodexGoalAdmitted(
   });
   const observability =
     deps.observability ?? codexGoalRuntimeEventObservability(runtimeEvents);
+  const ownedSnapshotTimings: MimoSnapshotTiming[] = [];
   const workerMode = await resolveOpenWorkerLaunch({ config, dependencyToolConfig });
   await runtimeEvents.write("runner_starting", {
     jobId: config.jobId ?? config.taskId,
@@ -380,6 +382,7 @@ async function runCodexGoalAdmitted(
       ...(storageLease ? { assertStorageAdmission: () => storageLease.assertCurrent() } : {}),
       encryptionKey,
       observability,
+      observeOwnedMimoSnapshotTiming: timing => { if (ownedSnapshotTimings.length < 2) ownedSnapshotTimings.push(timing); },
       controlInbox,
       activeAttemptRegistry,
     }));
@@ -442,7 +445,20 @@ async function runCodexGoalAdmitted(
       ...(ownedMimoLifecycle ? { deferHandoff: true } : {}),
       ...(baseCommit === undefined ? {} : { baseCommit }),
     });
-    if (ownedMimoLifecycle) { ownedMimoLifecycle.stage(resultInput); return result; }
+    if (ownedMimoLifecycle) {
+      // Terminal outcomes publish only through the outside owner's finalization,
+      // but the run loop's end must land here: a lingering "running" progress
+      // over a dead run is a state mismatch the observation layer refuses to act
+      // on. "stopped" is the outcome-free terminal marker. The marker is
+      // diagnostics and must never replace the staged result: a poisoned
+      // progress chain (one rejected fs write) would otherwise lose the run.
+      try {
+        await progressHeartbeat.stop();
+        await progressHeartbeat.write({ status: "stopped" });
+      } catch { /* Best-effort terminal marker. */ }
+      ownedMimoLifecycle.stage(resultInput);
+      return result;
+    }
     await resultRecorder.record(resultInput);
     await progressHeartbeat.write(progressFromResult(result));
     await runtimeEvents.write("executor_finished", {
@@ -462,7 +478,17 @@ async function runCodexGoalAdmitted(
       ...(ownedMimoLifecycle ? { deferHandoff: true } : {}),
       ...(baseCommit === undefined ? {} : { baseCommit }),
     });
-    if (ownedMimoLifecycle) { ownedMimoLifecycle.stage(resultInput); throw error; }
+    if (ownedMimoLifecycle) {
+      // The failure outcome is deferred exactly like the success outcome above:
+      // "stopped" is the only marker the run loop may land on, and the staged
+      // candidate carries the failure to the outside owner's finalization.
+      try {
+        await progressHeartbeat.stop();
+        await progressHeartbeat.write({ status: "stopped" });
+      } catch { /* Best-effort terminal marker; the staged failure stands. */ }
+      ownedMimoLifecycle.stage(resultInput);
+      throw error;
+    }
     await resultRecorder.record(resultInput);
     await progressHeartbeat.write({
       status: "failed",
@@ -475,7 +501,7 @@ async function runCodexGoalAdmitted(
     });
     throw error;
   } finally {
-    await progressHeartbeat.stop();
+    try { await progressHeartbeat.stop(); } catch { /* Diagnostics flush never replaces the result. */ }
     await interruptMonitor.stop();
     try {
       await executor.dispose();
@@ -495,6 +521,14 @@ async function runCodexGoalAdmitted(
     await runtimeEvents.write("runner_disposed", {
       jobId: config.jobId ?? config.taskId,
       executionGeneration,
+      ...Object.fromEntries(ownedSnapshotTimings.flatMap(timing => {
+        const prefix = "mimo_" + timing.scope + "_";
+        return [[prefix + "outcome", timing.outcome], [prefix + "elapsedMs", timing.elapsedMs],
+          [prefix + "admissionCount", timing.admissionCount], [prefix + "admissionElapsedMs", timing.admissionElapsedMs],
+          ...Object.entries(timing).filter(([key]) => key === "admissionAuthorityElapsedMs" || key === "admissionArtifactElapsedMs" || key === "admissionExecutableElapsedMs" || key === "admissionAuthorityServiceElapsedMs" || key === "admissionAuthorityScalarWitnessElapsedMs" || key === "admissionAuthorityPairedPinElapsedMs" || key === "admissionAuthorityScalarTargetQueryElapsedMs" || key === "admissionAuthorityPairedTargetQueryElapsedMs")
+            .map(([key, value]) => [prefix + key, value]),
+          [prefix + "successfulGitCount", timing.successfulGitCount], [prefix + "successfulGitElapsedMs", timing.successfulGitElapsedMs]];
+      })),
     });
   }
 }
@@ -506,11 +540,11 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   if (config.sessionHomeProfile?.kind === CodexSessionHomeProfileKind.OneShot) {
     throw new JobStorageCapabilityUnavailableError(JobStorageUnavailableCapability.OneShotDisposal);
   }
-  const dependencyGit = isHostedDependencyWorkspace(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
+  const dependencyGit = requiresManagedDependencyGitRunner(config.workspacePath) ? new ManagedDependencyGitRunner() : undefined;
   const runtimeHomeRootDir = dependencyGit ? join(config.jobRootDir, "home") : config.runtimeHomeRootDir;
   const researchAdmission = researchProviderAdmissionGuard(input.appServerProcessFactory);
   const assertProviderAdmission = input.assertStorageAdmission || researchAdmission
-    ? () => { input.assertStorageAdmission?.(); researchAdmission?.(); } : undefined;
+    ? () => { input.assertStorageAdmission?.(); return researchAdmission?.(); } : undefined;
   assertProviderAdmission?.();
   const publicSourceReader = input.providerEgressPolicy && codexProviderHasPublicSources(input.providerEgressPolicy)
     ? createPublicResearchSourceReader(input.providerEgressPolicy) : undefined;
@@ -521,6 +555,11 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
   const ownedMimoCoding = ownedMimoWorker &&
     ownedMimoWorkerStart(input.appServerProcessFactory)?.request.hostedProfile === HostedMimoProfile.CodingV1;
   if (ownedMimoWorker) assertOwnedMimoWorkerConfig(input.appServerProcessFactory, config);
+  // Signed dependency workspaces retain their independent purpose-qualified route.
+  const ownedSnapshotGit = ownedMimoWorker && !dependencyGit
+    ? new OwnedMimoSnapshotGitRunner(config.workspacePath, () => assertProviderAdmission?.(),
+        input.observeOwnedMimoSnapshotTiming) : undefined;
+  const snapshotGit = dependencyGit ?? ownedSnapshotGit;
   const executionLifetime = input.executionLifetime ?? (ownedMimoWorker ? new AppServerExecutionLifetime({
     deadlineEpochMs: Date.now() + config.taskTimeoutMs!, maxGoalTurns: config.maxGoalTurns!,
     binding: { allocationId: config.jobId ?? config.taskId, incarnationId: randomUUID() },
@@ -548,14 +587,17 @@ export function buildCodexGoalExecutorOptions(input: CodexGoalExecutorOptionsInp
     sourceEnv: config.sourceEnv,
   });
   return {
-    ...(dependencyGit ? {
-      snapshotter: new DefaultWorkspaceSnapshotter({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
-      workspaceAccess: new NodeSafeExecutionWorkspaceAccess({ commandRunner: dependencyGit, gitBinaryPath: "/usr/bin/git" }),
+    ...(snapshotGit ? {
+      snapshotter: ownedSnapshotGit ? ownedMimoWorkspaceSnapshotter(ownedSnapshotGit)
+        : new DefaultWorkspaceSnapshotter({ commandRunner: snapshotGit, gitBinaryPath: "/usr/bin/git" }),
+      workspaceAccess: ownedSnapshotGit ? ownedMimoWorkspaceAccess(ownedSnapshotGit)
+        : new NodeSafeExecutionWorkspaceAccess({ commandRunner: snapshotGit, gitBinaryPath: "/usr/bin/git" }),
     } : {}),
     ...(assertProviderAdmission ? { assertProviderAdmission } : {}),
     ...(config.executorId ? { executorId: config.executorId } : {}),
     ...(childBudget ? { childBudget } : {}),
     ...(executionLifetime ? { executionLifetime } : {}),
+    ...(ownedMimoCoding ? { mimoTaskRecoveryOwner: researchMimoTaskRecoveryOwner(input.appServerProcessFactory)! } : {}),
     authRootDir: config.authRootDir,
     ...(input.observability ? { observability: input.observability } : {}),
     ...(!childBudget && !ownedMimoWorker && input.controlInbox ? { controlInbox: input.controlInbox } : {}),
@@ -816,7 +858,7 @@ function createCodexGoalProgressHeartbeat(input: {
     CodexGoalProgressSnapshot,
     "schemaVersion" | "taskId" | "updatedAt" | "pid"
   >) => {
-    writes = writes.then(async () => {
+    const attempt = writes.then(async () => {
       if (stopped && patch.status === "running") return;
       await writeCodexGoalProgress(input.progressPath, {
         schemaVersion: 1,
@@ -826,7 +868,10 @@ function createCodexGoalProgressHeartbeat(input: {
         ...patch,
       });
     });
-    return writes;
+    // A rejected write must not poison the queue: the terminal marker is still
+    // attempted after an earlier failure, while the caller observes its own write.
+    writes = attempt.catch(() => {});
+    return attempt;
   };
   return {
     async write(patch: Omit<

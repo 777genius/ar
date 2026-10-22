@@ -1,12 +1,14 @@
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { CodexModelBackend, codexMimoDefaultModel, HostedMimoProfile } from "@vioxen/subscription-runtime/provider-codex";
 import { defaultStartupTimeoutMs } from "../provider-codex/app-server/domain/app-server-types";
 import { CodexGoalNativeLifecycle, type CodexGoalLaunchInput } from "./codex-goal-ops";
 import { parseResearchOperatorRequest } from "./research-launch-contract";
 import { authorizeRegisteredResearchHandoff, assertRegisteredResearchHandoffCurrent } from "./research-registered-handoff";
 import { grantRegisteredResearchLaunch, startRegisteredResearchLaunch } from "./research-launch-owner";
-import { researchCurrentStart, researchJobAuthority } from "./research-launch-admission";
+import { researchCurrentStart, researchJobAuthority, readResearchStartBinding } from "./research-launch-admission";
 import { cancelRegisteredResearchLaunch, finalizeOwnedMimoWorker, terminalResearchStart, statusResearchLaunch } from "./research-launch-lifecycle";
+import { assertResearchInitialRoot, assertResearchServiceOwner, researchControlGroup, researchDescription, researchProcessIdentity, researchServiceIdentity } from "./research-launch-host";
 import { researchHash, researchJson, researchPublish, researchRead, researchRecord } from "./research-launch-files";
 
 export function isProjectMimoWorkerLaunch(launch: CodexGoalLaunchInput): boolean {
@@ -65,12 +67,14 @@ export async function launchProjectMimoWorker(input: {
   return started;
 }
 
+enum AttemptPurpose { Observe = "observe", Cleanup = "cleanup", ReadOnly = "read_only" }
+
 /** One explicit status observation reconciles an already staged candidate.
  * No polling, detached owner, replacement launch or completion inferred from exit. */
 async function currentProjectMimoWorker(input: {
   readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput;
   readonly publicationAdmission?: boolean;
-}): Promise<ReturnType<typeof researchCurrentStart> | undefined> {
+}, purpose = AttemptPurpose.Observe): Promise<ReturnType<typeof researchCurrentStart> | undefined> {
   if (!isProjectMimoWorkerLaunch(input.launch) || process.platform !== "linux" || process.getuid?.() !== 0) return;
   const c = input.launch.config, jobId = c.jobId ?? c.taskId;
   let current: ReturnType<typeof researchCurrentStart>;
@@ -80,7 +84,7 @@ async function currentProjectMimoWorker(input: {
     try { current = terminalResearchStart(jobId); }
     catch (terminalError) { if ((terminalError as NodeJS.ErrnoException).code === "ENOENT") return; throw terminalError; }
   }
-  const receipt = await recoverProjectMimoWorkerAttempt(input, current);
+  const receipt = await recoverProjectMimoWorkerAttempt(input, current, purpose);
   const { spec } = current;
   if (receipt.schemaVersion !== 1 || receipt.registryRootDir !== input.registryRootDir || receipt.jobId !== jobId ||
       !spec.registeredHandoff || spec.registeredHandoff.registryRootDir !== input.registryRootDir ||
@@ -96,27 +100,94 @@ async function currentProjectMimoWorker(input: {
 
 async function recoverProjectMimoWorkerAttempt(input: {
   readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput; readonly publicationAdmission?: boolean;
-}, captured?: ReturnType<typeof researchCurrentStart>): Promise<Record<string, unknown>> {
+}, captured?: ReturnType<typeof researchCurrentStart>, purpose = AttemptPurpose.Observe): Promise<Record<string, unknown>> {
   const c = input.launch.config, jobId = c.jobId ?? c.taskId;
-  const path = join(researchJobAuthority(jobId), "project-worker-attempt.json");
-  try { return researchRecord(researchJson(researchRead(path)),
-    "schemaVersion,registryRootDir,controllerJobId,jobId,startId,specSha256,requestSha256"); }
+  const authority = researchJobAuthority(jobId), path = join(authority, "project-worker-attempt.json");
+  let retained: Buffer | undefined;
+  try { retained = researchRead(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (!retained && purpose === AttemptPurpose.ReadOnly) throw new Error("project_mimo_worker_attempt_unproven");
   const current = captured ?? researchCurrentStart(jobId), { spec } = current;
-  const requestBytes = researchRead(join(researchJobAuthority(jobId), "project-worker-request.json"));
+  const requestPath = join(authority, "project-worker-request.json"), requestBytes = researchRead(requestPath);
   if (!spec.registeredHandoff || spec.registeredHandoff.registryRootDir !== input.registryRootDir ||
       spec.request.jobId !== jobId || spec.request.jobRootDir !== c.jobRootDir || spec.request.workspacePath !== c.workspacePath ||
       spec.request.taskId !== c.taskId || spec.request.projectId !== c.projectAccessScope?.projectId ||
       spec.request.modelBackend !== CodexModelBackend.XiaomiMimoTokenPlan ||
       researchHash(requestBytes) !== spec.requestSha256) throw new Error("project_mimo_worker_attempt_mismatch");
-  if (input.publicationAdmission !== false) await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, spec.request);
   const receipt = { schemaVersion: 1, registryRootDir: input.registryRootDir,
     controllerJobId: spec.registeredHandoff.controllerJobId, jobId, startId: spec.startId,
     specSha256: researchHash(current.bytes), requestSha256: spec.requestSha256 };
-  try { researchPublish(path, receipt, true); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-  return researchRecord(researchJson(researchRead(path)),
+  if (retained && !isDeepStrictEqual(researchRecord(researchJson(retained),
+      "schemaVersion,registryRootDir,controllerJobId,jobId,startId,specSha256,requestSha256"), receipt))
+    throw new Error("project_mimo_worker_attempt_mismatch");
+  const optionalBytes = (path: string): Buffer | undefined => {
+    try { return researchRead(path); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return undefined; }
+  };
+  const activePath = join(authority, "active.json"), terminalPath = join(authority, "last-terminal.json"), grantPath = join(authority, "grant.json");
+  const activeBytes = optionalBytes(activePath), terminalBytes = activeBytes ? undefined : researchRead(terminalPath), grantBytes = researchRead(grantPath);
+  if (researchHash(grantBytes) !== spec.grantSha256) throw new Error("project_mimo_worker_attempt_mismatch");
+  const same = (left: Buffer | undefined, right: Buffer | undefined) => left === undefined ? right === undefined : right !== undefined && left.equals(right);
+  const assertSubmission = purpose === AttemptPurpose.Cleanup ? () => {} : projectMimoSubmissionProof(current);
+  const assertAuthority = input.publicationAdmission !== false
+    ? await assertRegisteredResearchHandoffCurrent(spec.registeredHandoff, spec.request) : undefined;
+  const assertCurrent = () => {
+    assertAuthority?.(); assertSubmission();
+    if (!same(activeBytes, optionalBytes(activePath)) || !activeBytes && !same(terminalBytes, optionalBytes(terminalPath)) ||
+        !researchRead(grantPath).equals(grantBytes) || !researchRead(join(current.directory, "spec.json")).equals(current.bytes) ||
+        !researchRead(requestPath).equals(requestBytes) || retained && !researchRead(path).equals(retained))
+      throw new Error("project_mimo_worker_attempt_mismatch");
+  };
+  assertCurrent();
+  // Cleanup keeps uncertainty and invokes only canonical cancellation. It never
+  // manufactures an accepted-attempt receipt from a prepared native namespace.
+  if (!retained && purpose !== AttemptPurpose.Cleanup) {
+    try { researchPublish(path, receipt, true); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  }
+  assertCurrent();
+  if (purpose === AttemptPurpose.Cleanup && !retained) return receipt;
+  const freshBytes = researchRead(path), fresh = researchRecord(researchJson(freshBytes),
     "schemaVersion,registryRootDir,controllerJobId,jobId,startId,specSha256,requestSha256");
+  if (!isDeepStrictEqual(fresh, receipt)) throw new Error("project_mimo_worker_attempt_mismatch");
+  retained ??= freshBytes; assertCurrent(); return fresh;
+}
+
+/** A prepared spec and even a historical attempt receipt prove no submission.
+ * Bindings were minted only by the admitted native service itself; otherwise
+ * the exact current PID1 service/fragment must positively own this spec. */
+function projectMimoSubmissionProof(current: ReturnType<typeof researchCurrentStart>): () => void {
+  assertResearchInitialRoot(true);
+  const { spec } = current, description = researchDescription(spec.request.jobId, researchHash(current.bytes));
+  const bindingPath = join(current.directory, "binding.json");
+  let bytes: Buffer | undefined;
+  try { bytes = researchRead(bindingPath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (bytes) {
+    const binding = readResearchStartBinding(current.directory), p = binding.process, service = binding.service;
+    const host = researchProcessIdentity();
+    if (binding.specSha256 !== researchHash(current.bytes) || service.unit !== spec.unit ||
+        !Number.isSafeInteger(p.pid) || p.pid < 1 || !/^[1-9][0-9]*$/.test(p.birthTicks) ||
+        p.bootId !== host.bootId || p.machineId !== host.machineId || p.controlGroup !== researchControlGroup(spec.unit) ||
+        !/^[a-f0-9]{32}$/.test(service.invocationId) || !/^[a-f0-9]{64}$/.test(service.fragmentSha256) ||
+        (["user", "pid", "net"] as const).some(kind => p.namespaces[kind] !== host.namespaces[kind]) ||
+        !/^mnt:\[[1-9][0-9]*\]$/.test(p.namespaces.mnt)) throw new Error("project_mimo_worker_submission_unproven");
+    assertResearchServiceOwner(p, service, description);
+    if (!researchRead(bindingPath).equals(bytes)) throw new Error("project_mimo_worker_submission_unproven");
+    return () => { assertResearchInitialRoot(true);
+      if (!researchRead(bindingPath).equals(bytes)) throw new Error("project_mimo_worker_submission_unproven"); };
+  }
+  const service = researchServiceIdentity(spec.unit, true);
+  if (service.description !== description) throw new Error("project_mimo_worker_submission_unproven");
+  const process = service.mainPid > 0 ? researchProcessIdentity(service.mainPid) : undefined;
+  if (process) assertResearchServiceOwner(process, service, description);
+  return () => {
+    assertResearchInitialRoot(true);
+    const fresh = researchServiceIdentity(spec.unit, true);
+    if (JSON.stringify(fresh) !== JSON.stringify(service) || process &&
+        JSON.stringify(researchProcessIdentity(service.mainPid)) !== JSON.stringify(process))
+      throw new Error("project_mimo_worker_submission_unproven");
+  };
 }
 
 export async function reconcileProjectMimoWorker(input: {
@@ -134,7 +205,7 @@ export async function reconcileProjectMimoWorker(input: {
 export async function stopProjectMimoWorker(input: {
   readonly registryRootDir: string; readonly controllerJobId: string; readonly launch: CodexGoalLaunchInput;
 }): Promise<{ readonly handoffPacketPath?: string; readonly handoffManifestSha256?: string; readonly cleanWorkspace?: string }> {
-  const current = await currentProjectMimoWorker({ ...input, publicationAdmission: false });
+  const current = await currentProjectMimoWorker({ ...input, publicationAdmission: false }, AttemptPurpose.Cleanup);
   if (!current || current.spec.registeredHandoff?.controllerJobId !== input.controllerJobId) {
     throw new Error("project_mimo_worker_attempt_required");
   }
@@ -164,13 +235,23 @@ export async function stopProjectMimoWorker(input: {
 
 /** Observe only the independently validated retained native attempt. Submission
  * receipts and missing tmux sessions are never proof of its lifecycle. */
+export async function observeProjectMimoWorkerReadOnly(input: {
+  readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput;
+}): Promise<CodexGoalNativeLifecycle | undefined> {
+  return observeProjectMimoWorkerWithPurpose(input, AttemptPurpose.ReadOnly);
+}
 export async function observeProjectMimoWorker(input: {
   readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput;
 }): Promise<CodexGoalNativeLifecycle | undefined> {
+  return observeProjectMimoWorkerWithPurpose(input, AttemptPurpose.Observe);
+}
+async function observeProjectMimoWorkerWithPurpose(input: {
+  readonly registryRootDir: string; readonly launch: CodexGoalLaunchInput;
+}, purpose: AttemptPurpose): Promise<CodexGoalNativeLifecycle | undefined> {
   if (!isProjectMimoWorkerLaunch(input.launch)) return;
   if (process.platform !== "linux" || process.getuid?.() !== 0) return CodexGoalNativeLifecycle.Uncertain;
   try {
-    const current = await currentProjectMimoWorker(input);
+    const current = await currentProjectMimoWorker(input, purpose);
     if (!current) {
       const directory = researchJobAuthority(input.launch.config.jobId ?? input.launch.config.taskId);
       for (const name of ["project-worker-request.json", "project-worker-attempt.json"]) {

@@ -1,4 +1,5 @@
-import test, { after, mock } from 'node:test';
+import test, { beforeEach, afterEach, after, mock } from 'node:test';
+import cp from 'node:child_process';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -21,17 +22,22 @@ const policyPath = path => {
   }
   return path;
 };
-const policyStatMock = mock.method(fs, 'lstatSync', (path, ...options) => actualLstat(policyPath(path), ...options));
-const cgroupMock = mock.method(fs, 'readFileSync', (path, options) => {
+let capabilityRead;
+const actualSpawnSync = cp.spawnSync;
+const completed = (stdout, status = 0, stderr = '') => ({ stdout, stderr, status, signal: null, error: undefined });
+beforeEach(() => {
+mock.method(fs, 'lstatSync', (path, ...options) => actualLstat(policyPath(path), ...options));
+mock.method(fs, 'readFileSync', (path, options) => {
   if (path !== '/proc/self/cgroup') return actualReadFile(path, options);
   const bytes = Buffer.from('0::/\n'), encoding = typeof options === 'string' ? options : options?.encoding;
   return encoding ? bytes.toString(encoding) : bytes;
 });
-syncBuiltinESMExports();
-after(() => {
-  policyStatMock.mock.restore(); cgroupMock.mock.restore(); syncBuiltinESMExports();
-  fs.rmSync(policyFixture, { recursive: true, force: true });
-});
+  capabilityRead = mock.method(cp, 'spawnSync', (command, ...args) => command === '/usr/bin/systemd-run' ? completed('  --expand-environment=BOOL\n') : actualSpawnSync(command, ...args)); syncBuiltinESMExports(); });
+afterEach(() => { mock.restoreAll(); syncBuiltinESMExports(); });
+const old252 = () => capabilityRead.mock.mockImplementation((_file, args) => args.includes('--help')
+  ? completed('', 1, "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n")
+  : completed('systemd 252 (252.39-1~deb12u2)\n+PAM +AUDIT\n'));
+after(() => { fs.rmSync(policyFixture, { recursive: true, force: true }); });
 const job = { operation: 'job', unit: `subscription-job-${'a'.repeat(64)}.service`, payload: ['/usr/bin/true'],
   jobId: 'test-1.foo-bar_', fingerprint: 'a'.repeat(64), limits: { runtimeSeconds: 90, stopSeconds: 30, memoryMiB: 256, tasksMax: 64, cpuPercent: 100 } };
 const admit = async () => deriveManagedJobLayout('/TEST', job.jobId);
@@ -74,7 +80,30 @@ test('job and provider mask journal IPC without replacing provider pipes', async
 });
 test('explicit job builds fixed confinement and preserves bounded limits and ownership', async () => {
   const invocation = await build(job);
-  assert.equal(invocation.args.includes('--user'), false);
+  assert.equal(invocation.command, '/usr/bin/systemd-run');
+  // The original first separator ends systemd-run options. The later
+  // --user belongs to the fixed inner namespace bootstrap, not the manager.
+  const assertManagerAndUserPhase = args => {
+    const boundary = args.indexOf('--');
+    assert.ok(boundary > 0, 'original systemd-run COMMAND boundary');
+    assert.equal(args.slice(0, boundary).includes('--user'), false, 'system manager must not use --user');
+    const command = args.slice(boundary + 1);
+    assert.deepEqual(command.slice(0, 20), [
+      '/usr/bin/unshare', '--mount', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '--',
+      '/usr/bin/unshare', '--user', '--map-user=65532', '--map-group=65532', '--keep-caps', '--',
+      '/usr/bin/setpriv', '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
+      '/usr/bin/tini', '--',
+    ], 'fixed outer and inner USER namespace phases');
+    return command;
+  };
+  const command = assertManagerAndUserPhase(invocation.args);
+  const boundary = invocation.args.indexOf('--');
+  assert.throws(() => assertManagerAndUserPhase([
+    ...invocation.args.slice(0, boundary), '--user', ...invocation.args.slice(boundary),
+  ]), /system manager must not use --user/);
+  assert.throws(() => assertManagerAndUserPhase([
+    ...invocation.args.slice(0, boundary + 1), ...command.slice(0, 7), ...command.slice(13),
+  ]), /fixed outer and inner USER namespace phases/);
   assert.equal(invocation.args.includes('--service-type=exec'), true);
   assert.deepEqual(invocation.args.filter(arg => arg.startsWith('--property=TimeoutStartSec=')),
     ['--property=TimeoutStartSec=600']);
@@ -93,7 +122,6 @@ test('explicit job builds fixed confinement and preserves bounded limits and own
   assert.ok(invocation.args.includes('--setenv=SUBSCRIPTION_RUNTIME_MANAGED_LAUNCH=1'));
   assert.ok(invocation.args.includes(`--setenv=SUBSCRIPTION_RUNTIME_JOB_ROOT=/TEST/jobs/${job.jobId}`));
   assert.equal(invocation.args.some(arg => arg.includes('SUBSCRIPTION_RUNTIME_MANAGED_LAYOUT')), false);
-  const command = invocation.args.slice(invocation.args.indexOf('--') + 1);
   assert.deepEqual(command.slice(-8), ['/TRUSTED/node', PAYLOAD_GUARD_PATH, '--job-id', job.jobId, '--job-unit', job.unit, '--', ...job.payload]);
   assert.ok(command.includes('--pid') && command.includes('--mount-proc'));
   assert.ok(command.indexOf('--bounding-set=-all') < command.indexOf(PAYLOAD_GUARD_PATH));
@@ -192,7 +220,7 @@ test('provider bootstrap is constructed internally and trusted before admission'
     '/opt/subscription-runtime/managed-launcher/launch.mjs', PAYLOAD_GUARD_PATH, '/usr/bin/unshare', '/usr/bin/setpriv', '/usr/bin/tini']);
   assert.ok(invocation.args.includes(`--property=CapabilityBoundingSet=${bootstrapCaps}`));
   const command = invocation.args.slice(invocation.args.indexOf('--') + 1);
-  assert.deepEqual(command.slice(0, 3), ['/usr/bin/unshare', '--map-user=65532', '--map-group=65532']);
+  assert.deepEqual(command.slice(0, 3), ['/usr/bin/unshare', '--mount', '--pid']);
   assert.ok(command.indexOf('--bounding-set=-all') < command.indexOf(PAYLOAD_GUARD_PATH));
   assert.ok(command.indexOf(PAYLOAD_GUARD_PATH) < command.indexOf(provider.payload[0]));
   assert.ok(invocation.args.includes('--pipe'));
@@ -210,8 +238,8 @@ test('both operations run Tini after dropping capabilities and before Node', asy
     const { args } = await build(request);
     const command = args.slice(args.indexOf('--') + 1);
     assert.deepEqual(command.slice(0, command.indexOf(PAYLOAD_GUARD_PATH)), [
-      '/usr/bin/unshare', '--map-user=65532', '--map-group=65532', '--keep-caps',
-      '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '/usr/bin/setpriv',
+      '/usr/bin/unshare', '--mount', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL', '--',
+      '/usr/bin/unshare', '--user', '--map-user=65532', '--map-group=65532', '--keep-caps', '--', '/usr/bin/setpriv',
       '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
       '/usr/bin/tini', '--', '/TRUSTED/node',
     ]);
@@ -378,4 +406,44 @@ test('pressure CLI exits finitely after its child exits despite a pending observ
   assert.equal(result.error, undefined, result.stderr);
   assert.equal(result.signal, null, result.stderr);
   assert.equal(result.status, 70, result.stderr);
+});
+
+test('stock252 closed provider preserves exact command/properties except unsupported flag', async () => {
+  const modern = await build(provider); old252(); const legacy = await build(provider);
+  assert.deepEqual(legacy, { command: modern.command, args: modern.args.filter(a => a !== '--expand-environment=no') });
+  assert.ok(legacy.args.slice(legacy.args.indexOf('--') + 1).every(a => !a.includes('$')));
+  assert.deepEqual(capabilityRead.mock.calls.slice(-2).map(c => c.arguments[1]), [['--expand-environment=no', '--help'], ['--version']]);
+  for (const call of capabilityRead.mock.calls) {
+    assert.equal(call.arguments[0], '/usr/bin/systemd-run');
+    assert.equal(call.arguments[2].timeout, 2000); assert.equal(call.arguments[2].maxBuffer, 32768);
+    assert.deepEqual(call.arguments[2].env, { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', SYSTEMD_COLORS: '0' });
+  }
+});
+test('stock252 provider rejects dollars in all dynamic command operands', async () => {
+  old252();
+  for (const dollar of ['$USER', '${USER}', '$$', 'literal$tail']) {
+    await assert.rejects(build(provider, { nodePath: '/synthetic/' + dollar }), /unsupported/);
+    await assert.rejects(build(provider, { guardPath: '/synthetic/' + dollar }), /unsupported/);
+  }
+  for (const value of ['', 'x'.repeat(4097), 'line\nbreak', 'nul\0byte'])
+    await assert.rejects(build(provider, { guardPath: value }), /unsupported/);
+});
+test('modern provider keeps explicit veto and literal dollar argv', async () => {
+  const plan = await build(provider, { nodePath: '/synthetic/$USER', guardPath: '/synthetic/${USER}' });
+  assert.ok(plan.args.includes('--expand-environment=no'));
+  assert.ok(plan.args.includes('/synthetic/$USER')); assert.ok(plan.args.includes('/synthetic/${USER}'));
+  assert.equal(capabilityRead.mock.callCount(), 1);
+});
+test('unknown capability and non252 versions refuse provider before systemd launch', async () => {
+  for (const value of [completed('ambiguous help'), completed('', 1, 'foreign error'), { ...completed(''), signal: 'SIGTERM' }, { ...completed(''), error: Error('private') }]) {
+    capabilityRead.mock.mockImplementation(() => value); await assert.rejects(build(provider), /unsupported/);
+  }
+  for (const version of ['systemd 251\n', 'systemd 253\n', 'systemd UNKNOWN\n']) {
+    capabilityRead.mock.mockImplementation((_file, args) => args.includes('--help') ? completed('', 1, "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n") : completed(version));
+    await assert.rejects(build(provider), /unsupported/);
+  }
+});
+test('managed job keeps original explicit flag without provider capability IO', async () => {
+  old252(); const plan = await build(job);
+  assert.ok(plan.args.includes('--expand-environment=no')); assert.equal(capabilityRead.mock.callCount(), 0);
 });

@@ -19,6 +19,9 @@ import { researchHash, researchPublish, researchRead } from "../research-launch-
 import { runCodexGoal, codexGoalOutputPath, codexGoalProgressPath } from "../codex-goal-runner";
 import { StaticRunner } from "./file-backend-codex-worker-test-support";
 import * as scratch from "../host-scratch-temp";
+import * as runtimeArtifact from "../research-runtime-artifact";
+import * as materialization from "../codex-goal-terminal-handoff-materialization";
+import { researchArtifactDigest } from "../research-launch-files";
 
 const hostedMimoCredentialPath = "/etc/subscription-runtime/secrets/shared/mimo-token-plan-api-key";
 
@@ -68,6 +71,13 @@ async function initializeReportWorkspace(current: ReturnType<typeof start>): Pro
 }
 
 describe("external owned MiMo result publication", () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    // All Host effects still go through the offline kernel/service fixture;
+    // exercise the Linux launch contract locally without a real Host launch.
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+  afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
   // RED: turn/completed overwrites a truthful report outcome with done.
   it.each([
     ["done", "review_completed"], ["partial", "continue"], ["blocked", "ask_user"], ["failed", "recover"],
@@ -183,6 +193,50 @@ describe("external owned MiMo result publication", () => {
     expect(host.units.get(current.unit)?.active).toBe(false);
   });
 
+  // RED: the runner wrote its terminal failure outcome before outside service reconciliation.
+  it("lands a thrown owned run on the outcome-free stopped marker until the outside owner finalizes", async () => {
+    const current = start(true);
+    await promisify(execFile)("git", ["-C", current.selected.workspacePath, "init"]);
+    await expect(runCodexGoal(current.config, { createExecutor: () => ({ run: async () => {
+      throw new Error("synthetic owned executor failure");
+    }, dispose: async () => {} }) })).rejects.toThrow("synthetic owned executor failure");
+    const progress = JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8"));
+    expect(progress).toMatchObject({ status: "stopped" });
+    expect(progress).not.toHaveProperty("reason");
+    expect(fs.existsSync(codexGoalOutputPath(current.config))).toBe(false);
+    expect(record(current, "mimo-candidate").result).toMatchObject({ status: "failed", reason: "runner_exception" });
+    enterResearchOperatorScope(current.unit);
+    expect((await finalize(current)).status).toBe("failed");
+    expect(JSON.parse(fs.readFileSync(codexGoalOutputPath(current.config), "utf8")).status).toBe("failed");
+    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("failed");
+    expect(host.units.get(current.unit)?.active).toBe(false);
+  });
+
+  // RED: a poisoned progress chain must never replace the staged owned result.
+  it("stages and returns the owned result even when the terminal progress write fails", async () => {
+    const current = start(true);
+    await promisify(execFile)("git", ["-C", current.selected.workspacePath, "init"]);
+    const progressPath = codexGoalProgressPath(current.config);
+    const result = await runCodexGoal(current.config, { createExecutor: () => ({ run: async () => {
+      // Every later progress write rejects on EISDIR, including the flush in finally.
+      fs.rmSync(progressPath);
+      fs.mkdirSync(progressPath);
+      return completedResult(current);
+    }, dispose: async () => {} }) });
+    expect(result.status).toBe("completed");
+    expect(record(current, "mimo-candidate").result.status).toBe("done");
+  });
+
+  // RED: the owned failure branch stages its failure and lands the outcome-free marker.
+  it("stages the owned failure and lands the outcome-free stopped marker before rethrowing", async () => {
+    const current = start(true);
+    await promisify(execFile)("git", ["-C", current.selected.workspacePath, "init"]);
+    await expect(runCodexGoal(current.config, { createExecutor: () => ({
+      run: async () => { throw new Error("TEST runner exploded"); }, dispose: async () => {} }) })).rejects.toThrow("TEST runner exploded");
+    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("stopped");
+    expect(record(current, "mimo-candidate").result.status).toBe("failed");
+  });
+
   // RED: cancel releases the active candidate before its dirty output is preserved.
   it("retains a cancelled pending candidate, then finalizes its real dirty artifact", async () => {
     const current = start(true), command = promisify(execFile);
@@ -216,6 +270,82 @@ describe("external owned MiMo result publication", () => {
     expect(bytes.toString()).toContain("TEST retained worker edit");
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(patch.sha256);
     expect(fs.existsSync(join(researchJobAuthority(current.jobId), "active.json"))).toBe(false);
+  });
+
+  describe("bounded refusal (explicit offline Linux Host fixture)", () => {
+    const platform = process.platform;
+    beforeEach(() => {
+      cleanupResearchFixture(); setupResearchFixture({ allocationParent: process.cwd() });
+      Object.defineProperty(process, "platform", { value: "linux" });
+    });
+    afterEach(() => Object.defineProperty(process, "platform", { value: platform }));
+  it.each([
+    [8 * 1024 * 1024 + 1, "handoff_file_byte_limit_exceeded", "TEST-too-large.bin"],
+    [64, "handoff_raw_secret_rejected", "TEST-too-large.bin"],
+    [64, "handoff_sensitive_path_rejected", "TEST-generated/.env.example"],
+    [64, "handoff_sensitive_path_rejected", "TEST-generated/.npmrc"],
+  ] as const)("authenticates terminal refusal %s without exporting paths or freeing the workspace", async (size, reason, relativePath) => {
+    const current = start(true); await initializeReportWorkspace(current);
+    const path = join(current.selected.workspacePath, relativePath), bytes = Buffer.alloc(size);
+    fs.mkdirSync(dirname(path), { recursive: true });
+    fs.writeFileSync(path, bytes);
+    const external = join(current.selected.jobRootDir, "TEST-dependency-target"), dependency = join(current.selected.workspacePath, "node_modules");
+    fs.mkdirSync(external, { mode: 0o700 });
+    fs.writeFileSync(join(external, "TEST-original.txt"), "TEST preserved dependency bytes\n");
+    fs.symlinkSync(external, dependency, "dir");
+    const dependencyIdentity = fs.lstatSync(dependency);
+    current.lease.stage({ status: "partial", provider: "codex", runId: current.jobId, taskId: current.selected.taskId,
+      changedFiles: [relativePath] });
+    const originalCandidate = researchRead(join(current.directory, "mimo-candidate.json"));
+    enterResearchOperatorScope(current.unit);
+    vi.spyOn(runtimeArtifact, "assertQualifiedResearchRuntimeArtifact").mockImplementation((directory, sha) => {
+      expect(directory).toBe("/TEST-artifact"); expect(researchArtifactDigest(directory)).toBe(sha);
+    });
+    expect((await finalize(current)).status).toBe("partial");
+    const name = fs.readdirSync(current.directory).find(name => name.startsWith("preservation-refusal."));
+    if (!name) throw new Error("Missing authenticated TEST refusal");
+    const retained = researchRead(join(current.directory, name));
+    expect(JSON.parse(retained.toString())).toMatchObject({ jobId: current.jobId, startId: current.startId,
+      specSha256: current.specSha256, candidateSha256: researchHash(originalCandidate),
+      reason, processTerminal: true, preservationComplete: false, writerReleased: false });
+    // The result is published without a packet: the receipt is the proof and only the count, never the refused paths.
+    const publication = researchRead(join(current.directory, "mimo-publication.json"));
+    const result: RuntimeResultEnvelope = JSON.parse(publication.toString()).result;
+    expect(result.status).toBe("partial");
+    expect(result.changedFiles).toEqual([]);
+    expect(result.artifacts ?? []).toEqual([]);
+    expect(result.evidence).toContain(`handoff_preservation_refused:${reason}`);
+    expect(result.details).toMatchObject({ preservationRefusalReason: reason,
+      preservationRefusalReceiptSha256: researchHash(retained), preservationRefusalWorkspaceRetained: "true" });
+    expect(result.details?.changedFilesCount).toMatch(/^[1-9][0-9]*$/);
+    for (const refusedPath of ["TEST-too-large.bin", ".env.example", ".npmrc"]) expect(publication.toString()).not.toContain(refusedPath);
+    expect(JSON.parse(fs.readFileSync(codexGoalOutputPath(current.config), "utf8"))).toMatchObject({ status: "partial" });
+    expect(JSON.parse(fs.readFileSync(codexGoalProgressPath(current.config), "utf8")).status).toBe("partial");
+    expect(fs.readFileSync(path).equals(bytes)).toBe(true);
+    expect(fs.lstatSync(dependency).ino).toBe(dependencyIdentity.ino);
+    expect(fs.readlinkSync(dependency)).toBe(external);
+    expect(fs.readFileSync(join(external, "TEST-original.txt"), "utf8")).toBe("TEST preserved dependency bytes\n");
+    expect(researchRead(join(current.directory, "mimo-candidate.json"))).toEqual(originalCandidate);
+    expect(fs.existsSync(join(researchJobAuthority(current.jobId), "active.json"))).toBe(false);
+    expect(fs.existsSync(join(researchJobAuthority(current.jobId), "last-terminal.json"))).toBe(true);
+    expect((await finalize(current)).status).toBe("partial");
+    expect(researchRead(join(current.directory, name))).toEqual(retained);
+    expect(researchRead(join(current.directory, "mimo-publication.json"))).toEqual(publication);
+  });
+
+  it("refuses candidate drift at the budget-error boundary without minting a refusal", async () => {
+    const current = await candidate(); enterResearchOperatorScope(current.unit);
+    vi.spyOn(materialization, "materializeReconciledTerminalCodexGoalHandoff").mockImplementation(async () => {
+      researchPublish(join(current.directory, "mimo-candidate.json"), { TEST: "foreign" });
+      throw new Error("dirty_terminal_handoff_unavailable:handoff_total_byte_limit_exceeded");
+    });
+    await expect(finalize(current)).rejects.toThrow("hosted_research_launch_denied");
+    expect(fs.readdirSync(current.directory).some(name => name.startsWith("preservation-refusal."))).toBe(false);
+    expect(fs.existsSync(join(current.directory, "mimo-publication.json"))).toBe(false);
+    expect(fs.existsSync(join(researchJobAuthority(current.jobId), "active.json"))).toBe(true);
+    expect(fs.existsSync(codexGoalOutputPath(current.config))).toBe(false);
+  });
+
   });
 
   // RED: another operator releases/restarts the same job during final publication.

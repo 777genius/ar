@@ -1,5 +1,6 @@
 import type { WorkerCapacitySnapshot } from "../../types";
 import type {
+  WorkerAccountRecoveryPreparation,
   WorkerAccountCapacityClaimResult,
   WorkerAccountCapacityRecheckClaim,
   WorkerAccountCapacityRecheckMode,
@@ -11,6 +12,8 @@ import type {
 } from "../domain";
 
 export type WorkerAccountCapacityStore = {
+  /** Typed prepared-birth passage, never capacity availability or dispatch. */
+  prepareTaskRecovery?(input: { readonly demand: WorkerRuntimeDemand; readonly now: Date }): WorkerAccountRecoveryPreparation | undefined;
   read(input: {
     readonly accountId: string;
     readonly demand?: WorkerRuntimeDemand;

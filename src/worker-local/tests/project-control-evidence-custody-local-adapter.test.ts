@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   mkdtemp,
   mkdir,
+  chmod,
   lstat,
   readFile,
   readdir,
@@ -26,13 +27,16 @@ const fixtureDeadlineMs = 10_000;
 const fixtureMaxStderrBytes = 64 * 1024;
 // Node 26 has no transform-types flag, and the adapter uses a constructor
 // parameter property. The pinned project TypeScript therefore translates this
-// closed canonical allowlist (the adapter, its two imported leaves and the
+// closed canonical allowlist (the adapter, its imported leaves and the
 // fixture) into a temporary ESM tree; no loader hook or open-ended transpile.
 const fixtureClosure = [
   "../project-control-evidence-custody-local-adapter",
   "../project-control-evidence-custody-materialization",
   "../project-control-custody-directory-publication",
   "./project-control-evidence-custody-crash-fixture",
+  "../project-control-custody-directory-read",
+  "../project-control-evidence-custody-absence",
+  "../project-control-evidence-custody-errors",
 ] as const;
 let stagedFixtureRoot: string | undefined;
 let stagedFixturePath = "";
@@ -141,6 +145,53 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
       "inspection_parent_drift",
     );
     expect(swapped).toBe(true);
+  });
+
+  it("rejects replacement of the admitted root before opening metadata bytes", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-admitted-read-race-"));
+    try {
+      const root = join(outer, "root"), file = join(root, "package.json");
+      await mkdir(root); await writeFile(file, "original bytes");
+      const identity = await lstat(root); let reachedReadCompletion = false;
+      const custody = new LocalProjectControlEvidenceCustody(async point => {
+        if (point === "before_immutable_read_open") {
+          await rename(root, join(outer, "original-root")); await mkdir(root);
+          await writeFile(file, "outside original admitted root");
+        }
+        if (point === "after_immutable_read_before_lexical_reopen") reachedReadCompletion = true;
+      });
+      await expect(custody.readImmutableFile(file, 1024,
+        { canonicalPath: root, dev: identity.dev, ino: identity.ino })).rejects.toThrow();
+      expect(reachedReadCompletion).toBe(false);
+    } finally { await rm(outer, { recursive: true, force: true }); }
+  });
+
+  it("reads contained link text without following its target", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-link-read-"));
+    try {
+      await writeFile(join(outer, "target"), "private target bytes");
+      await symlink("target", join(outer, "link"));
+      const custody = new LocalProjectControlEvidenceCustody();
+      expect(await custody.readSymbolicLink(join(outer, "link"))).toBe("target");
+      await expect(custody.readSymbolicLink(join(outer, "target"))).rejects.toThrow("link_invalid");
+    } finally { await rm(outer, { recursive: true, force: true }); }
+  });
+
+  it.each(["parent", "leaf"] as const)("rejects a %s replacement during a held-parent link read", async kind => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-link-race-"));
+    try {
+      const parent = join(outer, "parent"), link = join(parent, "link");
+      await mkdir(parent); await symlink("target", link);
+      let swapped = false;
+      const custody = new LocalProjectControlEvidenceCustody(async (point, path) => {
+        if (point !== "after_link_read_before_lexical_revalidation" || path !== link || swapped) return;
+        swapped = true;
+        if (kind === "parent") { await rename(parent, join(outer, "original")); await mkdir(parent); await symlink("other", link); }
+        else { await rename(link, join(parent, "original-link")); await symlink("other", link); }
+      });
+      await expect(custody.readSymbolicLink(link)).rejects.toThrow();
+      expect(swapped).toBe(true);
+    } finally { await rm(outer, { recursive: true, force: true }); }
   });
 
   it("rejects a directory lexical replacement after listing", async () => {
@@ -293,6 +344,93 @@ describe.runIf(localProjectControlEvidenceCustodySupported)(
       expect(await readFile(displaced)).toEqual(oldBytes);
     },
   );
+
+  it("returns permission bits from the same held descriptor and reads an absent leaf only under a certified parent", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-optional-read-"));
+    const custody = new LocalProjectControlEvidenceCustody();
+    const file = join(outer, "mode.bin");
+    await writeFile(file, "bytes", { mode: 0o640 });
+    await chmod(file, 0o640);
+    expect(await custody.readImmutableFile(file, 16)).toMatchObject({ length: 5, mode: 0o640 });
+    expect(await custody.readOptionalImmutableFile(file, 16)).toMatchObject({ mode: 0o640 });
+    expect(await custody.readOptionalImmutableFile(join(outer, "absent.bin"), 16)).toBeUndefined();
+    // The byte cap is enforced while reading.
+    await expect(custody.readImmutableFile(file, 4)).rejects.toThrow("evidence_custody_file_invalid");
+  });
+
+  it("refuses an aliased, dangling or missing ancestor and a symlink leaf instead of reading external bytes or absence", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-ancestor-alias-"));
+    const external = join(outer, "external");
+    await mkdir(external);
+    await writeFile(join(external, "validation.log"), "EXTERNAL bytes\n");
+    const custody = new LocalProjectControlEvidenceCustody();
+    // logs -> external directory: a legitimate-looking lexical path whose parent is a stable alias.
+    await symlink(external, join(outer, "logs"));
+    const aliased = join(outer, "logs", "validation.log");
+    await expect(custody.readImmutableFile(aliased, 1024)).rejects.toThrow();
+    await expect(custody.readOptionalImmutableFile(aliased, 1024)).rejects.toThrow();
+    // Absent leaf beneath the aliased parent must not read as absent either.
+    await expect(custody.readOptionalImmutableFile(join(outer, "logs", "absent.log"), 1024)).rejects.toThrow();
+    // Dangling parent alias and a missing parent directory.
+    await symlink(join(outer, "nowhere"), join(outer, "dangling"));
+    await expect(custody.readOptionalImmutableFile(join(outer, "dangling", "x.log"), 1024)).rejects.toThrow();
+    await expect(custody.readOptionalImmutableFile(join(outer, "missing-dir", "x.log"), 1024)).rejects.toThrow();
+    // A dangling symlink leaf is not absence.
+    await symlink(join(outer, "nowhere"), join(outer, "leaf.log"));
+    await expect(custody.readOptionalImmutableFile(join(outer, "leaf.log"), 1024)).rejects.toThrow();
+  });
+
+  it.each(["read", "optional"] as const)("rejects replacement of an ANCESTOR directory after the held-FD %s", async (operation) => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-parent-race-"));
+    const parent = join(outer, "parent");
+    const displaced = join(outer, "parent.original");
+    const external = join(outer, "external");
+    await mkdir(parent);
+    await mkdir(external);
+    await writeFile(join(parent, "file.bin"), "original bytes\n");
+    await writeFile(join(external, "file.bin"), "EXTERNAL bytes\n");
+    let replaced = false;
+    const custody = new LocalProjectControlEvidenceCustody(async (point) => {
+      if (point !== "after_immutable_read_before_lexical_reopen" || replaced) return;
+      replaced = true;
+      await rename(parent, displaced);
+      await symlink(external, parent);
+    });
+    const target = join(parent, "file.bin");
+    await expect(operation === "read" ? custody.readImmutableFile(target, 1024) : custody.readOptionalImmutableFile(target, 1024))
+      .rejects.toThrow("file_changed_during_read");
+    expect(replaced).toBe(true);
+  });
+
+  it.each(["a new directory", "a symlink to an external directory", "the parent moved away", "the leaf appearing"] as const)(
+    "refuses an absent leaf when, at the held absence boundary, the parent is replaced by %s", async (substitution) => {
+      const outer = await mkdtemp(join(tmpdir(), "custody-absence-race-"));
+      const parent = join(outer, "parent");
+      const external = join(outer, "external");
+      await mkdir(parent);
+      await mkdir(external);
+      const target = join(parent, "validation.log");
+      let fired = false;
+      const custody = new LocalProjectControlEvidenceCustody(async (point, path) => {
+        if (point !== "after_immutable_read_before_lexical_reopen" || path !== target || fired) return;
+        fired = true;
+        if (substitution === "the leaf appearing") { await writeFile(target, "appeared\n"); return; }
+        await rename(parent, join(outer, "parent.original"));
+        if (substitution === "a new directory") await mkdir(parent);
+        if (substitution === "a symlink to an external directory") await symlink(external, parent);
+      });
+      await expect(custody.readOptionalImmutableFile(target, 1024)).rejects.toThrow("evidence_custody_absence_unproven");
+      expect(fired).toBe(true);
+    });
+
+  it("returns undefined for an absent leaf only when the held parent stays the canonical parent", async () => {
+    const outer = await mkdtemp(join(tmpdir(), "custody-absence-ok-"));
+    await mkdir(join(outer, "parent"));
+    let boundaryReached = false;
+    const custody = new LocalProjectControlEvidenceCustody(async () => { boundaryReached = true; });
+    expect(await custody.readOptionalImmutableFile(join(outer, "parent", "absent.log"), 1024)).toBeUndefined();
+    expect(boundaryReached).toBe(true); // the absence proof really passed through the held boundary
+  });
 
   it("writeAll completes deterministic short writes and rejects zero progress", async () => {
     const output = Buffer.alloc(11);

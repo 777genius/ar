@@ -1,4 +1,6 @@
+import { readOriginalUsableGuestFunding } from "./hosted-ordinary-usable-guest-funding";
 import { trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
+import { hostedFundedInstallationVersions } from "../core/host-infrastructure/host-installation-successor";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
@@ -26,16 +28,18 @@ export function ordinaryInstallationSpawnCustody(fence: HostedActivationFence, r
   inventory: HostedInventoryV5): HostedFdOriginalSpawnCustody {
   assertHostedActivationFence(fence); if (!reserved.has(reservation)) denied();
   const path = join(readonlySupervisorRoot, "ordinary-installations", inventory.supervisor.operationId, "operation.json");
-  const bytes = readHostedPrivateBytes(path, 64 * 1024); if (!bytes) denied();
+  const usableGuest = inventory.supervisor.bootstrap.path.endsWith("/dist/worker-codex/hosted-ordinary-installation-usable-guest.js");
+  const readFunding = () => usableGuest ? readOriginalUsableGuestFunding(inventory.supervisor) : readHostedPrivateBytes(path, 64 * 1024);
+  const bytes = readFunding(); if (!bytes) denied();
   const packet = JSON.parse(bytes.toString("utf8"));
-  if (packet.schemaVersion !== 2 || packet.operationId !== inventory.supervisor.operationId ||
+  if (!hostedFundedInstallationVersions.includes(packet.schemaVersion) || packet.operationId !== inventory.supervisor.operationId ||
       packet.workEndEpochMs !== inventory.supervisor.workEndEpochMs || packet.cleanupEndEpochMs !== inventory.supervisor.cleanupEndEpochMs ||
       packet.node.path !== inventory.supervisor.executable.path || packet.node.sha256 !== inventory.supervisor.executable.sha256 ||
-      packet.bootstrap.path !== inventory.supervisor.bootstrap.path || packet.bootstrap.sha256 !== inventory.supervisor.bootstrap.sha256) denied();
+      !usableGuest && (packet.bootstrap.path !== inventory.supervisor.bootstrap.path || packet.bootstrap.sha256 !== inventory.supervisor.bootstrap.sha256)) denied();
   return Object.freeze({
     assertOriginalWork() {
       assertHostedActivationFence(fence);
-      if (returned.has(reservation.reservation.startId) || collectProcessBirth(String(process.pid)) !== inventory.supervisor.birth || !readHostedPrivateBytes(path, 64 * 1024)?.equals(bytes)) denied();
+      if (returned.has(reservation.reservation.startId) || collectProcessBirth(String(process.pid)) !== inventory.supervisor.birth || !readFunding()?.equals(bytes)) denied();
       const now = Date.now(), elapsed = Number((process.hrtime.bigint() - BigInt(packet.issuedMonotonicNs)) / 1_000_000n);
       if (!Number.isSafeInteger(elapsed) || elapsed < 0 || now < packet.issuedEpochMs || now < packet.issuedEpochMs + elapsed - 1000 ||
           Math.min(packet.workEndEpochMs - now, packet.workEndEpochMs - packet.issuedEpochMs - elapsed) < 1) denied();

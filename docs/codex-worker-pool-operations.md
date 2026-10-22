@@ -1086,9 +1086,12 @@ Recommended agent loop:
    jobRootDir manually.
    Also check `brief.progressUpdatedAt` and `brief.progressHeartbeatAgeMs`.
    Fresh progress means a quiet stdout/log is not enough evidence to stop.
-   If `brief.appServerProcessAlive` is false while the runner heartbeat is
-   fresh, treat it as app-server startup/materialization trouble rather than a
-   productive Codex turn.
+   `brief.appServerProcessAlive` describes the observed progress-PID descendant
+   tree. A native provider can run in a separate service, so registered native
+   status omits an uncovered negative and the brief renders it as unknown.
+   Interpret false as startup/materialization trouble only when that tree
+   covers the relevant app-server. Neither true nor unknown proves initialize
+   completion, turn dispatch, model usage or useful work.
 4. If `brief.hasAvailableAccount` is false, do not continue. Use
    `codex_goal_accounts_status`, then ask for relogin or wait for cooldown.
 5. If `recommendedAction` is `start_worker`, use `codex_goal_continue` for

@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   ProjectDebtReason,
@@ -7,6 +7,13 @@ import {
   type ProjectDebtItem,
   type ProjectDebtRetainedOutput,
 } from "../domain/project-admission";
+import {
+  RETAINED_NONQUALIFIED_BACKUP_PAYLOADS,
+  RETAINED_NONQUALIFIED_STATUS,
+  retainedNonqualifiedRetentionProblems,
+  type RetainedNonqualifiedOriginalKind,
+  type RetainedNonqualifiedRetention,
+} from "../domain/retained-nonqualified-attempt";
 import type { TerminalOutputBackup } from "../domain/terminal-output-decision";
 
 const CONSUMED_OUTPUT_TERMINAL_STATUSES = new Set([
@@ -17,6 +24,7 @@ const CONSUMED_OUTPUT_TERMINAL_STATUSES = new Set([
   "archived",
   "failed_no_output",
   "reviewed_no_change",
+  RETAINED_NONQUALIFIED_STATUS,
 ]);
 
 const NO_OUTPUT_STATUS = "failed_no_output";
@@ -39,6 +47,16 @@ export type ConsumedOutputRecord = {
   readonly preexistingWorkspacePatchValid?: boolean;
   readonly reclassifiableAsFailedNoOutput?: boolean;
   readonly hasAuthoredOutput: boolean;
+  /**
+   * Present only for a structurally valid retained_nonqualified record whose
+   * immutable receipt bytes matched the bound hash. Custody evidence only: it
+   * never implies approval, a stop, authored output or replay authority.
+   */
+  readonly retainedNonqualified?: {
+    readonly kind: RetainedNonqualifiedOriginalKind;
+    readonly receiptPath: string;
+    readonly receiptSha256: string;
+  };
   readonly structurallyValid?: boolean;
   readonly retentionEvidenceMissing?: boolean;
   readonly valid: boolean;
@@ -136,6 +154,7 @@ export async function readConsumedOutputLedgers(input: {
     if (
       record.status !== NO_OUTPUT_STATUS &&
       record.status !== REVIEWED_NO_CHANGE_STATUS &&
+      record.status !== RETAINED_NONQUALIFIED_STATUS &&
       record.workspace
     ) {
       setLatestRecord(byWorkspace, resolve(record.workspace), record);
@@ -143,6 +162,7 @@ export async function readConsumedOutputLedgers(input: {
     if (
       record.status !== NO_OUTPUT_STATUS &&
       record.status !== REVIEWED_NO_CHANGE_STATUS &&
+      record.status !== RETAINED_NONQUALIFIED_STATUS &&
       record.resolvedWorkspace
     ) {
       setLatestRecord(byWorkspace, record.resolvedWorkspace, record);
@@ -332,6 +352,9 @@ export async function consumedOutputRecordFromJson(input: {
     ...backupEvidence.availabilityEvidence,
   ];
   const commit = integratedOutputCommit(input.value);
+  const retained = await retainedNonqualifiedEvidence(
+    input.value, status, backup, commit, input.source,
+  );
   const hasAuthoredOutput = backupEvidence.hasAuthoredOutput ||
     (status === "integrated" && commit !== undefined);
   if (status === NO_OUTPUT_STATUS) {
@@ -344,11 +367,16 @@ export async function consumedOutputRecordFromJson(input: {
     ));
   } else if (status === REVIEWED_NO_CHANGE_STATUS) {
     structuralEvidence.push(...reviewedNoChangeEvidence(input.value, hasAuthoredOutput));
+  } else if (status === RETAINED_NONQUALIFIED_STATUS) {
+    // Custody-only disposition: authored output is neither required nor claimed.
+    // Its retention problems (and forged retention on any other status) are
+    // appended below, once, for every status.
   } else if (!hasAuthoredOutput && availabilityEvidence.length === 0) {
     structuralEvidence.push(
       `terminal output status ${status} has no authored output evidence; use failed_no_output for infrastructure failures`,
     );
   }
+  structuralEvidence.push(...retained.structuralEvidence);
   if (status === "integrated" && !commit) {
     structuralEvidence.push("integrated consumed-output record is missing commit evidence");
   }
@@ -415,11 +443,70 @@ export async function consumedOutputRecordFromJson(input: {
     preexistingWorkspacePatchValid: preexistingWorkspacePatch.valid,
     reclassifiableAsFailedNoOutput,
     hasAuthoredOutput,
+    ...(retained.verified && structurallyValid ? { retainedNonqualified: retained.verified } : {}),
     structurallyValid,
     retentionEvidenceMissing,
     valid,
     evidence,
   };
+}
+
+/**
+ * retention belongs to exactly one status. For retained_nonqualified the bound
+ * receipt must exist, be inside the backup root and match its recorded hash;
+ * missing or changed bytes are structural (blocking), never "pruned retention".
+ */
+async function retainedNonqualifiedEvidence(
+  value: Record<string, unknown>,
+  status: string,
+  backup: Record<string, unknown> | undefined,
+  commit: string | undefined,
+  source: Pick<ConsumedOutputLedgerSourcePort, "pathSha256" | "pathSize">,
+): Promise<{
+  readonly structuralEvidence: readonly string[];
+  readonly verified?: NonNullable<ConsumedOutputRecord["retainedNonqualified"]>;
+}> {
+  if (status !== RETAINED_NONQUALIFIED_STATUS) {
+    return value.retention === undefined
+      ? { structuralEvidence: [] }
+      : { structuralEvidence: [`terminal consumed-output status ${status} must not carry retention`] };
+  }
+  const problems = [...retainedNonqualifiedRetentionProblems(value.retention)];
+  if (commit !== undefined || value.failure !== undefined || value.output !== undefined ||
+      value.preexistingWorkspacePatch !== undefined || value.publicationIncorporation !== undefined ||
+      value.attemptId !== undefined) {
+    problems.push("retained_nonqualified record must not carry commit, failure, output, patch, publication or attempt claims");
+  }
+  for (const key of ["patchPath", "numstatPath", "untrackedArchivePath"] as const) {
+    if (!stringValue(backup?.[key])) problems.push(`retained_nonqualified backup requires ${key}`);
+  }
+  if (problems.length > 0) return { structuralEvidence: problems };
+  const retention = value.retention as RetainedNonqualifiedRetention;
+  const backupRoot = dirname(stringValue(backup?.statusPath) ?? "/");
+  if (!pathInsideOrEqual(retention.receiptPath, backupRoot) || resolve(retention.receiptPath) !== retention.receiptPath) {
+    return { structuralEvidence: ["retained_nonqualified receipt is outside the backup root"] };
+  }
+  // Custody is complete or it is nothing: every backup payload must still exist
+  // (the generic backup check accepts any one of them). Hashes of the payloads
+  // are bound by the receipt and re-verified by the admission verifier.
+  for (const key of ["statusPath", "patchPath", "numstatPath", "untrackedArchivePath"] as const) {
+    if (await source.pathSize(stringValue(backup?.[key])!) === undefined) {
+      return { structuralEvidence: [`retained_nonqualified backup ${key} bytes are missing`] };
+    }
+  }
+  for (const payload of RETAINED_NONQUALIFIED_BACKUP_PAYLOADS) {
+    if (await source.pathSize(join(backupRoot, payload)) === undefined) {
+      return { structuralEvidence: [`retained_nonqualified archival payload ${payload} is missing`] };
+    }
+  }
+  const actual = await source.pathSha256(retention.receiptPath);
+  if (actual === undefined) return { structuralEvidence: ["retained_nonqualified receipt bytes are missing"] };
+  if (actual !== retention.receiptSha256) {
+    return { structuralEvidence: ["retained_nonqualified receipt hash mismatch"] };
+  }
+  return { structuralEvidence: [], verified: {
+    kind: retention.kind, receiptPath: retention.receiptPath, receiptSha256: retention.receiptSha256,
+  } };
 }
 
 export function consumedOutputRecordFor(input: {

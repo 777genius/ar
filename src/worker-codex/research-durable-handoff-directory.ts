@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } fr
 import { dirname, join, relative } from "node:path";
 import { researchInvalid, researchPath, researchRecord } from "./research-launch-files";
 import { researchCommand } from "./research-launch-host";
+import { researchAdmissionMeasure } from "./research-launch-admission-diagnostics";
 
 /** A cold initial-host mount witness. Runtime bind aliases confer no authority. */
 export type ResearchDurableDirectory = Readonly<{
@@ -22,9 +23,20 @@ export function parseResearchDurableDirectory(value: unknown, path: string): Res
   if (r.mountPoint !== "/" && path !== r.mountPoint && !path.startsWith(r.mountPoint + "/")) researchInvalid();
   return Object.freeze(r) as ResearchDurableDirectory;
 }
-type Frame = { table: string; rows: ReadonlyMap<number, Record<string, unknown>>; descriptors: Map<string, number> };
-export function researchDurableDirectory(path: string, privateLeaf = true): ResearchDurableDirectory {
-  return durableDirectory(path, privateLeaf);
+type MountRows = ReadonlyMap<string, readonly string[]>;
+function indexMountRows(table: string): MountRows {
+  const result = new Map<string, string[]>();
+  for (const row of table.trimEnd().split("\n")) {
+    const id = row.split(" ", 1)[0]!;
+    const rows = result.get(id);
+    if (rows) rows.push(row);
+    else result.set(id, [row]);
+  }
+  return result;
+}
+type Frame = { mountRows: MountRows; rows: ReadonlyMap<number, Record<string, unknown>>; descriptors: Map<string, number> };
+export function researchDurableDirectory(path: string, privateLeaf = true, observeTargetQuery?: (elapsedMs: number) => void): ResearchDurableDirectory {
+  return durableDirectory(path, privateLeaf, undefined, observeTargetQuery);
 }
 function assertDirectoryCustody(path: string, privateLeaf: boolean): void {
   researchPath(path);
@@ -35,7 +47,7 @@ function assertDirectoryCustody(path: string, privateLeaf: boolean): void {
     if (current === "/") break;
   }
 }
-function durableDirectory(path: string, privateLeaf = true, frame?: Frame): ResearchDurableDirectory {
+function durableDirectory(path: string, privateLeaf = true, frame?: Frame, observeTargetQuery?: (elapsedMs: number) => void): ResearchDurableDirectory {
   researchPath(path);
   // /proc/1/root intentionally selects the initial Host's directory rather than
   // the runtime's pinned target alias. Never follow links below that fixed root.
@@ -48,7 +60,7 @@ function durableDirectory(path: string, privateLeaf = true, frame?: Frame): Rese
     const ids = [...info.matchAll(/^mnt_id:\s+([1-9]\d*)$/gm)];
     if (ids.length !== 1) researchInvalid();
     const mountId = Number(ids[0]![1]);
-    const rows = (frame?.table ?? coldMountTable()).trimEnd().split("\n")
+    const rows = frame ? frame.mountRows.get(String(mountId)) ?? [] : coldMountTable().trimEnd().split("\n")
       .filter(row => row.split(" ", 1)[0] === String(mountId));
     if (rows.length !== 1) researchInvalid();
     const parts = rows[0]!.split(" "), separator = parts.indexOf("-");
@@ -57,8 +69,10 @@ function durableDirectory(path: string, privateLeaf = true, frame?: Frame): Rese
         parts.slice(6, separator).some(field => !/^(?:shared|master|propagate_from):[1-9]\d*$|^unbindable$/.test(field)) ||
         !/^[a-zA-Z0-9_.-]+$/.test(parts[separator + 1] ?? "") || /[\0\r\n\\]/.test(parts[separator + 2] ?? "") ||
         !/^[a-zA-Z0-9_,.=:-]+$/.test(parts[separator + 3] ?? "")) researchInvalid();
-    const query: unknown = frame ? { filesystems: [frame.rows.get(mountId)] } : JSON.parse(researchCommand("/usr/bin/findmnt", ["--task", "1", "--json", "--target", path,
+    const targetQuery = (): unknown => JSON.parse(researchCommand("/usr/bin/findmnt", ["--task", "1", "--json", "--target", path,
       "--output", "ID,TARGET,UUID,FSROOT,MAJ:MIN"]));
+    const query: unknown = frame ? { filesystems: [frame.rows.get(mountId)] }
+      : observeTargetQuery ? researchAdmissionMeasure(targetQuery, observeTargetQuery) : targetQuery();
     if (!query || typeof query !== "object" || !("filesystems" in query) || !Array.isArray(query.filesystems) || query.filesystems.length !== 1) researchInvalid();
     const row = researchRecord(query.filesystems[0], "id,target,uuid,fsroot,maj:min");
     const device = BigInt(stat.dev), major = (device >> 8n & 0xfffn) | (device >> 32n & 0xfffff000n), minor = (device & 0xffn) | (device >> 12n & 0xffffff00n);
@@ -74,7 +88,7 @@ function durableDirectory(path: string, privateLeaf = true, frame?: Frame): Rese
     try {
       const reopenedStat = fstatSync(reopened), freshInfo = readFileSync(`/proc/self/fdinfo/${reopened}`, "utf8");
       const freshIds = [...freshInfo.matchAll(/^mnt_id:\s+([1-9]\d*)$/gm)];
-      const currentRows = (frame?.table ?? coldMountTable()).trimEnd().split("\n")
+      const currentRows = frame ? frame.mountRows.get(String(mountId)) ?? [] : coldMountTable().trimEnd().split("\n")
         .filter(row => row.split(" ", 1)[0] === String(mountId));
       if (!reopenedStat.isDirectory() || reopenedStat.uid !== 0 || (reopenedStat.mode & 0o022) ||
           privateLeaf && (reopenedStat.mode & 0o777) !== 0o700 ||
@@ -86,7 +100,8 @@ function durableDirectory(path: string, privateLeaf = true, frame?: Frame): Rese
 }
 function coldMountTable(): string { return readResearchColdMountTable(); }
 /** Fresh complete frame; descriptors remain pinned until every end readback. */
-export function researchDurableDirectories(inputs: readonly Readonly<{ path: string; privateLeaf?: boolean }>[]): readonly ResearchDurableDirectory[] {
+export function researchDurableDirectories(inputs: readonly Readonly<{ path: string; privateLeaf?: boolean }>[],
+  observeTargetQuery?: (elapsedMs: number) => void): readonly ResearchDurableDirectory[] {
   if (!inputs.length || inputs.length > 128 || new Set(inputs.map(input => input.path)).size !== inputs.length) researchInvalid();
   const descriptors = new Map<string, number>();
   try {
@@ -94,19 +109,21 @@ export function researchDurableDirectories(inputs: readonly Readonly<{ path: str
       assertDirectoryCustody(input.path, input.privateLeaf ?? true);
       descriptors.set(input.path, openSync("/proc/1/root" + input.path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
     }
-    const table = coldMountTable(), rows = researchMountWitnessRows();
-    const result = inputs.map(input => durableDirectory(input.path, input.privateLeaf ?? true, { table, rows, descriptors }));
-    const final = coldMountTable().trimEnd().split("\n");
+    const mountRows = indexMountRows(coldMountTable());
+    const targetQueries = () => researchMountWitnessRows(inputs.length === 2 ? inputs.map(input => input.path) : undefined);
+    const rows = observeTargetQuery ? researchAdmissionMeasure(targetQueries, observeTargetQuery) : targetQueries();
+    const result = inputs.map(input => durableDirectory(input.path, input.privateLeaf ?? true, { mountRows, rows, descriptors }));
+    const final = indexMountRows(coldMountTable());
     for (const witness of result) {
-      const original = table.trimEnd().split("\n").filter(row => row.split(" ", 1)[0] === String(witness.mountId));
-      const current = final.filter(row => row.split(" ", 1)[0] === String(witness.mountId));
+      const original = mountRows.get(String(witness.mountId)) ?? [];
+      const current = final.get(String(witness.mountId)) ?? [];
       if (original.length !== 1 || current.length !== 1 || current[0] !== original[0]) researchInvalid();
     }
     return result;
   } finally { for (const fd of descriptors.values()) closeSync(fd); }
 }
-export function assertResearchDurableDirectory(identity: ResearchDurableDirectory): void {
-  if (JSON.stringify(researchDurableDirectory(identity.path)) !== JSON.stringify(identity)) researchInvalid();
+export function assertResearchDurableDirectory(identity: ResearchDurableDirectory, observeTargetQuery?: (elapsedMs: number) => void): void {
+  if (JSON.stringify(researchDurableDirectory(identity.path, true, observeTargetQuery)) !== JSON.stringify(identity)) researchInvalid();
 }
 export function sameResearchDurableBacking(source: ResearchDurableDirectory, pin: ResearchDurableDirectory): boolean {
   const backing = (value: ResearchDurableDirectory): string => join(value.mountRoot, relative(value.mountPoint, value.path));

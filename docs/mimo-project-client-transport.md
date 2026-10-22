@@ -37,6 +37,8 @@ Use `mimoProjectId` and `mimoWorkstreamId` with the ordinary tools:
 - `codex_goal_project_start`: the same identity, `jobId`, `confirmStart: true`, after create settled successfully.
 - `codex_goal_project_stop`: the same identity, `jobId`, `confirmStop: true`.
 
+`codex_goal_list_jobs` lists only the local registry and rejects MiMo project/workstream selectors; use `codex_goal_status_by_id` with a known hosted MiMo `jobId` instead.
+
 Hosted MiMo create and refill accept optional `thinking`: `true` maps to `reasoningEffort: "high"`, and `false` maps to `"none"`. Legacy `reasoningEffort` remains supported: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; omitting both fields keeps `medium`. When both are supplied, the legacy value is preserved and must agree: `thinking: false` requires `none`, while `thinking: true` accepts any supported non-`none` effort. Contradictions are rejected before submission. The Boolean is normalized to reasoning effort in the shared MiMo wire parser; it is unavailable for ordinary local routes or start, status, and stop. The value is retained for that new job. MiMo treats non-`none` efforts as enabled thinking. See [MiMo Responses documentation](https://mimo.mi.com/docs/en-US/api/chat/responses).
 
 Create, start and stop return a pending owned operation. Inspect status until that operation settles; a pending operation or successful submission is not worker completion. A transport timeout is uncertain: inspect the same job instead of resubmitting. Caller paths, credentials, environment, commands, model/provider overrides and arbitrary tool names are refused. The ordinary OpenAI route is unchanged when the MiMo route fields are absent.
@@ -55,3 +57,20 @@ For same-job Status reconciliation and candidate-free Stop completion, follow [o
 An installed, authenticated host endpoint and enrolled project binding are required. A local route file alone does not enable execution. Contained clients require their own authorized transport channel; do not expose host SSH credentials or the shared MiMo key to a worker to obtain one.
 
 Fresh registered MiMo jobs use the trusted CodingV1/64 policy; callers cannot select profiles or turn budgets. A qualified deployment supports native code editing, shell execution and project builds/tests within the admitted workspace. This requires exact-artifact native sandbox and real model Coding E2E evidence, not a legacy eight-turn research Worker proof. Each enabled project/workstream must be enrolled by the trusted operator and have a matching local route; disabled routing stays disabled. Merely updating the local MCP or this route file cannot activate a host release.
+
+Hosted MiMo Create/refill accepts optional `ownedPaths` to narrow the enrolled
+admission contract for a fresh job. Use exact relative files or trailing-slash
+directories, at most 256 unique entries and 48 KiB of JSON; each path is at most
+4096 bytes; the complete wire request must fit the existing 64 KiB ingress budget. Every entry must be contained in an enrolled ownership boundary.
+Omitting the field inherits the enrolled ownership unchanged. Control operations
+reject it, and a same-job replay does not revise an existing admission. Start,
+Status and Stop expose no `thinking`, `reasoningEffort` or `ownedPaths` inputs;
+supplying them is rejected before transport rather than silently discarded.
+
+The host replaces only the contract's `ownedPaths`: exact enrolled source SHA,
+packets, mandatory documents/scripts/fixtures/checks, review kind and execution
+policy remain inherited. Runtime computes the resulting workKey and validates
+that contract before broker worktree/job creation. `candidate/*` is not glob
+syntax; `candidate/` is authorized only if covered by the enrolled contract.
+Paths outside enrollment require a separately reviewed enrollment. Ownership is
+an admission and output claim, not OS enforcement of per-file writes.

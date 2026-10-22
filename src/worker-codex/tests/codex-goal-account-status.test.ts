@@ -1,11 +1,49 @@
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { codexAccountCapacityStore } from "../application/codex-account-capacity-store";
+import { LocalFileWorkerAccountCapacityStore } from "@vioxen/subscription-runtime/store-local-file";
+import { codexAccountCapacityRootDir, codexAccountCapacityStore } from "../application/codex-account-capacity-store";
 import { listCodexGoalAccountStatuses } from "../codex-goal-account-status";
 
 describe("Codex goal account status", () => {
+  it("refuses a mutation-capable caller store before an offline query reads auth", async () => {
+    await expect(listCodexGoalAccountStatuses({ authRootDir: "/TEST-query-no-auth", readOnly: true,
+      accountCapacityStore: codexAccountCapacityStore("/TEST-query-no-auth"),
+    })).rejects.toThrow("codex_goal_account_query_store_unsupported");
+  });
+  it.each(["empty", "legacy", "malformed"] as const)("queries %s capacity without migration, cleanup or an explicitly requested probe", async fixture => {
+    const root = await mkdtemp(join(tmpdir(), "TEST-account-read-query-"));
+    try {
+      const authRootDir = join(root, "auth"), stateRootDir = join(root, "state");
+      await writeTestAuth(authRootDir, "account-a", "TEST-query-account");
+      if (fixture === "legacy") new LocalFileWorkerAccountCapacityStore({ rootDir: join(stateRootDir, "worker-account-capacity") }).observe({
+        accountId: "account-a", observedAt: new Date(), capacity: { availability: "quota_exhausted", reason: "quota_limited", cooldownUntil: new Date(Date.now() + 3600000) },
+      });
+      if (fixture === "malformed") {
+        const dir = join(codexAccountCapacityRootDir(authRootDir), "account-capacity");
+        await mkdir(dir, { recursive: true });
+        // This alias maps to the synthetic provider identity; seed a malformed demand record
+        // using the real alias store's actual persisted path, never a guessed identity.
+        const stored = codexAccountCapacityStore(authRootDir).observe({ accountId: "account-a", observedAt: new Date(),
+          capacity: { availability: "quota_exhausted", reason: "quota_limited", cooldownUntil: new Date(Date.now() + 3600000) } });
+        if (!stored) throw Error("TEST stored capacity missing");
+        await writeFile(stored.recordId, "{TEST unreadable capacity");
+      }
+      const snapshot = async () => Promise.all((await readdir(root, { recursive: true })).sort().map(async path => {
+        try { return [path, (await readFile(join(root, path))).toString("hex")]; } catch { return [path, null]; }
+      }));
+      const before = await snapshot();
+      const [account] = await listCodexGoalAccountStatuses({ authRootDir, stateRootDir, accounts: ["account-a"],
+        readOnly: true, liveCheck: true, quotaOnlyLiveCheck: true, recheckDueCapacity: true, codexBinaryPath: "/TEST-forbidden-probe" });
+      expect(await snapshot()).toEqual(before);
+      expect(account?.liveCheck).toBeUndefined();
+      expect(account).toMatchObject(fixture === "empty" ? { status: "ready" } : {
+        status: "quota_unknown", availability: "unknown", schedulerEligible: false, safeMessage: "account capacity query is unproven",
+      });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("keeps a flat-quarantined authenticated slot ineligible without launching a probe", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-goal-quarantine-probe-"));
     try {

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
   readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -18,6 +19,13 @@ import { abandonHostedDependencyToolPlan, prepareHostedDependencyToolPlan, retai
 import { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 export { hostedDependencySystemdRunExecutable } from "./hosted-dependency-systemd-command";
 
+export const hostedDependencyProviderLauncherSupport = Object.freeze([
+  "hosted-process-descriptors.js", "hosted-app-server-launch-frame.js", "hosted-fd-prelude.js",
+  "hosted-blocking-output.js", "managed-provider-scratch-environment.js", "hosted-app-server-launch-frame-decoder.js",
+  "../../hosted-mimo-coding-bootstrap.js",
+] as const);
+export const hostedDependencyProviderLauncherPackageScope = "../.." as const;
+
 /** Called inside the real private provider reservation fence, before enclosure.
  * The guest never reads host authority. No payload-selected mounts or root dirs.
  */
@@ -32,7 +40,7 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   // Refuse the v2 default/injected route before any dependency read or root
   // construction. Only the worker-branded factory retains the genuine reader.
   if (binding.version === 2 && !readyReader) invalid();
-  readHostedDependencyAttempt(binding, start, String(reservation.startId));
+  readHostedDependencyAttempt(binding, start, String(reservation.startId), undefined, fence.parentRecipeReader);
   if (binding.version === 2 && !fdProfile) invalid();
   if (start.workspacePath !== binding.workspace.canonicalPath || start.jobRootDir !== binding.jobRootDir ||
       !/^subscription-runtime-hosted-[a-f0-9-]{36}\.service$/.test(unit)) invalid();
@@ -48,13 +56,17 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
   const executable = resolveExecutable(input.command, input.env.PATH);
   const node = trusted(realpathSync(process.execPath));
   const launcher = trusted(fileURLToPath(new URL("./hosted-app-server-launcher.js", import.meta.url)));
+  const operands = ["/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL", "--", "/usr/bin/unshare", "--user", "--map-user=65532", "--map-group=65532", "--keep-caps", "--",
+    "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
+    "/usr/bin/tini", "--", node, launcher, ...(fdProfile ? ["--fd-ready-v1"] : [])];
+  // A refused capability or literal proof must not create a provider root.
+  const literalOptions = providerLiteralArgumentOptions(operands);
   const root = `/var/lib/subscription-runtime-host-policy/dependency-provider-roots/${providerId}`;
   privateDirectory(dirname(root));
   // Each provider reservation gets a fresh finite root. Existing roots are
   // unresolved effects, not reusable descriptions or silently cleaned state.
   mkdirSync(root, { mode: 0o700 });
-  const launcherSupport = ["hosted-process-descriptors.js", "hosted-app-server-launch-frame.js", "hosted-fd-prelude.js"]
-    .map(name => trusted(`${dirname(launcher)}/${name}`));
+  const launcherSupport = hostedDependencyProviderLauncherSupport.map(name => trusted(join(dirname(launcher), name)));
   const readOnly = new Set<string>(["/usr", ...executableClosure.paths, executable, node, launcher, ...launcherSupport]);
   for (const alias of ["/bin", "/sbin", "/lib", "/lib64"]) {
     let info;
@@ -73,8 +85,9 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     mounts.push(`BindReadOnlyPaths=${source}:${source}:norbind`);
   }
   // This is a finite ESM closure, not a bind of the installed runtime tree.
-  // Package resolution must not depend on a host package.json outside the root.
-  writeFileSync(join(root, dirname(launcher), "package.json"), '{"type":"module"}\n', { flag: "wx", mode: 0o644 });
+  // Its common provider-codex scope also covers the parent coding bootstrap;
+  // package resolution must not depend on host metadata or syntax detection.
+  writeFileSync(join(root, dirname(launcher), hostedDependencyProviderLauncherPackageScope, "package.json"), '{"type":"module"}\n', { flag: "wx", mode: 0o644 });
   // The finite skeleton supplies only parent directories. Host job metadata,
   // encryption keys/state/results are absent, not shared via a broad job bind.
   // ProtectSystem makes these skeleton parents read-only; only leaves write.
@@ -129,14 +142,29 @@ export function hostedDependencyProviderInvocation(fence: HostedActivationFence,
     "TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=256M /var/tmp:rw,nosuid,nodev,mode=1777,size=64M"];
   const invocation: CodexAppServerProcessInvocation = { command: hostedDependencySystemdRunExecutable, systemdUnit: unit,
     args: ["--quiet", "--wait", "--pipe", "--collect", `--unit=${unit}`, "--service-type=exec",
-      "--expand-environment=no", `--working-directory=${input.cwd}`, ...properties.map(p => `--property=${p}`), "--",
-      "/usr/bin/unshare", "--map-user=65532", "--map-group=65532", "--keep-caps", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
-      "/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
-      "/usr/bin/tini", "--", node, launcher, ...(fdProfile ? ["--fd-ready-v1"] : [])],
+      ...literalOptions, `--working-directory=${input.cwd}`, ...properties.map(p => `--property=${p}`), "--", ...operands],
     stdinBootstrap: encodeHostedAppServerLaunchFrame({ schemaVersion: 1, ...input, command: executable, args: [...input.args] }) };
   retainHostedDependencyToolInvocation(fence, invocation);
   return invocation;
   } catch (error) { abandonHostedDependencyToolPlan(unit); throw error; }
+}
+// Read-only capability proof; legacy substitution is harmless only when every
+// constructed COMMAND operand is bounded and contains no dollar expansion.
+function providerLiteralArgumentOptions(operands: readonly string[]): readonly string[] {
+  const inspect = (args: readonly string[]) => spawnSync(hostedDependencySystemdRunExecutable, [...args], {
+    encoding: "utf8", timeout: 2000, maxBuffer: 32768, stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", SYSTEMD_COLORS: "0" },
+  });
+  const help = inspect(["--expand-environment=no", "--help"]);
+  if (!help.error && help.signal === null && help.status === 0 && help.stderr === "" && help.stdout.includes("--expand-environment="))
+    return ["--expand-environment=no"];
+  if (help.error || help.signal !== null || help.status !== 1 || help.stdout !== "" ||
+      help.stderr !== "/usr/bin/systemd-run: unrecognized option '--expand-environment=no'\n") invalid();
+  const version = inspect(["--version"]);
+  if (version.error || version.signal !== null || version.status !== 0 || version.stderr !== "" ||
+      !/^systemd 252(?: \([A-Za-z0-9.+~:_-]{1,80}\))?$/.test(version.stdout.split("\n")[0] ?? "")) invalid();
+  if (!operands.length || operands.some(value => typeof value !== "string" || value.length < 1 || value.length > 4096 || /[$\0\r\n]/.test(value))) invalid();
+  return [];
 }
 function resolveExecutable(command: string, path: string | undefined): string {
   for (const candidate of command.startsWith("/") ? [command] : (path ?? "").split(":").filter(Boolean).map(p => `${p}/${command}`)) {

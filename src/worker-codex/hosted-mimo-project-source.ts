@@ -1,18 +1,18 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git";
+import { managedDependencyGitEnvironment, managedDependencyGitFlags } from "./managed-dependency-git-hygiene";
 import { researchCustody } from "./research-launch-files";
 import { assertResearchInitialRoot } from "./research-launch-host";
 import type { ProjectSealedSourcePort } from "./codex-goal-mcp-project-control-jobs-types";
 
 /** Same inert environment/flags as managed/source handoff Git; no inherited mappings. */
-export function preparationSafeGit(args: readonly string[]): string {
+export function preparationSafeGit(args: readonly string[], timeoutMs = 30000): string {
   researchCustody("/usr/bin/git");
   return execFileSync("/usr/bin/git", ["--no-replace-objects", ...managedDependencyGitFlags,
     "-c", "core.attributesFile=/dev/null", "-c", "fsck.skipList=/dev/null", ...args], {
     env: { ...managedDependencyGitEnvironment(), GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
-    timeout: 30000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }
 export function assertPreparationGitMetadata(workspace: string): void {

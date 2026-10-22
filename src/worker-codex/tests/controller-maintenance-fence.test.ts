@@ -219,6 +219,80 @@ describe("controller maintenance fence", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps fence acquisition closed-enum when the ps toolchain is unavailable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-no-ps-fence-"));
+    const savedPath = process.env.PATH;
+    process.env.PATH = join(tmpdir(), "subscription-runtime-missing-bin");
+    let lease: Awaited<ReturnType<typeof acquireLocalControllerMaintenanceFence>> | undefined;
+    let failure: unknown;
+    try {
+      try {
+        lease = await acquireLocalControllerMaintenanceFence({
+          controllerJobRootDir: root,
+          owner: "no-ps-test",
+        });
+      } catch (error) {
+        failure = error;
+      }
+      if (lease) {
+        await expect(acquireLocalControllerMaintenanceFence({
+          controllerJobRootDir: root,
+          owner: "no-ps-contender",
+        })).rejects.toThrow(
+          /^controller_maintenance_(?:fence_active|process_identity_indeterminate)$/,
+        );
+      } else {
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toBe(
+          "controller_maintenance_process_identity_unavailable",
+        );
+      }
+    } finally {
+      if (lease) await releaseLocalControllerMaintenanceFence(lease);
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps ledger lock acquisition closed-enum when the ps toolchain is unavailable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "subscription-runtime-no-ps-ledger-"));
+    const ledgerRoot = join(root, "ledgers", "v1");
+    await mkdir(ledgerRoot, { recursive: true });
+    const savedPath = process.env.PATH;
+    process.env.PATH = join(tmpdir(), "subscription-runtime-missing-bin");
+    let lease: Awaited<ReturnType<typeof acquireConsumedOutputLedgerMaintenanceLock>> | undefined;
+    let failure: unknown;
+    try {
+      try {
+        lease = await acquireConsumedOutputLedgerMaintenanceLock({
+          ledgerRoot,
+          owner: "no-ps-test",
+        });
+      } catch (error) {
+        failure = error;
+      }
+      if (lease) {
+        await expect(acquireConsumedOutputLedgerMaintenanceLock({
+          ledgerRoot,
+          owner: "no-ps-contender",
+        })).rejects.toThrow(
+          /^consumed_output_ledger_maintenance_(?:locked|process_identity_indeterminate)$/,
+        );
+      } else {
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toBe(
+          "consumed_output_ledger_process_identity_unavailable",
+        );
+      }
+    } finally {
+      if (lease) await releaseConsumedOutputLedgerMaintenanceLock(lease);
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function sha256(value: string): string {

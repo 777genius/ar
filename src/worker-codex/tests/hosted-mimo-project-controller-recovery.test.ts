@@ -35,7 +35,14 @@ vi.mock("node:child_process", async original => {
   const cp = await original<typeof import("node:child_process")>();
   return { ...cp, execFile: Object.assign((file: string, args: string[], ...rest: unknown[]) => (cp.execFile as Function)(file, args.map(arg => boundary.map(arg) as string), ...rest), { [Symbol.for("nodejs.util.promisify.custom")]: (file: string, args: string[], options: object) => new Promise((resolve, reject) => cp.execFile(file, args.map(arg => boundary.map(arg) as string), options, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))) }), execFileSync: (file: string, args: string[], options: object) => cp.execFileSync(file, args.map(arg => boundary.map(arg) as string), options) };
 });
-vi.mock("../research-launch-host", async original => ({ ...await original<object>(), assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchExecutableDigest: () => "a".repeat(64), researchCommand: (command: string, args: string[]) => { const cp = require("node:child_process") as typeof import("node:child_process"); return cp.execFileSync(command, args.map(arg => boundary.map(arg) as string), { encoding: "utf8" }); } }));
+vi.mock("../research-launch-host", async original => ({ ...await original<object>(),
+  // Only the non-Linux fixture supplies TEST lock-owner metadata. Linux keeps
+  // the real procfs identity; publication still checks real files and custody.
+  ...(process.platform === "linux" ? {} : { researchProcessIdentity: (pid = process.pid) => ({
+    pid, birthTicks: "1", bootId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", machineId: "a".repeat(32),
+    controlGroup: "/TEST-recovery", namespaces: { user: "user:[1]", mnt: "mnt:[1]", pid: "pid:[1]", net: "net:[1]" },
+  }) }),
+  assertResearchInitialRoot: vi.fn(), assertResearchSharedHost: vi.fn(), researchExecutableDigest: () => "a".repeat(64), researchCommand: (command: string, args: string[]) => { const cp = require("node:child_process") as typeof import("node:child_process"); return cp.execFileSync(command, args.map(arg => boundary.map(arg) as string), { encoding: "utf8" }); } }));
 vi.mock("../research-launch-files", async original => ({ ...await original<object>(), researchCustody: (path: string, privateLeaf = false) => {
   // Host UID and fixed namespace are mapped; real directory/file/mode checks remain.
   const fs = require("node:fs") as typeof import("node:fs");
@@ -94,8 +101,13 @@ import { createCodexGoalJob, listCodexGoalJobs } from "../codex-goal-jobs";
 import { researchHash } from "../research-launch-files";
 import { AccessBoundary } from "@vioxen/subscription-runtime/worker-core";
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs"), cp = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+// Root creates host trees with umask 022; a user umask such as 002 would make
+// the fixtures group-writable, which custody rightly refuses.
+process.umask(0o022);
 boundary.root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "TEST-mimo-prepare-")));
-boundary.map = value => typeof value === "string" && value !== boundary.root && !value.startsWith(boundary.root + "/") && /^\/(?:srv|etc|opt|run|var|TEST-artifact)(?:\/|$)/.test(value) ? boundary.root + value : value;
+// Idempotent: the fixture root may itself live below /srv on a worker host.
+boundary.map = value => typeof value === "string" && /^\/(?:srv|etc|opt|run|var|TEST-artifact)(?:\/|$)/.test(value) &&
+  value !== boundary.root && !value.startsWith(boundary.root + "/") ? boundary.root + value : value;
 boundary.unmap = value => value.startsWith(boundary.root + "/") ? value.slice(boundary.root.length) : value;
 const physical = (path: string) => boundary.map(path) as string;
 function directory(path: string) { fs.mkdirSync(physical(path), { recursive: true, mode: 0o700 }); }
@@ -144,7 +156,7 @@ async function fixture() {
   const save = () => file(input, JSON.stringify(plan)); save();
   return { input, config, state, registry, source, old, oldPath, oldBytes, binding, plan, save, git };
 }
-vi.mock("../application/project-control/worker-launch-spec", () => ({ workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
+vi.mock("../application/project-control/worker-launch-spec", async original => ({ ...await original<object>(), workerLaunchAdmissionSchema: { parse: (v: unknown) => v } }));
 it("retires exact legacy registration; fresh canonical birth releases only the replacement", async () => {
   const f = await fixture();
   expect(await observeProtectedCodexGoalJobBirth(f.old)).toEqual({ status: "unknown" });
@@ -186,6 +198,16 @@ it("retains the crash guard and resumes only the exact plan after fresh publicat
   expect(fs.readFileSync(physical(f.oldPath))).toEqual(f.oldBytes);
   await expect(recoverHostedMimoController(f.input)).resolves.toMatchObject({ ok: true });
   expect(fs.existsSync(physical(f.state + "/.controller-recovery.json"))).toBe(false);
+});
+
+it("refuses to give a workstream being retired a new controller, before any effect", async () => {
+  const f = await fixture();
+  file(f.state + "/.job-retirement.json", JSON.stringify({ schemaVersion: 1, planSha256: "0".repeat(64) }) + "\n");
+  await expect(recoverHostedMimoController(f.input)).rejects.toThrow("mimo_project_bridge_retirement_pending");
+  expect(fs.readFileSync(physical(f.oldPath))).toEqual(f.oldBytes);
+  expect(fs.existsSync(physical(f.registry + "/" + f.plan.newControllerJobId))).toBe(false);
+  expect(fs.existsSync(physical(f.state + "/.controller-recovery.json"))).toBe(false);
+  expect(JSON.parse(fs.readFileSync(physical(f.config), "utf8"))).toEqual(f.binding);
 });
 
 it("durable recovery guard blocks workstream activity before effect", async () => {

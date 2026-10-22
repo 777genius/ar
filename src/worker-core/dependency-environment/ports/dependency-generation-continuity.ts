@@ -19,8 +19,18 @@ export interface DependencyGenerationReceiptVerifier {
 // must not recursively call a public reader of this same owner store.
 export interface DependencyGenerationRetirementVerifier {
   assertGenerationRetirement(input: {
-    readonly previousOwner: Extract<DependencyOwnerRecord, { version: 3 }>;
-    readonly proposedOwner: Extract<DependencyOwnerRecord, { version: 3 }>;
+    readonly previousOwner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>;
+    readonly proposedOwner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>;
     readonly invalidation: DependencyGenerationContinuityInvalidation;
+  }): void;
+}
+
+/** Fixed physical composition supplies a same-fence proof captured before
+ * opening store descriptors. The store supplies its OWN predecessor; this
+ * method must never reopen that store or perform a descriptor census. */
+export interface DependencyGenerationBaselineVerifier {
+  assertGenerationBaselineTransition(input: {
+    readonly previousOwner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>;
+    readonly proposedOwner: Extract<DependencyOwnerRecord, { version: 2 | 3 }>;
   }): void;
 }

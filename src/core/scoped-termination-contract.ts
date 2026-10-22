@@ -1,3 +1,4 @@
+import { isDependencyProtectedReference } from "./dependency-environment/dependency-custody-evidence";
 import { createHash } from "node:crypto";
 
 export enum ScopedTerminationKind { Runtime = "runtime", Provider = "provider" }
@@ -204,3 +205,49 @@ export function validateScopedCollectedEvidence(value: ScopedCollectedEvidence, 
     if (scopedDigest([...n.children].sort()) !== scopedDigest(expected)) throw new Error("scoped_cgroup_evidence_incomplete");
   }
 }
+
+/** Closed scheduling variant for one dependency provider while its authentic
+ * ordinary parent remains Reserved. Parsing is factual validation only; the
+ * store must consume the same original-map native authority, never this DTO. */
+export enum ScopedTerminationExtent { ProviderOnly = "provider_only", OrdinaryReaderFinal = "ordinary_reader_final" }
+export interface ScopedProviderOnlyMember {
+  readonly startId:string;readonly unit:string;readonly creatorId:string;readonly originSha256:string;
+  readonly generation:number;readonly start:import("./dependency-environment/dependency-custody-evidence").DependencyProtectedReference;
+}
+export interface ScopedProviderOnlyReceipt {
+  readonly schemaVersion:2;readonly extent:ScopedTerminationExtent.ProviderOnly;readonly publicationGeneration:number;
+  readonly identity:Readonly<{installationId:string;hostId:string;bootId:string;supervisorId:string;runtimeSha:string}>;
+  readonly parent:ScopedProviderOnlyMember;readonly provider:ScopedProviderOnlyMember;
+  readonly attempt:Readonly<{attemptId:string;epoch:number;grantDigest:string}>;
+  readonly home:Readonly<{canonicalPath:string;dev:string;ino:string;mountId:string}>;
+  readonly use:Readonly<{accountId:string;restoredHash:string}>;
+  readonly completion:import("./dependency-environment/dependency-custody-evidence").DependencyProtectedReference;
+}
+export function parseScopedProviderOnlyReceipt(value:unknown):ScopedProviderOnlyReceipt {
+  const v=fields(value,"schemaVersion,extent,publicationGeneration,identity,parent,provider,attempt,home,use,completion");
+  if (v.schemaVersion!==2 || v.extent!==ScopedTerminationExtent.ProviderOnly) throw new Error("scoped_provider_only_invalid");
+  positive(v.publicationGeneration);
+  const identity=fields(v.identity,"installationId,hostId,bootId,supervisorId,runtimeSha");
+  for (const key of ["installationId","hostId","bootId"]) match(identity[key],id);
+  match(identity.supervisorId,birth);match(identity.runtimeSha,/^[a-f0-9]{40}$/);
+  const member=(raw:unknown,kind:ScopedTerminationKind):ScopedProviderOnlyMember=>{
+    const m=fields(raw,"startId,unit,creatorId,originSha256,generation,start");
+    match(m.startId,/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);match(m.creatorId,id);match(m.originSha256,hash);positive(m.generation);
+    if (m.unit!==`subscription-runtime-${kind===ScopedTerminationKind.Runtime ? "ordinary":"hosted"}-${m.startId}.service` ||
+        !isDependencyProtectedReference(m.start) || m.start.path!==`/var/lib/subscription-runtime-host-policy/ordinary-starts/${m.startId}.json`) throw new Error("scoped_provider_only_invalid");
+    return Object.freeze({...m,start:Object.freeze({...m.start,identity:Object.freeze({...m.start.identity})})}) as unknown as ScopedProviderOnlyMember;
+  };
+  const parent=member(v.parent,ScopedTerminationKind.Runtime),provider=member(v.provider,ScopedTerminationKind.Provider);
+  if (parent.startId===provider.startId || provider.creatorId!==parent.creatorId || provider.originSha256!==parent.originSha256 ||
+      provider.generation<=parent.generation || provider.generation>=Number(v.publicationGeneration)) throw new Error("scoped_provider_only_invalid");
+  const attempt=fields(v.attempt,"attemptId,epoch,grantDigest");match(attempt.attemptId,/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);positive(attempt.epoch);match(attempt.grantDigest,hash);
+  const home=fields(v.home,"canonicalPath,dev,ino,mountId");match(home.canonicalPath,/^\/(?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+$/);
+  if (String(home.canonicalPath).split("/").some(part=>part==="." || part==="..")) throw new Error("scoped_provider_only_invalid");
+  for (const key of ["dev","mountId"]) match(home[key],/^(?:0|[1-9][0-9]{0,19})$/);match(home.ino,/^[1-9][0-9]{0,19}$/);
+  const use=fields(v.use,"accountId,restoredHash");match(use.accountId,id);match(use.restoredHash,hash);
+  if (!isDependencyProtectedReference(v.completion) || v.completion.path!==`/var/lib/subscription-runtime-host-policy/dependency-ordinary-provider-completions/${provider.startId}.json`) throw new Error("scoped_provider_only_invalid");
+  return Object.freeze({...v,identity:Object.freeze({...identity}),parent,provider,attempt:Object.freeze({...attempt}),home:Object.freeze({...home}),use:Object.freeze({...use}),completion:Object.freeze({...v.completion,identity:Object.freeze({...v.completion.identity})})}) as unknown as ScopedProviderOnlyReceipt;
+}
+
+export { parseScopedOrdinaryReaderFinalReceipt } from "./scoped-ordinary-reader-final-contract";
+export type { ScopedOrdinaryReaderFinalReceipt, ScopedOrdinaryReaderFinalProvider } from "./scoped-ordinary-reader-final-contract";

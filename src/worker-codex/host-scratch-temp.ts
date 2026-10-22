@@ -1,7 +1,7 @@
 import { assertHostedOrdinaryEffectPaths } from "../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, statfsSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, statfsSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { inspectVisibleScratchMount, type ScratchMount } from "./host-scratch-mount.js";
 import { hostedProviderRunsInSeparateUnit, isResearchUnitCgroup } from "../provider-codex/app-server/adapters/node-app-server-process.js";
@@ -12,7 +12,20 @@ export const SCRATCH_NAMESPACE_MARKER_ENV = "SUBSCRIPTION_RUNTIME_SCRATCH_NS_PID
 export const SCRATCH_TEMP_CONFIG_PATH = "/etc/subscription-runtime/scratch-temp.json";
 type Info = { uid: number; mode: number; dev: number; ino: number; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 type Mount = ScratchMount;
-type Policy = { root: string; uuid: string; legacyTemps: Record<string, unknown> };
+type Policy = { root: string; uuid: string; legacyTemps: Record<string, unknown>; minimumFreeBytes: number };
+/** Floor without a `capacity` section: the long-standing guard only stops a full disk. */
+export const SCRATCH_LEGACY_MINIMUM_FREE_BYTES = 5 * 1024 ** 3;
+/** Floor once a host opts in with `capacity: {}` and no explicit value. */
+export const SCRATCH_DEFAULT_MINIMUM_FREE_BYTES = 50 * 1024 ** 3;
+/** An opted-in host states the floor in bytes, never below the legacy floor. */
+function minimumFreeBytes(capacity: unknown): number {
+  if (capacity === undefined) return SCRATCH_LEGACY_MINIMUM_FREE_BYTES;
+  if (!capacity || typeof capacity !== "object" || Array.isArray(capacity) || Object.keys(capacity).some(key => key !== "minimumFreeBytes"))
+    throw new Error("Invalid scratch capacity policy");
+  const value = (capacity as { minimumFreeBytes?: unknown }).minimumFreeBytes ?? SCRATCH_DEFAULT_MINIMUM_FREE_BYTES;
+  if (!Number.isSafeInteger(value) || (value as number) < SCRATCH_LEGACY_MINIMUM_FREE_BYTES) throw new Error("Invalid scratch capacity policy");
+  return value as number;
+}
 type ScratchFamily = "runtime-tmp" | "runtime-caches";
 type ScratchTargetCause = ResearchLaunchCause.ScratchTmp | ResearchLaunchCause.ScratchCache;
 export interface ScratchTempHost {
@@ -24,6 +37,10 @@ export interface ScratchTempHost {
   mkdir(path: string, mode: number): void;
   chmod(path: string, mode: number): void;
   removeLock(path: string): void;
+  /** Lock ownership: writes/reads the owner marker inside a bind-lock directory. */
+  write(path: string, contents: string): void;
+  isProcessAlive(pid: number): boolean;
+  sleep(ms: number): void;
   entries(path: string): readonly string[];
   bind(source: string, target: string): void;
   makePrivate(target: string): void;
@@ -44,6 +61,12 @@ const systemHost: ScratchTempHost = {
   mkdir: (path, mode) => { mkdirSync(path, { mode }); },
   chmod: chmodSync,
   removeLock: rmdirSync,
+  write: (path, contents) => { writeFileSync(path, contents, { mode: 0o600 }); },
+  isProcessAlive: (pid) => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+  },
+  sleep: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); },
   entries: readdirSync,
   bind: (source, target) => { execFileSync("mount", ["--bind", source, target]); },
   makePrivate: (target) => { execFileSync("mount", ["--make-private", target]); },
@@ -61,30 +84,32 @@ function inspectMount(path: string, cause: ResearchLaunchCause.ScratchRoot | Scr
 function targetCause(family: ScratchFamily): ScratchTargetCause {
   return family === "runtime-tmp" ? ResearchLaunchCause.ScratchTmp : ResearchLaunchCause.ScratchCache;
 }
-function readPolicy(host: ScratchTempHost, capacity = true): Policy | undefined {
+function readPolicy(host: ScratchTempHost, checkCapacity = true): Policy | undefined {
   const info = optionalInfo(SCRATCH_TEMP_CONFIG_PATH, host);
   if (!info) return undefined;
   if (!info.isFile() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022)) throw new Error("Scratch config must be a root-owned regular file without group/other writes");
   assertAncestors(dirname(SCRATCH_TEMP_CONFIG_PATH), host);
   const config: unknown = JSON.parse(host.read(SCRATCH_TEMP_CONFIG_PATH));
   if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("Invalid scratch config");
-  const { schemaVersion, root, uuid, legacyTemps = {} } = config as Record<string, unknown>;
+  const { schemaVersion, root, uuid, legacyTemps = {}, capacity } = config as Record<string, unknown>;
   if (schemaVersion !== 1 || typeof root !== "string" || !isAbsolute(root) || root === "/" || resolve(root) !== root || typeof uuid !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(uuid) || !legacyTemps || typeof legacyTemps !== "object" || Array.isArray(legacyTemps)) throw new Error("Invalid scratch schema, root, UUID or legacy map");
   assertAncestors(root, host);
   const mount = inspectMount(root, ResearchLaunchCause.ScratchRoot, host);
   if (mount?.target !== root || mount.uuid?.toLowerCase() !== uuid.toLowerCase() || mount.fsroot !== "/") throw new Error("Scratch mount target, UUID or filesystem root mismatch");
-  if (capacity) assertScratchCapacity(root, host);
-  return { root, uuid, legacyTemps: legacyTemps as Record<string, unknown> };
+  const policy = { root, uuid, legacyTemps: legacyTemps as Record<string, unknown>, minimumFreeBytes: minimumFreeBytes(capacity) };
+  if (checkCapacity) assertScratchCapacity(policy, host);
+  return policy;
 }
 /** Free space is required to create new binds and sources, not to keep running on binds already in place. */
-function assertScratchCapacity(root: string, host: ScratchTempHost): void {
-  for (const volume of ["/", root]) {
+function assertScratchCapacity(policy: Policy, host: ScratchTempHost): void {
+  const required = policy.minimumFreeBytes;
+  for (const volume of ["/", policy.root]) {
     const { bavail, bsize } = host.statfs(volume);
     const available = bavail * bsize;
-    if (!Number.isFinite(available) || bavail < 0 || bsize <= 0 || available < 5 * 1024 ** 3) {
-      throw annotateScratchCapacityFailure(new Error(`Scratch launch requires at least 5 GiB available on ${volume}`),
+    if (!Number.isFinite(available) || bavail < 0 || bsize <= 0 || available < required) {
+      throw annotateScratchCapacityFailure(new Error(`Scratch launch requires at least ${Number((required / 1024 ** 3).toFixed(3))} GiB available on ${volume}`),
         volume === "/" ? ScratchCapacityVolumeRole.RootControl : ScratchCapacityVolumeRole.ScratchPayload,
-        available, 5 * 1024 ** 3);
+        available, required);
     }
   }
 }
@@ -211,7 +236,7 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
     return false;
   };
   if (checkExisting()) return;
-  assertScratchCapacity(policy.root, host);
+  assertScratchCapacity(policy, host);
   // Fail closed: a bind made in PID 1's namespace, or in a namespace shared with other runners
   // (an inherited one, e.g. a tmux server's), is never reclaimed and is copied into every unit and
   // sandbox namespace. Only the runner's own namespace may hold new binds. Reusing a visible bind
@@ -220,8 +245,7 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
   if (host.uid !== 0) throw new Error("Root privilege required to prepare scratch bind mount");
   const lock = `${layout.source}.lock`;
   assertHostedOrdinaryEffectPaths([layout.source, lock, target]);
-  try { host.mkdir(lock, 0o700); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Scratch bind target busy"); throw error; }
+  if (!acquireBindLock(lock, checkExisting, host)) return;
   try {
     if (checkExisting()) return;
     if (!optionalInfo(layout.source, host)) host.mkdir(layout.source, 0o701);
@@ -254,6 +278,49 @@ function bindTarget(policy: Policy, target: string, family: ScratchFamily, host:
       throw error;
     }
   } finally { host.removeLock(lock); }
+}
+const bindLockOwnerFile = (lock: string) => join(lock, "owner.json");
+const bindLockWaitBudgetMs = 10_000;
+const bindLockWaitSliceMs = 50;
+const bindLockMaxReclaims = 3;
+
+function readBindLockOwner(lock: string, host: ScratchTempHost): number | undefined {
+  try {
+    const parsed = JSON.parse(host.read(bindLockOwnerFile(lock))) as { pid?: unknown };
+    return typeof parsed.pid === "number" && Number.isSafeInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : undefined;
+  } catch { return undefined; }
+}
+
+/** Returns true when this call holds the lock; false when a sibling binder
+ * finished preparing the bind while we waited. A lock without a recognizable
+ * owner is foreign and fails closed untouched. A lock whose recorded owner is
+ * dead was left by a crashed binder and is reclaimed, so one crash cannot
+ * leave the target permanently busy. */
+function acquireBindLock(lock: string, checkExisting: () => boolean, host: ScratchTempHost): boolean {
+  let reclaims = 0;
+  for (let waits = 0; ; ) {
+    try {
+      host.mkdir(lock, 0o700);
+      try { host.write(bindLockOwnerFile(lock), `${JSON.stringify({ pid: process.pid })}\n`); }
+      catch (error) { try { host.removeLock(lock); } catch { /* best effort */ } throw error; }
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if (checkExisting()) return false;
+    const owner = readBindLockOwner(lock, host);
+    if (owner !== undefined && !host.isProcessAlive(owner)) {
+      if (reclaims >= bindLockMaxReclaims) throw new Error("Scratch bind target busy");
+      reclaims += 1;
+      try { host.removeLock(lock); } catch { /* another reclaimer won the race */ }
+      continue;
+    }
+    if (owner === undefined || waits >= bindLockWaitBudgetMs / bindLockWaitSliceMs) {
+      throw new Error("Scratch bind target busy");
+    }
+    waits += 1;
+    host.sleep(bindLockWaitSliceMs);
+  }
 }
 function optionalInfo(path: string, host: ScratchTempHost): Info | undefined {
   try { return host.lstat(path); }

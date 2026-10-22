@@ -156,6 +156,7 @@ export type JobUpdateMcpArgs = JobIdMcpArgs & Partial<JobCreateMcpArgs>;
 
 export type ProjectControlMcpArgs = GoalMcpArgs & JobRegistryMcpArgs & {
   readonly thinking?: boolean;
+  readonly ownedPaths?: readonly string[];
   readonly sourceCommit?: string;
   readonly storedStartBinding?: import("./stored-start-planning").StoredProjectStartBinding;
   readonly controllerJobId?: string;

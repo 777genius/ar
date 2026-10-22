@@ -1,3 +1,4 @@
+import * as readonlyKernel from "../hosted-readonly-host-kernel";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -14,14 +15,16 @@ const facts = vi.hoisted(() => ({ epoch: null as HostedCustodyEpoch | null, lock
   order: [] as string[], launch: vi.fn(), inventory: vi.fn(), descriptors: vi.fn(), stop: vi.fn(), birth: vi.fn(), fence: vi.fn(), drain: vi.fn(), terminal: vi.fn() }));
 // Preserve the actual scheduling gate; only fixed private record bytes are
 // substituted alongside this suite's existing epoch/kernel port observations.
-vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
-  ...await original<typeof import("@vioxen/subscription-runtime/provider-codex")>(),
+vi.mock("../../provider-codex/app-server/adapters/hosted-process-activation", async original => ({
+  ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-process-activation")>(),
   readHostedActivationBytes: (name: string) => {
     const epoch = facts.epoch!;
     const birth = { ...epoch, generation: 1, phase: "closed", revoked: false, reservations: [], outerRuntime: null };
     const bytes = Buffer.from(JSON.stringify(birth));
     if (name === "readonly-enrollment.json") return bytes;
     if (name === "readonly-epoch.json") return Buffer.from(JSON.stringify(epoch));
+    // The SELECTED inventory record: the inspected-installation binding digests these exact bytes.
+    if (name === "readonly-inventory.json") return inventoryBytes();
     if (name === "host-installation.json") return Buffer.from(JSON.stringify({ schemaVersion: 1, installationId: "install",
       hostId: epoch.hostId, runtimeDirectory, runtimeSha: epoch.identity.runtimeSha,
       runtimeManifestSha256: epoch.identity.runtimeManifestSha256, inventorySha256: createHash("sha256").update(inventoryBytes()).digest("hex") }));
@@ -33,15 +36,15 @@ vi.mock("@vioxen/subscription-runtime/provider-codex", async original => ({
     throw new Error("unexpected private activation record");
   },
 }));
-vi.mock("../hosted-readonly-inputs", async original => ({
-  ...await original<typeof import("../hosted-readonly-inputs")>(),
+vi.mock("../../provider-codex/app-server/adapters/hosted-private-physical-inputs", async original => ({
+  ...await original<typeof import("../../provider-codex/app-server/adapters/hosted-private-physical-inputs")>(),
   readHostedPrivateBytes: (path: string) => {
     if (path === "/var/lib/subscription-runtime-host-policy/readonly-inventory.json") return inventoryBytes();
     if (path === "/run/user/0/subscription-runtime-host-policy/codex-readonly-stages/" +
         createHash("sha256").update(runtimeDirectory).digest("hex") + ".json") return Buffer.from(JSON.stringify({
       schemaVersion: 1, runtimeDirectory, runtimeSha: facts.epoch!.identity.runtimeSha,
       runtimeManifestSha256: facts.epoch!.identity.runtimeManifestSha256,
-    }));
+    }) + "\n");
     throw new Error("unexpected inspected installation record");
   },
 }));
@@ -50,6 +53,11 @@ vi.mock("../hosted-readonly-custody", async original => ({
   createReadonlyPrivateRecord: (...args: unknown[]) => facts.birth(...args),
 }));
 vi.mock("../hosted-readonly-epoch-store", () => ({ HostedReadonlyEpochStore: class {
+  // Simulated scheduling port only; no genuine fence or Native authority.
+  publicationFence(): undefined {
+    if (!facts.locked) throw new Error("hosted_custody_common_fence_required");
+    return undefined;
+  }
   serialized<T>(action: () => T): T {
     if (facts.locked) throw new Error("concurrent start");
     facts.locked = true;
@@ -60,22 +68,37 @@ vi.mock("../hosted-readonly-epoch-store", () => ({ HostedReadonlyEpochStore: cla
     expect(facts.locked).toBe(true); facts.order.push("publish"); facts.epoch = parseHostedCustodyEpoch(epoch);
   }
 } }));
-vi.mock("../hosted-readonly-host-kernel", async original => ({
-  ...await original<typeof import("../hosted-readonly-host-kernel")>(),
-  readHostedReadonlyHostInventory: () => JSON.parse(inventoryBytes().toString()), HostedReadonlyHostKernel: class {
-  runtimeInvocation(_record: unknown, command: string, args: readonly string[]) { return { command, args }; }
-  verifyRuntimeOwner() {}
-  runtimeRole() { return "supervisor"; }
-  fenceCreator() { facts.order.push("fence"); facts.fence(); }
-  drainQueuedStart() { facts.order.push("drain"); facts.drain(); }
-  confirmTerminalDescendants() { facts.order.push("terminal"); facts.terminal(); }
-  assertRuntimeLaunch(...args: unknown[]) { facts.order.push("launch"); facts.launch(...args); }
-  verifyExclusiveInventory() { facts.order.push("inventory"); facts.inventory(); }
-  verifyDescriptorBoundary() { facts.order.push("descriptors"); facts.descriptors(); }
-  requestStop(...args: unknown[]) { facts.order.push("stop"); facts.stop(...args); }
-} }));
+// These legacy readonly fixtures must never execute the dependency cold protocol.
+// Its new import cycle reenters the kernel while the partial kernel mock awaits
+// importOriginal. Keep the real kernel helpers; refuse every cold call instead.
+vi.mock("../hosted-dependency-cold-controller", () => {
+  const unexpectedColdCall = (): never => { throw new Error("unexpected dependency cold protocol in readonly fixture"); };
+  return {
+    assertOriginalHostedDependencyColdProducer: unexpectedColdCall,
+    readOriginalHostedDependencyColdSelection: unexpectedColdCall,
+    finishOriginalHostedDependencyColdTree: unexpectedColdCall,
+    finishOriginalHostedDependencyColdInstaller: unexpectedColdCall,
+    consumeOriginalHostedDependencyColdHandoff: unexpectedColdCall,
+    assertOriginalHostedDependencyConsumedColdHandoff: unexpectedColdCall,
+    closeOriginalHostedDependencyColdHandoff: unexpectedColdCall,
+    revokeOriginalHostedDependencyColdState: unexpectedColdCall,
+  } satisfies Record<keyof typeof import("../hosted-dependency-cold-controller"), typeof unexpectedColdCall>;
+});
 beforeEach(() => {
   vi.restoreAllMocks(); vi.resetAllMocks(); facts.locked = false; facts.order = []; facts.activationPhase = "EXCLUSIVE";
+  // One actual class/namespace: imports caught inside cycles use these same spies.
+  const kernel = readonlyKernel.HostedReadonlyHostKernel.prototype;
+  vi.spyOn(readonlyKernel, "readHostedReadonlyHostInventory").mockImplementation(() => JSON.parse(inventoryBytes().toString()));
+  vi.spyOn(kernel, "runtimeInvocation").mockImplementation((_record, command, args) => ({ command, args }));
+  vi.spyOn(kernel, "verifyRuntimeOwner").mockImplementation(() => {});
+  vi.spyOn(kernel, "runtimeRole").mockReturnValue(readonlyKernel.HostedReadonlyRuntimeRole.Supervisor);
+  vi.spyOn(kernel, "fenceCreator").mockImplementation(() => { facts.order.push("fence"); facts.fence(); });
+  vi.spyOn(kernel, "drainQueuedStart").mockImplementation(() => { facts.order.push("drain"); facts.drain(); });
+  vi.spyOn(kernel, "confirmTerminalDescendants").mockImplementation(() => { facts.order.push("terminal"); facts.terminal(); });
+  vi.spyOn(kernel, "assertRuntimeLaunch").mockImplementation((...args: unknown[]) => { facts.order.push("launch"); facts.launch(...args); });
+  vi.spyOn(kernel, "verifyExclusiveInventory").mockImplementation(() => { facts.order.push("inventory"); facts.inventory(); });
+  vi.spyOn(kernel, "verifyDescriptorBoundary").mockImplementation(() => { facts.order.push("descriptors"); facts.descriptors(); });
+  vi.spyOn(kernel, "requestStop").mockImplementation((...args: unknown[]) => { facts.order.push("stop"); facts.stop(...args); });
   facts.epoch = parseHostedCustodyEpoch({ schemaVersion: 1, hostId: "host", bootId: "boot", supervisorId: "supervisor",
     outerRuntime: null, generation: 3, requirement: HostedCustodyRequirement.TestManagedQualification,
     phase: HostedCustodyPhase.Ready, revoked: false, reservations: [], identity: {

@@ -1,0 +1,1 @@
+import{n as e}from"./hosted-readonly-custody-BMl83Ria.js";export{e as createReadonlyPrivateRecord};

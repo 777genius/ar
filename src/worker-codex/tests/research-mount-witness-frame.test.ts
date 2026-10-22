@@ -2,16 +2,24 @@ import { host, local, setupResearchFixture, cleanupResearchFixture } from "./res
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as processes from "node:child_process";
+import * as mountFrame from "../research-mount-witness-frame";
 import { researchDurableDirectories, researchDurableDirectory } from "../research-durable-handoff-directory";
 import { readResearchColdMountTable, researchMountWitnessRows } from "../research-mount-witness-frame";
+const native = await vi.importActual<typeof import("node:fs")>("node:fs");
 beforeEach(setupResearchFixture); afterEach(cleanupResearchFixture);
 const paths = ["/TEST-project/jobs/TEST-research-r7", "/TEST-project/jobs/TEST-research-r7/workspace"];
-it("collects two fresh exact directory witnesses with one finite query per assertion", () => {
+it("collects exact two-target witnesses without listing unrelated mounts, and queries freshly each assertion", () => {
   const expected = paths.map(path => researchDurableDirectory(path, false)); host.calls.length = 0;
   expect(researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toEqual(expected);
-  expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(1);
+  expect(host.calls.filter(call => call.command === "/usr/bin/findmnt").map(call => call.args))
+    .toEqual(paths.map(path => ["--task", "1", "--target", path, "--json", "--output", "ID,TARGET,UUID,FSROOT,MAJ:MIN"]));
   researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })));
-  expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(2);
+  expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(4);
+  const larger = [paths[0]!, paths[1]!, "/TEST-project"];
+  host.calls.length = 0;
+  expect(researchDurableDirectories(larger.map(path => ({ path, privateLeaf: false })))).toHaveLength(3);
+  expect(host.calls.filter(call => call.command === "/usr/bin/findmnt").map(call => call.args))
+    .toEqual([["--task", "1", "--list", "--json", "--output", "ID,TARGET,UUID,FSROOT,MAJ:MIN"]]);
 });
 it.each(["custody", "mount-id", "mount-row"])("rejects %s changes inside the synchronous query frame", fault => {
   host.findmntHook = () => {
@@ -38,16 +46,42 @@ it("rejects directory replacement after all descriptors were opened", () => {
   host.findmntHook = () => { fs.renameSync(local(paths[1]!), local(paths[1]!) + "-old"); fs.mkdirSync(local(paths[1]!), { mode: 0o700 }); };
   expect(() => researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toThrow();
 });
-it.each(["uuid", "device", "backing"])("rejects selected mount %s corruption", fault => {
+it.each(["uuid", "device", "backing"])("rejects selected mount %s corruption on the second target and closes retained descriptors", fault => {
   const spawn = processes.spawnSync;
+  let queries = 0;
+  const opened = vi.spyOn(fs, "openSync");
   vi.spyOn(processes, "spawnSync").mockImplementation(((...args: Parameters<typeof processes.spawnSync>) => {
     const result = spawn(...args), parsed = JSON.parse(String(result.stdout));
-    if (fault === "uuid") parsed.filesystems[0].uuid = "invalid";
-    if (fault === "device") parsed.filesystems[0]["maj:min"] = "9:99";
-    if (fault === "backing") parsed.filesystems[0].fsroot = "/TEST-foreign";
+    if (++queries === 2) {
+      if (fault === "uuid") parsed.filesystems[0].uuid = "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee";
+      if (fault === "device") parsed.filesystems[0]["maj:min"] = "9:99";
+      if (fault === "backing") parsed.filesystems[0].fsroot = "/TEST-foreign";
+    }
     return { ...result, stdout: JSON.stringify(parsed) };
   }) as typeof processes.spawnSync);
   expect(() => researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toThrow();
+  expect(queries).toBe(2);
+  const retainedFds = opened.mock.results.filter(result => result.type === "return").map(result => result.value as number);
+  expect(retainedFds.length).toBeGreaterThanOrEqual(2);
+  for (const fd of new Set(retainedFds)) expect(() => native.fstatSync(fd)).toThrow(expect.objectContaining({ code: "EBADF" }));
+});
+
+it("retains one total fifteen-second query budget and never accepts late target evidence", () => {
+  const clock = vi.spyOn(process.hrtime, "bigint").mockReturnValueOnce(0n).mockReturnValueOnce(0n)
+    .mockReturnValueOnce(14_000_000_000n).mockReturnValueOnce(14_000_000_000n).mockReturnValue(15_000_000_000n);
+  const spawn = vi.spyOn(processes, "spawnSync");
+  expect(() => researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toThrow();
+  expect(spawn.mock.calls.map(call => (call[2] as { timeout: number }).timeout)).toEqual([15000, 1000]);
+  expect(clock).toHaveBeenCalled();
+});
+it("refuses a missing second target record instead of retaining only the first query", () => {
+  const spawn = processes.spawnSync; let queries = 0;
+  vi.spyOn(processes, "spawnSync").mockImplementation(((...args: Parameters<typeof processes.spawnSync>) => {
+    const result = spawn(...args);
+    return ++queries === 2 ? { ...result, stdout: JSON.stringify({ filesystems: [] }) } : result;
+  }) as typeof processes.spawnSync);
+  expect(() => researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toThrow();
+  expect(queries).toBe(2);
 });
 
 it("reads cold mountinfo in 64KiB requests and refuses over 8MiB", () => {
@@ -65,4 +99,69 @@ it("rejects symlink ancestry before opening any path through it", () => {
   expect(() => researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toThrow();
   expect(opens.mock.calls.some(args => String(args[0]).startsWith("/proc/1/root/TEST-project/jobs/"))).toBe(false);
   expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(0);
+});
+
+
+it("derives each captured mount-table frame once while retaining both fresh table reads and target queries", () => {
+  const table = readResearchColdMountTable().trimEnd();
+  const split = String.prototype.split;
+  let derivations = 0;
+  const splitting = vi.spyOn(String.prototype, "split").mockImplementation(function(this: string, separator: unknown, limit?: number) {
+    if (separator === "\n" && String(this) === table) derivations++;
+    return Reflect.apply(split, this, [separator, limit]);
+  } as typeof split);
+  const opened = vi.spyOn(fs, "openSync");
+  host.calls.length = 0;
+  try { expect(researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toHaveLength(2); }
+  finally { splitting.mockRestore(); }
+  expect(derivations).toBe(2);
+  expect(opened.mock.calls.filter(args => args[0] === "/proc/1/mountinfo")).toHaveLength(2);
+  expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(2);
+});
+
+
+it.each(["duplicate-initial", "duplicate-final", "changed-final"])("refuses selected raw mount row %s without leaking frame descriptors", fault => {
+  const table = readResearchColdMountTable();
+  const altered = fault === "changed-final" ? table.replace("/dev/TEST", "/dev/TEST-other") : table + table;
+  vi.spyOn(mountFrame, "readResearchColdMountTable").mockReturnValueOnce(fault === "duplicate-initial" ? altered : table).mockReturnValue(altered);
+  const opened = vi.spyOn(fs, "openSync");
+  expect(() => researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toThrow();
+  for (const result of opened.mock.results) if (result.type === "return") expect(() => native.fstatSync(result.value as number)).toThrow(expect.objectContaining({ code: "EBADF" }));
+});
+it("keeps exact raw mount ID tokens and ignores unrelated malformed rows", () => {
+  const expected = researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })));
+  const table = readResearchColdMountTable();
+  vi.spyOn(mountFrame, "readResearchColdMountTable").mockReturnValue("01 not-a-selected-row\n1\talso-not-selected\nmalformed unrelated\n" + table + "\n  ");
+  expect(researchDurableDirectories(paths.map(path => ({ path, privateLeaf: false })))).toEqual(expected);
+});
+it("keeps independent scalar cold reads and refuses their raw row drift", () => {
+  const table = readResearchColdMountTable();
+  const cold = vi.spyOn(mountFrame, "readResearchColdMountTable").mockReturnValueOnce(table).mockReturnValue(table.replace("/dev/TEST", "/dev/TEST-other"));
+  expect(() => researchDurableDirectory(paths[0]!, false)).toThrow();
+  expect(cold).toHaveBeenCalledTimes(2);
+});
+
+it("observes only query phases while preserving witness results and exact refusal under observer/clock faults", () => {
+  const inputs = paths.map(path => ({ path, privateLeaf: false }));
+  const scalar = researchDurableDirectory(paths[0]!, false), pair = researchDurableDirectories(inputs);
+  let tick = 0; const samples: number[] = [], observe = (elapsed: number) => { samples.push(elapsed); };
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => tick);
+  host.findmntHook = () => { tick += 3; }; host.calls.length = 0;
+  expect(researchDurableDirectory(paths[0]!, false, observe)).toEqual(scalar);
+  expect(researchDurableDirectories(inputs, observe)).toEqual(pair);
+  expect(samples).toEqual([3, 6]); expect(host.calls.filter(call => call.command === "/usr/bin/findmnt")).toHaveLength(3);
+  const throwing = () => { throw Error("TEST private observer"); };
+  expect(researchDurableDirectory(paths[0]!, false, throwing)).toEqual(scalar);
+  expect(researchDurableDirectories(inputs, throwing)).toEqual(pair);
+  const original = Error("TEST exact query refusal"); host.findmntHook = () => { throw original; };
+  for (const read of [() => researchDurableDirectory(paths[0]!, false, throwing), () => researchDurableDirectories(inputs, throwing)]) {
+    let caught: unknown; try { read(); } catch (error) { caught = error; } expect(caught).toBe(original);
+  }
+  host.findmntHook = undefined; samples.length = 0;
+  for (const invalidClock of [() => NaN, () => { throw Error("TEST private clock"); }]) {
+    clock.mockImplementation(invalidClock);
+    expect(researchDurableDirectory(paths[0]!, false, observe)).toEqual(scalar);
+    expect(researchDurableDirectories(inputs, observe)).toEqual(pair);
+  }
+  expect(samples).toEqual([]); clock.mockRestore();
 });

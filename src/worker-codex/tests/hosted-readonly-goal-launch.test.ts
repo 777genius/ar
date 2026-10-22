@@ -1,6 +1,9 @@
+import * as installation from "../hosted-installation-activation";
+import * as goalRunner from "../codex-goal-runner";
+import { HostedActivationPhase } from "@vioxen/subscription-runtime/worker-core";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startCodexGoalTmux, buildCodexGoalTmuxCommand, CodexGoalLaunchState, type CodexGoalLaunchInput } from "../codex-goal-ops";
 import { runCodexGoalCli } from "../codex-goal-cli";
 import { routeHostedGoalLaunch } from "../hosted-readonly-goal-launch";
@@ -18,7 +21,6 @@ vi.mock("node:fs/promises", async original => ({ ...await original<typeof import
   open: vi.fn(async () => ({ stat: async () => ({ isFile: () => true, nlink: 1, uid: process.getuid?.() }),
     chmod: async () => {}, close: async () => {} })) }));
 vi.mock("../hosted-readonly-controller-admission", () => ({ admitHostedControllerLaunch: f.admit, admitHostedRawGoalLaunch: f.admit }));
-vi.mock("../codex-goal-runner", async original => ({ ...await original<typeof import("../codex-goal-runner")>(), runCodexGoal: f.run }));
 vi.mock("../hosted-readonly-supervisor-host", () => ({ HostedReadonlySupervisorHost: class {
   runtimeRole = f.role;
   readEpoch() { return { identity: { jobId: "TEST", jobRootDir: "/job", workspacePath: "/workspace" } }; }
@@ -39,8 +41,13 @@ function child() {
   f.spawn.mockReturnValue(processChild);
   return processChild;
 }
+// Replace the existing installation read after the transport import graph loads.
+// The real installation/dispatch contract has its own activation fixture.
 beforeEach(() => {
   vi.resetAllMocks(); f.events.length = 0;
+  vi.spyOn(installation, "readHostedInstallationActivation").mockReturnValue({
+    activation: { phase: HostedActivationPhase.Exclusive },
+  } as ReturnType<typeof installation.readHostedInstallationActivation>);
   f.activationEnabled = true;
   vi.spyOn(process, "platform", "get").mockReturnValue("linux"); vi.spyOn(process, "getuid").mockReturnValue(0);
   f.role.mockReturnValue("supervisor");
@@ -48,7 +55,10 @@ beforeEach(() => {
   f.close.mockImplementation(() => { f.events.push("close"); });
   f.receipt.mockImplementation(() => { f.events.push("receipt"); });
   f.run.mockResolvedValue({ status: "completed" });
+  // Bind the loaded module once the cyclic transport graph has settled.
+  vi.spyOn(goalRunner, "runCodexGoal").mockImplementation(f.run);
 });
+afterEach(() => vi.restoreAllMocks());
 describe("actual shared managed start route (synthetic host/process facts)", () => {
   it("previews the foreground command without claiming admission or scheduling", () => {
     const plan = buildCodexGoalTmuxCommand(input);
@@ -61,7 +71,7 @@ describe("actual shared managed start route (synthetic host/process facts)", () 
     const processChild = child();
     const pending = startCodexGoalTmux(input);
     await vi.waitFor(() => expect(f.spawn).toHaveBeenCalledOnce());
-    expect(f.launch).toHaveBeenCalledWith("node", expect.arrayContaining(["cli.js", "run", "--no-tmux", "--job-id", "TEST"]), "/workspace", expect.any(Function));
+    expect(f.launch).toHaveBeenCalledWith("node", expect.arrayContaining(["cli.js", "run", "--no-tmux", "--job-id", "TEST"]), "/workspace", expect.any(Function), undefined);
     expect(f.mkdir).not.toHaveBeenCalled(); expect(f.exec).not.toHaveBeenCalled();
     expect(f.receipt).not.toHaveBeenCalled();
     processChild.emit("exit", 0, null);
@@ -115,7 +125,7 @@ describe("public direct/tmux CLI ordering with actual parser", () => {
     const pending = runCodexGoalCli([...argv, ...flags], io);
     await vi.waitFor(() => expect(f.spawn).toHaveBeenCalledOnce());
     expect(f.upsert).not.toHaveBeenCalled(); expect(f.mkdir).not.toHaveBeenCalled();
-    expect(f.launch).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining(["--registry-root", "/registry"]), "/workspace", expect.any(Function));
+    expect(f.launch).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining(["--registry-root", "/registry"]), "/workspace", expect.any(Function), undefined);
     processChild.emit("exit", 0, null);
     expect(await pending).toBe(0);
   });
@@ -147,10 +157,3 @@ vi.mock("node:fs", async original => {
       path === "/proc/self/cgroup" ? "0::/user.slice/offline-control.service\n" : real.readFileSync(path, options),
   };
 });
-
-// The managed transport fixture has a separately substituted EXCLUSIVE host.
-// Actual installation/dispatch composition lives in hosted-ordinary-installation.
-vi.mock("../hosted-installation-activation", async original => ({
-  ...await original<typeof import("../hosted-installation-activation")>(),
-  readHostedInstallationActivation: () => ({ activation: { phase: "EXCLUSIVE" } }),
-}));

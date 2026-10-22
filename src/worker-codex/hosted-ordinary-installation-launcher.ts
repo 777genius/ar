@@ -1,9 +1,11 @@
+import { withHostedActivationFence } from "./hosted-dependency-activation";
 import { createHash } from "node:crypto";
+import { hostedFundedInstallationVersions } from "../core/host-infrastructure/host-installation-successor";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parseFdCollectorProfile, type HostedInventoryFile } from "@vioxen/subscription-runtime/core";
-import { assertHostedActivationOperator, withHostedActivationFence } from "../provider-codex/app-server/adapters/hosted-process-activation";
+import { assertHostedActivationOperator } from "../provider-codex/app-server/adapters/hosted-process-activation";
 import { createReadonlyPrivateRecord } from "./hosted-readonly-custody";
 import { readHostedPrivateBytes } from "./hosted-readonly-inputs";
 import { assertQualifiedPairForPublication, type QualifiedOrdinaryLauncherPair } from "./hosted-ordinary-installation-qualification";
@@ -163,7 +165,7 @@ export class OrdinaryLauncherPublication {
     const bytes = readHostedPrivateBytes(join(this.root, "operation.json"), 65536);
     if (!bytes || hash(bytes) !== op.operationSha256) invalid();
     const retained = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
-    if (retained.schemaVersion !== 2 || retained.operationId !== op.operationId || retained.workEndEpochMs !== op.workEndEpochMs || retained.cleanupEndEpochMs !== op.cleanupEndEpochMs ||
+    if (!hostedFundedInstallationVersions.includes(retained.schemaVersion as number) || retained.operationId !== op.operationId || retained.workEndEpochMs !== op.workEndEpochMs || retained.cleanupEndEpochMs !== op.cleanupEndEpochMs ||
         !isDeepStrictEqual(retained.copiedCohort, this.cohort) ||
         !isDeepStrictEqual(retained.preparedCollectorProfile, this.preparedProfile) ||
         !isDeepStrictEqual(retained.priorCollectorProfile, this.priorCollectorProfile)) invalid();

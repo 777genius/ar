@@ -181,7 +181,7 @@ export async function startProjectResearchLaunch(requestPath: string, expectedRe
   });
 }
 function researchStartMutationJobId(requestPath: string, expectedRequestSha256: string): string {
-  assertResearchInitialRoot(true);
+  assertResearchInitialRoot(true); assertResearchSharedHost();
   const bytes = researchRead(researchPath(requestPath));
   if (researchHash(bytes) !== expectedRequestSha256) researchInvalid();
   return parseResearchOperatorRequest(researchJson(bytes)).jobId;

@@ -257,5 +257,5 @@ describe("completed Codex goal result refresh", () => {
 });
 
 async function git(cwd: string, args: readonly string[]): Promise<void> {
-  await execFileAsync("git", [...args], { cwd });
+  await execFileAsync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd });
 }

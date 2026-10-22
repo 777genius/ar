@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe } from "../app-server/adapters/hosted-dependency-parent-recipe";
+import { readHostedDependencyParentRecipe as readProviderRecipe } from "../../provider-codex/app-server/adapters/hosted-dependency-parent-recipe";
+import { buildCodexGoalForegroundArgv } from "../application/codex-goal-foreground-command";
+import { describe, expect, it, vi } from "vitest";
+import { sdkRecipe } from "./hosted-dependency-sdk-recipe.fixture";
+import { planStoredProjectStart } from "../stored-start-planning";
+const snapshots=vi.hoisted(()=>new Map<string,Buffer>());
+vi.mock("../hosted-readonly-inputs",async original=>({...await original<typeof import("../hosted-readonly-inputs")>(),
+ readHostedPrivateBytes:(path:string)=>snapshots.get(path)}));
+import { assertHostedDependencyParentEnvironment, assertHostedDependencyParentRecipe, readHostedDependencyParentRecipe } from "../hosted-dependency-parent-recipe";
 const job = "/var/lib/subscription-runtime-host-policy/dependency-test-jobs/jobs/TEST-parent", workspace = `${job}/workspace`;
 const args = ["/opt/test-runtime/dist/worker-codex/codex-goal-cli.js", "run", "--task-id", "TEST-parent", "--job-root", job,
   "--workspace", workspace, "--prompt", `${job}/prompt`, "--auth-root", `${job}/auth`, "--output", `${job}/TEST-parent.latest-result.json`];
@@ -55,4 +62,32 @@ describe("N3 fixed initial-host writer configuration", () => {
     }
     expect(() => assertHostedDependencyParentEnvironment({ HOME: `${workspace}/node_modules`, SUBSCRIPTION_RUNTIME_CODEX_AUTH_ROOT: `${job}/auth` }, job)).not.toThrow();
   });
+});
+
+describe("original protected SDK dependency recipe facts",()=>{
+ it("accepts the supported original foreground builder fields for the exact closed TEST scope",()=>{
+  const original=sdkRecipe(snapshots, job),request=JSON.parse(original.args[4]!);
+  const captured={controller:snapshots.get(job+"/state/registry/TEST-control/job.json")!,worker:snapshots.get(job+"/state/registry/TEST-parent/job.json")!,
+    prompt:snapshots.get(job+"/prompt")!,preStart:null};
+  const plan=planStoredProjectStart(JSON.stringify(request),workspace,captured);
+  expect(()=>assertHostedDependencyParentRecipe(buildCodexGoalForegroundArgv(plan.launch).slice(1),job,workspace)).not.toThrow();
+ });
+ it("resolves the exact original stored tuple to signed task/root facts without replacing that tuple",()=>{
+  const original=sdkRecipe(snapshots, job),before=JSON.stringify(original),resolved=readHostedDependencyParentRecipe(original,job,workspace);
+  expect(resolved.args.slice(1,3)).toEqual(["run","--no-tmux"]);expect(resolved.args).toContain("--task-id");
+  expect(()=>assertHostedDependencyParentRecipe(resolved.args,job,workspace)).not.toThrow();expect(JSON.stringify(original)).toBe(before);
+ });
+ it("refuses stale manifest bytes and bypass/foreign SDK requests before exposing task facts",()=>{
+  const original=sdkRecipe(snapshots, job);const manifest=job+"/state/registry/TEST-parent/job.json",actual=snapshots.get(manifest)!;
+  snapshots.set(manifest,Buffer.concat([actual,Buffer.from("\n")]));expect(()=>readHostedDependencyParentRecipe(original,job,workspace)).toThrow();
+  for(const patch of [{skipDoctor:true},{forceStart:true},{dependencyBootstrap:"install"},{registryRootDir:"/foreign/registry"}]){
+    const current=sdkRecipe(snapshots, job),request=JSON.parse(current.args[4]!);current.args[4]=JSON.stringify({...request,...patch});
+    expect(()=>readHostedDependencyParentRecipe(current,job,workspace)).toThrow();
+  }
+ });
+});
+
+it("refuses a stored SDK recipe without its worker reader", () => {
+  const launch = sdkRecipe(snapshots, job);
+  expect(() => readProviderRecipe(launch, job, workspace)).toThrow();
 });

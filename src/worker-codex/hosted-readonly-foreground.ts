@@ -1,3 +1,5 @@
+import { assertHostedOrdinaryDependencyBootstrap } from "./hosted-ordinary-dependency-reader";
+import { assertHostedOrdinaryDependencyToolParentFrame } from "./hosted-managed-dependency-tool-plan";
 import { assertHostedOrdinaryLaunchExtent, hostedOrdinaryLaunchEnvironment } from "./hosted-ordinary-writer-authority";
 import { readHostedReadonlyHostInventory } from "./hosted-readonly-host-kernel";
 import { ordinaryInstallationRemainingMs, trustedCustodySystemdRunExecutable } from "./trusted-custody-systemd-launch";
@@ -62,7 +64,7 @@ async function runHostedReadonlyCompletion(command: string, args: readonly strin
     const child = spawn(launch.command, [...launch.args], { cwd, env, stdio: ["pipe", "inherit", "inherit"] });
     child.stdin.end(frame);
     return child;
-  }); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
+  }, output); } catch (error) { if (output) closeHostedForegroundRequest(output); throw error; }
   return await new Promise<Readonly<{ result: number | HostedForegroundResult; signal: NodeJS.Signals | null }>>((resolve) => {
     let failed = false, cleanupFailed = false;
     const close = () => {
@@ -182,16 +184,22 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
     child.once("error", () => { failed = true; close(); detach(); resolve(70); });
     child.once(fdProfile ? "close" : "exit", (code, signal) => {
       let result: HostedForegroundResult | undefined;
+      let actualFacts:HostedForegroundResult|undefined;
       if (!failed && signal === null && code !== null && (code === 0 || output)) {
         try {
           if (code === 0) store.recordOrdinaryRuntimeWaitCompletion();
           if (output) {
             const guard = hostedFdLaunch(child);
-            const facts = guard.foregroundResult();
+            const facts = guard.foregroundResult();actualFacts=facts;
             result = store.withOrdinaryForegroundTerminal(facts, owner => publishHostedForegroundResult(output, facts, owner));
           }
         } catch { failed = true; }
-        if (!failed && code === 0) {
+        let legacyRelease=true;
+        if (!failed && actualFacts) {
+          try {legacyRelease=!store.completeOrdinaryDependencyReader(actualFacts);}
+          catch {legacyRelease=false;try {store.requestOrdinaryDependencyCleanup();} catch { /* Exact owner/recovery stays held. */ }}
+        }
+        if (!failed && code === 0 && legacyRelease) {
           try { store.releaseOrdinaryDependencyConsumer(); }
           catch {
             // A successful job remains successful. Durable owner/intent stay
@@ -212,6 +220,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
       const guard = hostedFdLaunch(child);
       void guard.observe().then(() => retryHostedFenceAcquisition(() =>
         store.releaseOrdinaryRuntimeFrame((fence, revalidate) => {
+          store.assertOrdinaryDependencyFrameWithHeldFence(fence,frame);
           if (output) recheckHostedForegroundRequest(output, fence);
           guard.release(fence, frame, true, () => { revalidate(); if (output) recheckHostedForegroundRequest(output, fence); });
         }), guard.remainingSetupMs()))
@@ -224,6 +233,7 @@ export async function runHostedRuntimeForeground(command: string, args: readonly
  * come from the private actual-process origin and independently pinned inventory. */
 export async function runHostedOrdinaryBootstrap(): Promise<number> {
   const fdProfile = readHostedFdProfile(), began = process.hrtime.bigint();
+  withHostedActivationFence(fence=>assertHostedOrdinaryDependencyBootstrap(fence));
   const stopPrelude = fdProfile ? announceHostedFdPrelude() : () => {};
   const readBudget = () => withHostedActivationFence(fence => {
     const slot = readHostedChildSlot(readHostedOrdinaryRuntime(fence).creator);
@@ -257,6 +267,7 @@ export async function runHostedOrdinaryBootstrap(): Promise<number> {
   const submit = () => withHostedActivationFence(fence => {
     const { launch, creator, start, reservation, installation } = readHostedOrdinaryRuntime(fence);
     assertHostedOrdinaryLaunchExtent(fence, start, reservation.startId, installation, launch, frame.env as Record<string, string>);
+    assertHostedOrdinaryDependencyToolParentFrame(fence,reservation.startId,bytes);
     if (fdProfile) assertHostedFdFrameEnvironment(frame.env as Record<string, string>);
     if (isHostedDependencyWorkspace(creator.workspacePath)) {
       assertDependencyHostFrameEnvironment(frame.env as Record<string, string>);

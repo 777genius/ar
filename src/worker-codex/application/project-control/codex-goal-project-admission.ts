@@ -1,4 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
+import { observeJobRetirement } from "../../job-retirement/job-retirement-records";
 import { join, resolve } from "node:path";
 import {
   ProjectAdmissionWorkerRole,
@@ -65,6 +66,7 @@ import {
   uniqueProjectControlStrings,
 } from "./codex-goal-project-utils";
 import { readLaunchAuthorizedWorkerLaunchSpec } from "./codex-goal-project-pre-start-admission";
+import { retainedNonqualifiedAdmission } from "./codex-goal-project-retained-nonqualified-admission";
 import { pendingAdmittedInputPatchPathEvidence } from
   "./codex-goal-project-pending-input-patch-admission";
 import { orphanDirtyWorkspaceDebt } from
@@ -110,6 +112,8 @@ export type CodexProjectAdmissionDeps = {
   readonly prepareWriterObservation?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<() => Promise<ProjectAdmissionWriterObservation>>;
+  /** Create observation-local adapter preparation; never reuse job facts or decisions. */
+  readonly createWriterObservationPreparer?: () => NonNullable<CodexProjectAdmissionDeps["prepareWriterObservation"]>;
   readonly observeManifestRuntime?: (
     manifest: CodexGoalJobManifest,
   ) => Promise<{
@@ -427,6 +431,10 @@ async function projectionRuntimeObservation(
   if (!observeRuntime) {
     throw new Error("project_control_projection_runtime_unproven");
   }
+  // A retired job holds no writer and its workspace may be gone: report its records.
+  if (observeJobRetirement(input.registryRootDir, manifest.jobId)) {
+    return { workspaceDirty: false, workerAlive: false, resultExists: false };
+  }
   return await observeRuntime(manifest);
 }
 
@@ -578,8 +586,8 @@ async function debtFromConsumedJobSummary(input: {
   });
   if (!consumed) return undefined;
   if (consumed.retentionEvidenceMissing) return undefined;
-  // A no-output record cannot replace a fresh process and workspace read.
-  if (consumed.status === "failed_no_output") return undefined;
+  // Neither a no-output record nor retained custody replaces a fresh process and workspace read.
+  if (consumed.status === "failed_no_output" || consumed.status === "retained_nonqualified") return undefined;
   await rememberKnownWorkspacePath(
     input.knownWorkspacePaths,
     input.summary.workspacePath,
@@ -630,16 +638,21 @@ async function debtFromOverviewItem(input: {
       evidence: [stringValue(item.safeMessage) ?? "job overview unavailable"],
     }];
   }
+  // The reviewed retirement plan accounted for this output; its workspace may be gone.
+  if (item.retired === true) return [];
   const debt: ProjectDebtItem[] = [];
   const workerAlive = item.workerAlive === true;
   const resolvedWorkspacePath = workspacePath
     ? await optionalRealPathForAdmission(workspacePath)
     : undefined;
+  const retained = await retainedNonqualifiedAdmission({ jobId, item, ledger: input.consumedOutput,
+    summary: input.summariesByJobId.get(jobId), registryRootDir: input.registryRootDir, readJob: input.readJob });
   const stoppedTerminalConsumption = await stoppedWorkspaceTerminalConsumption({
     ledger: input.consumedOutput,
     jobId,
     workerAlive,
     workerExplicitlyStopped: item.workerAlive === false,
+    retainedNonqualifiedVerified: retained.verified,
     workspaceDirty: item.workspaceDirty === true
       ? true
       : item.workspaceDirty === false
@@ -797,6 +810,9 @@ async function debtFromOverviewItem(input: {
     ...(workspacePath ? { workspacePath } : {}),
     ...(resolvedWorkspacePath ? { resolvedWorkspacePath } : {}),
   });
+  if (consumed?.status === "retained_nonqualified" && !retained.verified) {
+    return [...debt, retained.unverifiedDebt(subject)]; // unverifiable custody consumes nothing
+  }
   if (consumed) {
     debt.push(...consumedRecordDebt(input.consumedOutput, consumed));
     return debt;

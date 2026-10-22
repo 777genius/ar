@@ -2,7 +2,7 @@ import type { ScopedCgroupNode } from "../worker-core/hosted-custody/domain/scop
 import { spawnSync } from "node:child_process";
 import { readFileSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { assertExactUnitGroup, custodyControlGroup, observedBootId, observedProcessBirth, parseUnitShow, scopedCgroupPopulated } from "./hosted-readonly-observations";
+import { assertExactUnitGroup, custodyControlGroup, observedBootId, observedProcessBirth, observedProcessCgroup, parseUnitShow, scopedCgroupPopulated } from "./hosted-readonly-observations";
 
 // Private fixed-host observations. Callers own all fencing and custody decisions.
 // No command, environment, root, or cgroup path is supplied by a caller.
@@ -36,10 +36,10 @@ export function collectProcessBirth(pid: string): string {
 }
 export function collectProcessCgroup(pid: string): string {
   if (!/^[1-9][0-9]{0,9}$/.test(pid)) invalid();
-  return readFileSync(`/proc/${pid}/cgroup`, "utf8").trim();
+  return observedProcessCgroup(readFileSync(`/proc/${pid}/cgroup`, "utf8"));
 }
 export function collectSelfCgroup(): string {
-  return readFileSync("/proc/self/cgroup", "utf8").trim();
+  return observedProcessCgroup(readFileSync("/proc/self/cgroup", "utf8"));
 }
 export function collectCgroupProcesses(relative: string): string {
   if (relative.length > 4096 || !/^(?:\/[A-Za-z0-9_.@+-]+)*$/.test(relative) ||
@@ -48,13 +48,13 @@ export function collectCgroupProcesses(relative: string): string {
 }
 export function collectUnitShow(name: string): Record<string, string> {
   unit(name);
-  return parseUnitShow(name, systemctl(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name]));
+  return parseUnitShow(name, systemctl(["show", "--all", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID", "--", name]));
 }
 /** Fixed original-unit observation. The legacy five-field reader stays exact;
  * actual Delegate is mandatory and never inferred from an absent property. */
 export function collectNonDelegatedUnitShow(name: string): Record<string, string> {
   unit(name);
-  const rows = systemctl(["show", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID,Delegate", "--", name]).split("\n");
+  const rows = systemctl(["show", "--all", "--property=Id,FragmentPath,DropInPaths,ControlGroup,MainPID,Delegate", "--", name]).split("\n");
   const delegates = rows.filter(row => row.startsWith("Delegate="));
   if (delegates.length !== 1 || !["Delegate=no", "Delegate=false"].includes(delegates[0]!)) invalid();
   const observed = parseUnitShow(name, rows.filter(row => !row.startsWith("Delegate=")).join("\n"));
@@ -62,7 +62,28 @@ export function collectNonDelegatedUnitShow(name: string): Record<string, string
 }
 export function collectFutureCreatorShow(name: string): string {
   if (name.length > 200 || !/^[A-Za-z0-9_@.-]+\.(service|socket|timer)$/.test(name)) invalid();
-  return systemctl(["show", "--property=Id,LoadState,ActiveState,UnitFileState,Job", "--", name]);
+  return systemctl(["show", "--all", "--property=Id,LoadState,ActiveState,UnitFileState,Job", "--", name]);
+}
+/**
+ * Terminal-tolerant manager view of the ORIGINAL installation unit for the outside cleanup owner. systemd reports an EMPTY
+ * `ControlGroup` and `InvocationID` for a normally terminated unit, which the exact readers above refuse by design. `LoadState`
+ * is returned so an unknown unit can never be read as terminal; the classification stays entirely with the caller.
+ */
+export function collectOriginalUnitTerminalShow(name: string): Record<string, string> {
+  unit(name);
+  const keys = ["Id", "LoadState", "ActiveState", "Job", "ControlGroup", "MainPID", "InvocationID"];
+  const rows = systemctl(["show", `--property=${keys.join(",")}`, "--", name]).trimEnd().split("\n");
+  const values = new Map<string, string>();
+  for (const row of rows) {
+    const at = row.indexOf("=");
+    if (at < 1 || values.has(row.slice(0, at))) invalid();
+    values.set(row.slice(0, at), row.slice(at + 1));
+  }
+  const group = values.get("ControlGroup") ?? invalid();
+  if (rows.length !== keys.length || keys.some(key => !values.has(key)) || values.get("Id") !== name || !/^[0-9]{1,10}$/.test(values.get("MainPID")!) ||
+      !/^(?:[a-f0-9]{32})?$/.test(values.get("InvocationID")!) || !/^[0-9]*$/.test(values.get("Job")!) ||
+      (group !== "" && (!/^(?:\/[A-Za-z0-9_.@+-]+)+$/.test(group) || group.split("/").some(part => part === "." || part === "..")))) invalid();
+  return Object.fromEntries(values);
 }
 export function collectJobs(): string {
   return systemctl(["list-jobs", "--all", "--no-legend", "--plain", "--no-pager"]);
@@ -115,7 +136,7 @@ export function requestScopedManagerEffect(args: readonly string[], remainingMs:
 /** Missing directories, parse failures and changed directory identities throw.
  * A retained cgroup and every descendant must positively report empty. */
 export function collectScopedRecursiveEmpty(group: string, remainingMs: number): { empty: boolean; digest: string; nodes: readonly ScopedCgroupNode[] } {
-  if (!/^\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-(?:ordinary|hosted)-[a-f0-9-]{36}\.service$/.test(group)) invalid();
+  if (!/^\/subscription\.slice\/subscription-runtime\.slice\/subscription-runtime-hosted\.slice\/subscription-runtime-(?:ordinary|hosted|dependency-remove)-[a-f0-9-]{36}\.service$/.test(group)) invalid();
   const end = performance.now() + remainingMs, tree: ScopedCgroupNode[] = []; let empty = true, count = 0;
   const walk = (path: string): void => {
     if (++count > 256 || performance.now() >= end) invalid();
@@ -151,10 +172,23 @@ export function collectScopedRecursiveEmpty(group: string, remainingMs: number):
 // PID or timeout raises; only POLLIN on this retained fd observes its exit.
 const scopedPidfdFence = `import os,sys,signal,select,time,json
 pid=int(sys.argv[1]); birth=sys.argv[2]; group=sys.argv[3]; budget=int(sys.argv[4]); end=time.monotonic()+budget/1000
+def membership(raw):
+ if len(raw)>8192: raise RuntimeError('identity')
+ rows=(raw[:-1] if raw.endswith('\\n') else raw).split('\\n')
+ if not 1<=len(rows)<=2: raise RuntimeError('identity')
+ unified=None; legacy=False
+ for row in rows:
+  if row=='1:name=systemd:/' and not legacy: legacy=True; continue
+  if unified is not None or not row.startswith('0::/'): raise RuntimeError('identity')
+  parts=row[4:].split('/') if row!='0::/' else []
+  if any(not part or part in ['.','..'] or any(c not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.@+-' for c in part) for part in parts): raise RuntimeError('identity')
+  unified=row
+ if unified is None: raise RuntimeError('identity')
+ return unified
 fd=os.pidfd_open(pid,0)
 def check():
  s=open('/proc/'+str(pid)+'/stat').read(); actual=str(pid)+':'+s[s.rindex(') ')+2:].split()[19]
- if actual!=birth or open('/proc/'+str(pid)+'/cgroup').read().strip()!='0::'+group: raise RuntimeError('identity')
+ if actual!=birth or membership(open('/proc/'+str(pid)+'/cgroup').read())!='0::'+group: raise RuntimeError('identity')
 p=select.poll(); p.register(fd,select.POLLIN)
 check(); signal.pidfd_send_signal(fd,signal.SIGTERM)
 left=lambda: max(0,int((end-time.monotonic())*1000))

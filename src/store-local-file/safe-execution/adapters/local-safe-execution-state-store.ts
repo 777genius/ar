@@ -2,9 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
+  open,
   readFile,
   realpath,
   rename,
+  rmdir,
+  unlink,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -58,8 +61,25 @@ export function createLocalFileSafeExecutionStores(
   };
 }
 
+/** Directory custody consumed by the actual lock writer. Implementations own
+ * creation/removal; paths are factual projections, never registration inputs. */
+export type LocalOwnedWorkspaceLockTemporary = Readonly<{
+  path: string; assertCurrent(): void; remove(): void;
+}>;
+export type LocalOwnedWorkspaceLockDirectory = Readonly<{
+  path: string; assertCurrent(): void; createTemporary(): LocalOwnedWorkspaceLockTemporary; remove(): void;
+}>;
+export type LocalWorkspaceLockDirectoryLifecycle = Readonly<{
+  createLease(workspacePath: string): LocalOwnedWorkspaceLockDirectory;
+  hold(): void;
+}>;
+
 export class LocalFileWorkspaceLockStore implements WorkspaceLockStore {
-  constructor(private readonly rootDir: string, private readonly assertPublicationCurrent?: (paths: readonly string[]) => void) {}
+  constructor(private readonly rootDir: string,
+    private readonly assertPublicationCurrent?: (paths: readonly string[]) => void,
+    private readonly directoryLifecycle?: LocalWorkspaceLockDirectoryLifecycle) {
+    if (directoryLifecycle && !assertPublicationCurrent) throw new Error("workspace_lock_directory_veto_required");
+  }
 
   async acquire(input: {
     readonly taskId: TaskRunId;
@@ -75,12 +95,17 @@ export class LocalFileWorkspaceLockStore implements WorkspaceLockStore {
     const lockFile = join(lockDir, "lock.json");
     const now = input.now ?? new Date();
     this.assertPublicationCurrent?.([dirname(lockDir)]);
-    await mkdir(dirname(lockDir), { recursive: true, mode: 0o700 });
+    if (!this.directoryLifecycle) await mkdir(dirname(lockDir), { recursive: true, mode: 0o700 });
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      let ownedDirectory: LocalOwnedWorkspaceLockDirectory | undefined;
       try {
         this.assertPublicationCurrent?.([lockDir]);
-        await mkdir(lockDir, { mode: 0o700 });
+        if (this.directoryLifecycle) {
+          ownedDirectory = this.directoryLifecycle.createLease(workspacePath);
+          if (ownedDirectory.path !== lockDir) throw new Error("workspace_lock_directory_identity_changed");
+          ownedDirectory.assertCurrent();
+        } else await mkdir(lockDir, { mode: 0o700 });
         const record: WorkspaceLockRecord = {
           taskId: input.taskId,
           workspacePath,
@@ -91,14 +116,17 @@ export class LocalFileWorkspaceLockStore implements WorkspaceLockStore {
             ? {}
             : { staleLockMs: input.staleLockMs }),
         };
-        await atomicWriteJson(lockFile, serializeLockRecord(record), this.assertPublicationCurrent);
+        await atomicWriteJson(lockFile, serializeLockRecord(record), this.assertPublicationCurrent, ownedDirectory);
         return {
           ...record,
           release: async () => {
-            await releaseFileLock(lockDir, lockFile, record, this.assertPublicationCurrent);
+            try { await releaseFileLock(lockDir, lockFile, record, this.assertPublicationCurrent, ownedDirectory); }
+            catch (error) { this.directoryLifecycle?.hold(); throw error; }
           },
         };
       } catch (error) {
+        // Native directory custody cannot adopt or evict an EEXIST lease.
+        if (this.directoryLifecycle) { this.directoryLifecycle.hold(); throw error; }
         if (!isNodeErrorCode(error, "EEXIST")) throw error;
         const existing = await readLockRecord(lockFile, workspacePath);
         if (existing && canReplaceLock(existing, now)) {
@@ -142,13 +170,25 @@ export class LocalFileAttemptJournal implements AttemptJournal {
     readonly taskId: TaskRunId;
   }): Promise<SafeExecutionTaskRecord | null> {
     try {
-      return parseLocalSafeExecutionTaskRecord(
+      const record = parseLocalSafeExecutionTaskRecord(
         await readFile(this.taskPath(input.taskId), "utf8"),
       );
+      return this.hidesTaskRecord(record) ? null : record;
     } catch (error) {
       if (isNodeErrorCode(error, "ENOENT")) return null;
       throw error;
     }
+  }
+
+  // A completed record stamped by another execution generation is historical
+  // output; a new generation must start a fresh attempt sequence over it.
+  private hidesTaskRecord(record: SafeExecutionTaskRecord): boolean {
+    return (
+      record.status === "completed" &&
+      this.executionGeneration !== undefined &&
+      record.executionGeneration !== undefined &&
+      record.executionGeneration !== this.executionGeneration
+    );
   }
 
   async startTask(input: {
@@ -362,14 +402,24 @@ async function releaseFileLock(
   lockFile: string,
   record: WorkspaceLockRecord,
   assertPublicationCurrent?: (paths: readonly string[]) => void,
+  ownedDirectory?: LocalOwnedWorkspaceLockDirectory,
 ): Promise<void> {
+  ownedDirectory?.assertCurrent();
   const current = await readLockRecord(lockFile, record.workspacePath).catch(
     () => null,
   );
   if (current && sameWorkspaceLock(current, record)) {
+    ownedDirectory?.assertCurrent();
     assertPublicationCurrent?.([lockDir]);
-    await rm(lockDir, { recursive: true, force: true });
-  }
+    if (ownedDirectory) {
+      assertPublicationCurrent?.([lockFile]); ownedDirectory.assertCurrent(); await unlink(lockFile);
+      assertPublicationCurrent?.([lockDir]); ownedDirectory.assertCurrent(); ownedDirectory.remove();
+    } else if (!assertPublicationCurrent) await rm(lockDir, { recursive: true, force: true });
+    else {
+      assertPublicationCurrent([lockFile]); await unlink(lockFile);
+      assertPublicationCurrent([lockDir]); await rmdir(lockDir);
+    }
+  } else if (ownedDirectory) throw new Error("workspace_lock_owned_record_changed");
 }
 
 async function removeReplaceableFileLock(input: {
@@ -612,28 +662,61 @@ function parseAttemptPatchStats(value: unknown): AttemptPatchStats | undefined {
   return { additions, deletions, source };
 }
 
+// A revoked consuming veto cannot release an uncertain open descriptor.
+const vetoedWorkspaceLockHandles = new Set<import("node:fs/promises").FileHandle>();
 async function atomicWriteJson(
   path: string,
   value: Readonly<Record<string, unknown>>,
   assertPublicationCurrent?: (paths: readonly string[]) => void,
+  ownedDirectory?: LocalOwnedWorkspaceLockDirectory,
 ): Promise<void> {
   const targetDir = dirname(path);
   assertPublicationCurrent?.([targetDir]);
-  await mkdir(targetDir, { recursive: true, mode: 0o700 });
+  if (ownedDirectory) {
+    ownedDirectory.assertCurrent();
+    if (ownedDirectory.path !== targetDir) throw new Error("workspace_lock_directory_identity_changed");
+  } else await mkdir(targetDir, { recursive: true, mode: 0o700 });
   assertPublicationCurrent?.([join(targetDir, ".tmp-")]);
-  const tempDir = await mkdtemp(join(targetDir, ".tmp-"));
+  const ownedTemporary = ownedDirectory?.createTemporary();
+  const tempDir = ownedTemporary?.path ?? await mkdtemp(join(targetDir, ".tmp-"));
+  ownedTemporary?.assertCurrent();
   const tempPath = join(tempDir, basename(path));
+  let failed = false;
   try {
+    ownedTemporary?.assertCurrent();
     assertPublicationCurrent?.([tempPath]);
-    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    assertPublicationCurrent?.([tempPath, path]);
+    if (!assertPublicationCurrent) {
+      await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    } else {
+      const bytes = Buffer.from(JSON.stringify(value, null, 2) + "\n");
+      const handle = await open(tempPath, "wx", 0o600);
+      vetoedWorkspaceLockHandles.add(handle);
+      for (let offset = 0; offset < bytes.length;) {
+        ownedTemporary?.assertCurrent(); assertPublicationCurrent([tempPath]);
+        const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+        if (bytesWritten <= 0) throw new Error("workspace_lock_publication_short_write");
+        offset += bytesWritten;
+      }
+      ownedTemporary?.assertCurrent(); assertPublicationCurrent([tempPath]); await handle.sync();
+      ownedTemporary?.assertCurrent(); assertPublicationCurrent([tempPath]); await handle.close(); vetoedWorkspaceLockHandles.delete(handle);
+    }
+    ownedTemporary?.assertCurrent(); assertPublicationCurrent?.([tempPath, path]);
     await rename(tempPath, path);
-  } finally {
-    assertPublicationCurrent?.([tempDir]);
-    await rm(tempDir, { recursive: true, force: true });
+  } catch (error) { failed = true; throw error; }
+  finally {
+    // Retain owned temporary evidence and handles after scoped uncertainty.
+    if (!(failed && assertPublicationCurrent)) {
+      if (ownedTemporary) {
+        ownedTemporary.assertCurrent(); assertPublicationCurrent?.([tempPath]);
+        try { await unlink(tempPath); } catch (error) { if (!isNodeErrorCode(error, "ENOENT")) throw error; }
+        ownedTemporary.assertCurrent(); assertPublicationCurrent?.([tempDir]); ownedTemporary.remove();
+      } else if (!assertPublicationCurrent) await rm(tempDir, { recursive: true, force: true });
+      else {
+        assertPublicationCurrent([tempPath]);
+        try { await unlink(tempPath); } catch (error) { if (!isNodeErrorCode(error, "ENOENT")) throw error; }
+        assertPublicationCurrent([tempDir]); await rmdir(tempDir);
+      }
+    }
   }
 }
 

@@ -81,6 +81,7 @@ export function jobManifestInputFromArgs(args: CodexGoalJobCreateInput): CodexGo
     ...(tagValues(args.tags).length ? { tags: tagValues(args.tags) } : {}),
     ...manifestPaths(paths),
     jobRootDir,
+    ...(args.durableHandoffRootDir ? { durableHandoffRootDir: resolvePath(cwd, args.durableHandoffRootDir) } : {}),
     authRootDir: resolvePath(cwd, args.authRootDir ?? defaultAuthRoot),
     ...(args.stateRootDir ? { stateRootDir: resolvePath(cwd, args.stateRootDir) } : {}),
     workspacePath: paths.workspacePath,
