@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CiEnvelopePublication, publishCiEnvelopeCatalogData,formatCiVisibleFailure,CiDataPhase,CiFailureErrorType } from "./current-h1-tool-inputs-ci.ts";
+import { CiEnvelopePublication, publishCiEnvelopeCatalogData,formatCiVisibleFailure,CiDataPhase,CiFailureErrorType,ciAptAcquireHardening,ciNetworkFetchBudgetMs,ciRunDeadlineMs } from "./current-h1-tool-inputs-ci.ts";
 import { ciIndexOperationalBytes } from "./current-h1-tool-inputs-ci-index.ts";
 import { PythonDataCatalogStatus, PythonEnvelopeKind, serializeFixedSignedPythonEnvelopeData, type CapturedEnvelope, type SignedPackage, type EnvelopeEntry, type PythonDataCatalogSerialization } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
 const sha=(bytes:Buffer|string)=>createHash("sha256").update(bytes).digest("hex");
@@ -62,3 +62,15 @@ function ciFailureVisibilityRegressions(){
  const secret="TEST_PRIVATE_SECRET_token_cookie_provider_log";let reads=0;const native=new Error(secret);Object.defineProperty(native,"stack",{get(){reads++;throw Error("must not read stack");}});Object.defineProperty(native,"message",{get(){reads++;throw Error("must not read message");}});const proxy=new Proxy(native,{get(){reads++;throw Error("must not read");},getPrototypeOf(){reads++;throw Error("must not inspect");}});
  for(const [error,type] of [[native,CiFailureErrorType.Error],[proxy,CiFailureErrorType.Unknown],[{message:secret,stack:secret},CiFailureErrorType.Unknown]] as const){const line=formatCiVisibleFailure(CiDataPhase.Sources,error);assert(line.startsWith("TEST_H1_CI_FAILURE ")&&line.endsWith("\n")&&Buffer.byteLength(line)<=8256);const row=JSON.parse(line.slice("TEST_H1_CI_FAILURE ".length));assert.equal(row.phase,CiDataPhase.Sources);assert.equal(row.errorType,type);assert.equal(row.sourceExtractor,null);assert.equal(row.nativeQualified,false);assert(!line.includes(secret));}assert.equal(reads,0);
 }
+test("apt acquire retries and network fetch budgets absorb a stalled mirror inside the fixed run deadline",()=>{
+ // Regression discriminator for run 39743883284: the source archive fetch was SIGTERMed at the old 180s command cap during a mirror stall.
+ assert(ciAptAcquireHardening.includes('Acquire::Retries "3";'));
+ assert.equal(ciAptAcquireHardening.filter(line=>line.startsWith("Acquire::Retries")).length,1);
+ assert(ciAptAcquireHardening.includes('Acquire::PDiffs "false";'));
+ assert(ciAptAcquireHardening.includes('Acquire::http::Proxy "DIRECT";')&&ciAptAcquireHardening.includes('Acquire::https::Proxy "DIRECT";'));
+ assert.deepEqual(ciNetworkFetchBudgetMs,{update:300000,seeds:300000,sourceArchive:300000,sourceOnlyBinary:60000});
+ for(const budget of Object.values(ciNetworkFetchBudgetMs)){
+  assert(budget>=60000,"every network command budget must tolerate a stalled transfer");
+  assert(budget*2<=ciRunDeadlineMs,"one stalled network command must not consume the fixed run deadline");
+ }
+});
