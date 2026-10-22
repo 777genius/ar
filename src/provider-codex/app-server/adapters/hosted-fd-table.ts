@@ -20,7 +20,10 @@ export function hostedFdTable(pid: number): readonly HostedFdFact[] {
       if (info === "" || actual === "") {
         if (pid === process.pid) {
           try { fstatSync(fd); }
-          catch (closed) { if ((closed as NodeJS.ErrnoException).code === "EBADF") continue; }
+          catch (closed) {
+            if ((closed as NodeJS.ErrnoException).code === "EBADF") continue;
+            throw closed;
+          }
           invalid();
         }
         try { statSync(directory); }

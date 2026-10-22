@@ -9,7 +9,7 @@ const state = vi.hoisted(() => ({
   rows: new Map<number, Readonly<{ dev: bigint; ino: bigint; rdev: bigint; socket: boolean; pipe: boolean;
     character: boolean; file: boolean; directory: boolean }>>(),
   alive: true,
-  selfProbe: new Map<number, "held" | "EBADF">(),
+  selfProbe: new Map<number, "held" | "EBADF" | "EIO">(),
   directoryError: undefined as string | undefined,
 }));
 vi.mock("node:fs", async importOriginal => {
@@ -38,7 +38,8 @@ vi.mock("node:fs", async importOriginal => {
       return row ? rowStat(row) : fail("ENOENT");
     }) as unknown as typeof import("node:fs").statSync,
     fstatSync: ((fd: unknown) => {
-      if ((state.selfProbe.get(Number(fd)) ?? "held") === "EBADF") fail("EBADF");
+      const probe = state.selfProbe.get(Number(fd)) ?? "held";
+      if (probe !== "held") fail(probe);
       const row = state.rows.get(Number(fd));
       return row ? rowStat(row) : fail("EBADF");
     }) as unknown as typeof import("node:fs").fstatSync,
@@ -63,6 +64,12 @@ function fixture(fdinfo3: readonly string[]) {
     [3, { dev: 6n, ino: 2n, rdev: 259n, socket: false, pipe: false, character: true, file: false, directory: false }],
   ]);
 }
+
+it("propagates an unexpected self-probe error instead of masking it as a boundary failure", () => {
+  fixture([""]);
+  state.selfProbe = new Map([[3, "EIO"]]);
+  expect(() => hostedFdTable(process.pid)).toThrow("EIO");
+});
 
 it("drops a row whose fdinfo read hits an empty vanished read instead of failing the whole table", () => {
   fixture([""]);
