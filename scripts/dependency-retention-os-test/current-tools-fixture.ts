@@ -108,7 +108,7 @@ export function prepareCurrentLocalInputs(jobId: string, observeLock?: (value: T
     assert(!("node_modules/@vioxen/agent-account-observability" in packages));
     const orphan: unknown = Reflect.get(packages,"packages/agent-account-observability");
     if (orphan !== undefined) assert.deepEqual(orphan,{name:"@vioxen/agent-account-observability",version:"0.1.0",
-      license:"UNLICENSED",engines:{node:">=20"},devDependencies:{"@types/node":"^22.20.0",typescript:"^6.0.3",vitest:"^4.1.5"},extraneous:true});
+      license:"UNLICENSED",engines:{node:">=20"},devDependencies:{"@types/node":"^22.20.0",typescript:"^6.0.3",vitest:"^4.1.12"},extraneous:true});
     // No surviving link or local resolved input may require the missing donor.
     for (const entry of Object.values(packages)) {
       assert(entry !== null && typeof entry === "object" && !("link" in entry));
