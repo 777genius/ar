@@ -70,6 +70,10 @@ const tuple=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mt
 const measureCeilings=Object.freeze({entries:20000,bytes:512*1024*1024,fileBytes:32*1024*1024,depth:2047,elapsedMs:30000,catalogBytes:128*1024});
 /** Fetch-reliability contract: apt retries each acquire item internally and every network
  * command budget absorbs a stalled mirror while staying inside the fixed run deadline. */
+/** Known flake (2026-10-22, main run at 2d88de315): a mirror stall past the update
+ * budget SIGTERMs apt-get and fails the Indices phase (TEST_H1_CI_FAILURE with
+ * signal=SIGTERM, status=null). External mirror latency, not a contract change:
+ * rerun the job before touching these budgets. */
 export const ciRunDeadlineMs=1800000;
 export const ciAptAcquireHardening=Object.freeze(['Acquire::PDiffs "false";','Acquire::Retries "3";','Acquire::http::Proxy "DIRECT";','Acquire::https::Proxy "DIRECT";']);
 export const ciNetworkFetchBudgetMs=Object.freeze({update:300000,seeds:300000,sourceArchive:300000,sourceOnlyBinary:60000});
