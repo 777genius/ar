@@ -68,10 +68,15 @@ export function formatCiVisibleFailure(phase:CiDataPhase,error:unknown,command:C
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const tuple=(s:BigIntStats)=>[s.dev,s.ino,s.uid,s.gid,s.mode,s.nlink,s.size,s.mtimeNs,s.ctimeNs].map(String).join(":");
 const measureCeilings=Object.freeze({entries:20000,bytes:512*1024*1024,fileBytes:32*1024*1024,depth:2047,elapsedMs:30000,catalogBytes:128*1024});
+/** Fetch-reliability contract: apt retries each acquire item internally and every network
+ * command budget absorbs a stalled mirror while staying inside the fixed run deadline. */
+export const ciRunDeadlineMs=1800000;
+export const ciAptAcquireHardening=Object.freeze(['Acquire::PDiffs "false";','Acquire::Retries "3";','Acquire::http::Proxy "DIRECT";','Acquire::https::Proxy "DIRECT";']);
+export const ciNetworkFetchBudgetMs=Object.freeze({update:300000,seeds:300000,sourceArchive:300000,sourceOnlyBinary:60000});
 /** Fixed ROOT protocol inventory, including the five selected-plan regressions.
  * Count changes require source review; every required ROOT case must really run. */
 export function assertCiRootProtocolTap(tap:string):void {
- assert(/^# tests 44$/m.test(tap)&&/^# pass 43$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap),"fixed ROOT protocol inventory");
+ assert(/^# tests 45$/m.test(tap)&&/^# pass 44$/m.test(tap)&&/^# fail 0$/m.test(tap)&&/^# skipped 1$/m.test(tap),"fixed ROOT protocol inventory");
  for(const name of [
   "shared decoder adapters retain the CI scope and cannot turn expired/caller DATA into a native tool launch",
   "qualified package lock reproduces the previously measured complete signed image",
@@ -143,7 +148,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
  assert([workspace,tmp].every(path=>path.length<=4096&&/^\/[A-Za-z0-9_@+./-]+$/.test(path)),"fixed CI path representation, no apt config interpolation");
  const evidence=join(workspace,"dependency-h1-tool-inputs-ci-evidence");mkdirSync(evidence,{mode:0o700});normalizeCreatedDirectory(evidence,0o700);
  const scratch=mkdtempSync(join(tmp,"TEST-H1-signed-data-"));normalizeCreatedDirectory(scratch,0o700);const scratchStat=lstatSync(scratch,{bigint:true});assert(scratchStat.uid===0n&&scratchStat.gid===0n&&(scratchStat.mode&0o7777n)===0o700n);
- const started=performance.now(),deadline=started+1800000,tools=new Map<CiTool,{fd:number;actual:string;stamp:string;sha256:string}>(),archives=new Map<string,ReturnType<typeof retainOriginalAcquiredArchive>>(),sourceArchives:ReturnType<typeof retainH1SourceArchives>[]=[];
+ const started=performance.now(),deadline=started+ciRunDeadlineMs,tools=new Map<CiTool,{fd:number;actual:string;stamp:string;sha256:string}>(),archives=new Map<string,ReturnType<typeof retainOriginalAcquiredArchive>>(),sourceArchives:ReturnType<typeof retainH1SourceArchives>[]=[];
  const tick=()=>{assert(performance.now()<deadline,"one original CI deadline");const s=lstatSync(scratch,{bigint:true});assert(s.isDirectory()&&s.dev===scratchStat.dev&&s.ino===scratchStat.ino&&s.uid===0n&&s.gid===0n&&(s.mode&0o7777n)===0o700n);};
  const directories:string[]=[evidence,scratch];
  const file=(path:string,bytes:Buffer|string)=>{tick();const b=Buffer.isBuffer(bytes)?bytes:Buffer.from(bytes);const fd=openSync(path,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);try{fchownSync(fd,0,0);fchmodSync(fd,0o600);let at=0;while(at<b.length){const n=writeSync(fd,b,at,b.length-at);assert(n>0);at+=n;tick();}fsyncSync(fd);const s=fstatSync(fd,{bigint:true});assert(s.uid===0n&&s.gid===0n&&s.nlink===1n&&s.size===BigInt(b.length)&&tuple(lstatSync(path,{bigint:true}))===tuple(s));}finally{closeSync(fd);}const parent=openSync(dirname(path),constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);try{fsyncSync(parent);}finally{closeSync(parent);}assert(fullBytes(path,b.length,tick).equals(b),"durable own output readback");tick();};
@@ -185,10 +190,10 @@ export async function mainCiSignedToolInputs():Promise<void> {
   const conf=[`Dir::State "${state}";`,`Dir::State::lists "${state}/lists";`,`Dir::State::status "${state}/status";`,`Dir::Cache "${state}";`,`Dir::Cache::archives "${state}/archives";`,`Dir::Cache::pkgcache "";`,`Dir::Cache::srcpkgcache "";`,`Dir::Log "${state}/log";`,
    `Dir::Etc "${etc}";`,`Dir::Etc::parts "${etc}/parts";`,`Dir::Etc::main "${etc}/main.conf";`,`Dir::Etc::sourcelist "${etc}/sources.list";`,`Dir::Etc::sourceparts "${etc}/parts";`,`Dir::Etc::netrc "${etc}/auth.conf";`,`Dir::Etc::netrcparts "${etc}/auth-parts";`,`Dir::Etc::preferences "${etc}/preferences";`,`Dir::Etc::preferencesparts "${etc}/preferences-parts";`,`Dir::Etc::trusted "${etc}/trusted.gpg";`,`Dir::Etc::trustedparts "${etc}/trusted-parts";`,
    '#clear Binary;','#clear APT::Update::Pre-Invoke;','#clear APT::Update::Post-Invoke;','#clear APT::Update::Post-Invoke-Success;','#clear DPkg::Pre-Invoke;','#clear DPkg::Post-Invoke;','#clear DPkg::Pre-Install-Pkgs;',
-   'APT::Architecture "amd64";','#clear APT::Architectures;','APT::Architectures:: "amd64";','APT::Sandbox::User "root";','APT::Update::Error-Mode "any";','APT::Get::AllowUnauthenticated "false";','Acquire::AllowInsecureRepositories "false";','Acquire::AllowDowngradeToInsecureRepositories "false";','Acquire::Languages "none";','Acquire::PDiffs "false";','Acquire::http::Proxy "DIRECT";','Acquire::https::Proxy "DIRECT";'].join("\n")+"\n";
+   'APT::Architecture "amd64";','#clear APT::Architectures;','APT::Architectures:: "amd64";','APT::Sandbox::User "root";','APT::Update::Error-Mode "any";','APT::Get::AllowUnauthenticated "false";','Acquire::AllowInsecureRepositories "false";','Acquire::AllowDowngradeToInsecureRepositories "false";','Acquire::Languages "none";',...ciAptAcquireHardening].join("\n")+"\n";
   file(join(etc,"apt.conf"),conf);file(join(evidence,"apt.conf"),conf);file(join(evidence,"sources.list"),sources);
   const env={PATH:"/usr/bin:/bin",LANG:"C",LC_ALL:"C",HOME:scratch,TMPDIR:scratch,APT_CONFIG:join(etc,"apt.conf")};phase=CiDataPhase.Indices;
-  command(CiTool.AptGet,["update"],4*1024*1024,180000,env);
+  command(CiTool.AptGet,["update"],4*1024*1024,ciNetworkFetchBudgetMs.update,env);
   const indices:(H1SourceIndexOrigin&{bytes:Buffer})[]=[],sourceIndices:(H1SourceIndexOrigin&{bytes:Buffer})[]=[];let totalIndexBytes=0;
   const listNames=readdirSync(join(state,"lists"));
   for(const source of ciUbuntuSources){const prefix=source.base.slice("https://".length).replaceAll("/","_")+"_dists_"+source.pocket,releasePath=join(state,"lists",prefix+"_InRelease"),inRelease=fullBytes(releasePath,1024*1024,tick),plain=join(evidence,source.pocket+".Release");
@@ -200,7 +205,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
    }
   }
   file(join(evidence,"complete-indices.json"),JSON.stringify([...indices,...sourceIndices].map(({bytes,...row})=>row))+"\n");
-  phase=CiDataPhase.Seeds;command(CiTool.AptGet,["--yes","--download-only","--no-install-recommends","install",...qualifiedH1PackageRequestArguments],4*1024*1024,300000,env);
+  phase=CiDataPhase.Seeds;command(CiTool.AptGet,["--yes","--download-only","--no-install-recommends","install",...qualifiedH1PackageRequestArguments],4*1024*1024,ciNetworkFetchBudgetMs.seeds,env);
   const debs=readdirSync(join(state,"archives")).filter(n=>n.endsWith(".deb")).sort();assert(debs.length>0&&debs.length<200);const packages:AcquiredSignedPackage[]=[],packageOrigins:{archive:string;indices:string[]}[]=[];
   const associations:{binary:AcquiredSignedPackage;source:H1SourceIdentity;indices:H1SourceIndexOrigin[]}[]=[];
   for(const name of debs){assertCiPublicEvidenceBasename(name);assert(name.endsWith(".deb"));const original=retainOriginalAcquiredArchive(join(state,"archives",name),tick);archives.set(name,original);original.rejoin();const fields=command(CiTool.DpkgDeb,["--field",`/proc/${process.pid}/fd/${original.fd}`,"Package","Version","Architecture"],4*1024*1024,30000,env).toString("utf8");original.rejoin();let row:AcquiredSignedPackage|undefined,sourceIdentity:H1SourceIdentity|undefined;const origins:string[]=[],associationIndices:H1SourceIndexOrigin[]=[];
@@ -219,7 +224,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
   assert.deepEqual(joinCompleteUbuntuIndex(sourceOnlyFields,sourceOnlyIndex.bytes,sourceOnlyPin),sourceOnlyPin,"source-only transfer must first join current authenticated complete security index");
   const sourceOnlyRoot=join(scratch,"source-only-systemd-container");dir(sourceOnlyRoot);
   const sourceOnlyDirectory=lstatSync(sourceOnlyRoot,{bigint:true}),sourceOnlyFd=openSync(sourceOnlyRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
-  try{assert.equal(tuple(fstatSync(sourceOnlyFd,{bigint:true})),tuple(sourceOnlyDirectory));command(CiTool.AptGet,["download","systemd-container:amd64=255.4-1ubuntu8.18"],4*1024*1024,30000,env,`/proc/${process.pid}/fd/${sourceOnlyFd}`);
+  try{assert.equal(tuple(fstatSync(sourceOnlyFd,{bigint:true})),tuple(sourceOnlyDirectory));command(CiTool.AptGet,["download","systemd-container:amd64=255.4-1ubuntu8.18"],4*1024*1024,ciNetworkFetchBudgetMs.sourceOnlyBinary,env,`/proc/${process.pid}/fd/${sourceOnlyFd}`);
    const held=fstatSync(sourceOnlyFd,{bigint:true});assert(held.dev===sourceOnlyDirectory.dev&&held.ino===sourceOnlyDirectory.ino&&held.uid===0n&&held.gid===0n&&(held.mode&0o7777n)===0o700n);assert.equal(tuple(lstatSync(sourceOnlyRoot,{bigint:true})),tuple(held));
   }finally{closeSync(sourceOnlyFd);}
   const sourceOnlyName="systemd-container_255.4-1ubuntu8.18_amd64.deb";assert.deepEqual(readdirSync(sourceOnlyRoot),[sourceOnlyName]);
@@ -244,7 +249,7 @@ export async function mainCiSignedToolInputs():Promise<void> {
   for(const [name,{selection,origins}] of selectedSources){
    const output=join(scratch,"source-"+name);dir(output);const before=lstatSync(output,{bigint:true});
    const outputFd=openSync(output,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
-   try{assert.equal(tuple(fstatSync(outputFd,{bigint:true})),tuple(before));command(CiTool.AptGet,["--yes","--download-only","--only-source","source",name+"="+selection.source.version],4*1024*1024,180000,env,`/proc/${process.pid}/fd/${outputFd}`);
+   try{assert.equal(tuple(fstatSync(outputFd,{bigint:true})),tuple(before));command(CiTool.AptGet,["--yes","--download-only","--only-source","source",name+"="+selection.source.version],4*1024*1024,ciNetworkFetchBudgetMs.sourceArchive,env,`/proc/${process.pid}/fd/${outputFd}`);
     const held=fstatSync(outputFd,{bigint:true});assert(held.dev===before.dev&&held.ino===before.ino&&held.uid===0n&&held.gid===0n&&(held.mode&0o7777n)===0o700n);}
    finally{closeSync(outputFd);}
    const after=lstatSync(output,{bigint:true});assert(after.isDirectory()&&after.dev===before.dev&&after.ino===before.ino&&after.uid===0n&&after.gid===0n&&(after.mode&0o7777n)===0o700n);
