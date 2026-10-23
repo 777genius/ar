@@ -164,6 +164,8 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
     const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
     if (gated) await gated;
+    let holdsDrainRef = true;
+    const releaseDrainRef = () => { if (holdsDrainRef) { holdsDrainRef = false; this.sessionDrain.release(input.session); } };
     try {
       const result = await this.runViaAppServer(input, schemaPlan, returned);
       returned.capture(result);
@@ -178,6 +180,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       this.executionLifetime?.close(error);
       await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Run);
+      // The fallback never touches the app-server slot; holding the ref through
+      // it would keep the poisoned session alive and gate every new run.
+      releaseDrainRef();
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
@@ -198,7 +203,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         redactor: input.redactor,
       });
     } finally {
-      this.sessionDrain.release(input.session);
+      releaseDrainRef();
     }
   }
   async runLogicalThread(

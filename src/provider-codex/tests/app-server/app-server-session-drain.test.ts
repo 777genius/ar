@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine } from "../../codex-app-server-execution-engine";
 import { FakeAppServerFactory } from "../../app-server/testing/fake-app-server";
-import { StaticRunner } from "../codex-provider-test-support";
+import { RecordingJsonEngine, StaticRunner } from "../codex-provider-test-support";
 import { InMemoryManagedRunStore } from "../../codex-app-server-managed-run-store";
 import { isReplaySafeTurnStartRejection } from "../../app-server/application/app-server-turn-failure";
 
@@ -574,6 +574,64 @@ describe("bug D seams: runs gated on a draining session", () => {
       emit(factory, 2, doneFrame(turnIdFrom(factory, finalBoundary, "gate-final")));
       expect(outputOf(await final)).toContain("app-server output:gate-final");
     } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+});
+
+class GatedFallback extends RecordingJsonEngine {
+  entered = false;
+  release!: () => void;
+  private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+
+  override async run(input: Parameters<RecordingJsonEngine["run"]>[0]) {
+    this.entered = true;
+    await this.gate;
+    return await super.run(input);
+  }
+}
+
+describe("bug D seams: fallback after a poisoned failure", () => {
+  it("does not hold the drain while the failing run executes its fallback", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      emitTurnEventsWithStartResponse: true,
+      suppressTurnCompletion: true,
+      failThreadStartNumbers: [2],
+    });
+    const fallback = new GatedFallback("fallback-output");
+    const engine = new CodexAppServerExecutionEngine({
+      codexBinaryPath: "/fake/codex",
+      processFactory: factory.create,
+      cleanThreadPrewarm: false,
+      timeoutMs: 5000,
+      fallback,
+    });
+    try {
+      const deltas: string[] = [];
+      const sibling = startRun(engine, home, "fb-sibling", deltas);
+      sibling.catch(() => undefined);
+      await waitForDelta(deltas, "fb-sibling");
+      const failing = startRun(engine, home, "fb-fail", deltas);
+      failing.catch(() => undefined);
+      await waitUntil(() => fallback.entered, "failing run inside its fallback");
+      emit(factory, 0, doneFrame(turnIdFrom(factory, 0, "fb-sibling")));
+      expect(outputOf(await sibling)).toContain("app-server output:fb-sibling");
+      // The fallback never touches the app-server slot, so it must not gate the home.
+      const boundary = factory.requests.length;
+      const third = startRun(engine, home, "fb-third", deltas);
+      third.catch(() => undefined);
+      await waitUntil(() => factory.processes.length === 2, "fresh process while the fallback runs");
+      await waitForDelta(deltas, "fb-third");
+      emit(factory, 1, doneFrame(turnIdFrom(factory, boundary, "fb-third")));
+      expect(outputOf(await third)).toContain("app-server output:fb-third");
+      expect(fallback.prompts).toEqual([]);
+      fallback.release();
+      expect(outputOf(await failing)).toContain("fallback-output");
+    } finally {
+      fallback.release();
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());
     }
