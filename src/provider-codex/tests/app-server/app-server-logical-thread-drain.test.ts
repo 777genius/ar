@@ -36,6 +36,8 @@ function outputOf(result: unknown): string {
   return String((result as { outputText?: unknown }).outputText ?? "");
 }
 
+// The fake generates turn ids per process as turn-N in request-handling order
+// (fake-app-server.ts: nextTurnId), and turn/start params carry no turn id.
 function turnIdFrom(
   factory: FakeAppServerFactory,
   fromIndex: number,
@@ -128,13 +130,9 @@ function seamHarness(goalMode: boolean) {
   return { factory, engine, runStore };
 }
 
-function goalThreadIdOf(factory: FakeAppServerFactory, last = false): string {
-  const requests = factory.requests.filter((request) => request.method === "thread/goal/set");
-  const request = last ? requests[requests.length - 1] : requests[0];
-  if (!request) throw new Error("no thread/goal/set request");
-  return String((request.params as { threadId?: unknown } | undefined)?.threadId ?? "");
-}
-
+// Manual turn completion bypasses the fake's goal marking, and the goal runner
+// linearizes on the thread/goal/get response, so the fake's goal state is set
+// through its stdin request loop (the client ignores unknown response ids).
 function completeFakeGoal(factory: FakeAppServerFactory, processIndex: number, threadId: string): void {
   factory.processes[processIndex]!.stdin.write(
     `${JSON.stringify({
@@ -170,29 +168,27 @@ describe("bug D seams: logical-thread call site", () => {
     try {
       const deltas: string[] = [];
       const failing = engine
-        .runLogicalThread(startInput(engine, home, "logical-fail", deltas))
+        .runLogicalThread(startInput(engine, home, "logical-fail"))
         .then(() => null, (error: unknown) => error);
       // The logical-thread runner does not forward onTextDelta; wait for its
       // turn/start request instead.
-      await waitUntil(
-        () => factory.requests.some((r) => r.method === "turn/start" && JSON.stringify(r.params).includes("logical-fail")),
-        "logical-fail turn started",
-      );
+      await waitUntil(() => turnStarted(factory, "logical-fail"), "logical-fail turn started");
       const sibling = engine.run(startInput(engine, home, "sib-logical", deltas));
+      sibling.catch(() => undefined);
       await waitForDelta(deltas, "sib-logical");
       emit(factory, 0, failFrame(turnIdFrom(factory, 0, "logical-fail"), "logical-boom"));
       expectOwnError(await failing, "logical-boom");
-      await pause(10);
-      completeFakeGoal(factory, 0, goalThreadIdOf(factory, true));
+      completeFakeGoal(factory, 0, threadIdFor(factory, "sib-logical"));
       emit(factory, 0, doneFrame(turnIdFrom(factory, 0, "sib-logical")));
       const result = await sibling;
       expect(outputOf(result)).toContain("app-server output:sib-logical");
+      const boundary = factory.requests.length;
       const third = engine.run(startInput(engine, home, "after-logical-seam", deltas));
+      third.catch(() => undefined);
       await waitUntil(() => factory.processes.length === 2, "fresh process after logical drain");
       await waitForDelta(deltas, "after-logical-seam");
-      await pause(10);
-      completeFakeGoal(factory, 1, goalThreadIdOf(factory, true));
-      emit(factory, 1, doneFrame("turn-1"));
+      completeFakeGoal(factory, 1, threadIdFor(factory, "after-logical-seam"));
+      emit(factory, 1, doneFrame(turnIdFrom(factory, boundary, "after-logical-seam")));
       expect(outputOf(await third)).toContain("app-server output:after-logical-seam");
     } finally {
       await engine.dispose();
