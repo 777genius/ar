@@ -12,10 +12,10 @@ prompts, or model outputs into logs, tickets, or docs.
 ## Relaunching a bridge job under a new job id
 
 `scripts/ops/mimo-project-bridge-relaunch.py` drives the installed
-`hosted-mimo-project-bridge-cli.js` (override the path with `BRIDGE_CLI`, the
-host machine id with `MACHINE_ID` or `--machine-id`). It reuses the previous
-job's Create request envelope with a new `jobId` and enforces one non-obvious
-ordering invariant: the workspace must not change while Start is in flight.
+`hosted-mimo-project-bridge-cli.js` as root on the worker host (override the
+path with `BRIDGE_CLI`). It reuses the previous job's Create request envelope
+with a new `jobId` and enforces one non-obvious ordering invariant: the
+workspace must not change while Start is in flight.
 
 1. `create` and poll until the observation reaches `state: "settled"` with an ok
    result.
@@ -28,9 +28,38 @@ ordering invariant: the workspace must not change while Start is in flight.
 
 Staging earlier fails Start with
 `project_control_workspace_state_changed_before_start` and the job never
-launches. The tool also strips AppleDouble `._*` files after staging; they
-otherwise pollute the workspace diff. Exit codes: `0` launched and staged, `3`
-create failed, `4` Start not confirmed or staging failed.
+launches. `--plan-dest` must be a relative path inside the workspace. Because
+the launched worker can already modify its workspace, staging opens every path
+component without following symlinks and writes only a regular file. The tool
+also strips AppleDouble `._*` files after staging; they otherwise pollute the
+workspace diff.
+
+```sh
+python3 scripts/ops/mimo-project-bridge-relaunch.py <project> <source-job> <new-job> \
+  --workstream <workstream> --plan-src /path/to/plan.md --plan-dest refs/plan.md
+```
+
+Use it only for a source job whose bridge Status is settled and terminal and
+that failed before producing output (a provider quota block with
+`outputObserved: "false"`, or a gate block at admission). It is not a way
+around an uncertain or still-running job: reconcile that with same-job Status
+as [hosted-mimo-project-workers.md](./hosted-mimo-project-workers.md)
+requires. A job that produced a patch continues as a new job from the
+preserved patch instead. The reused envelope keeps the original prompt and
+`sourceCommit`; after the binding has advanced, Create fails with
+`mimo_project_bridge_source_mismatch`. If the tool is interrupted, re-run it
+with the same new job id, which re-polls the retained operations; never pick
+another id to work around the uncertainty.
+
+Before any bridge call the tool reads the source request and `--plan-src` and
+checks that the request is a Create for the same project, workstream and
+machine. The machine id defaults to `/etc/machine-id`; `MACHINE_ID` or
+`--machine-id` asserts the expected host instead. Log markers per phase are
+`CREATE_`/`START_` + `SETTLED_OK`, `SETTLED_FAIL`, `BAD_RESPONSE` or
+`POLL_TIMEOUT`, then `STAGED`, `STAGE_FAILED` or `NOT_STAGING`, and a final
+`EXIT` line. Exit codes: `0` launched and staged, `2` preflight refused
+(nothing was submitted), `3` create failed, `4` Start not confirmed or staging
+failed.
 
 ## Account capacity gate
 
@@ -45,17 +74,28 @@ hand-edit registry, lease, or store files.
 
 Operator tools:
 
-- `scripts/ops/mimo-account-capacity-clear.mjs` resets a stuck gate record
-  through the store API (`tryClaimRecheck` with `Refresh`, then `resolveRecheck`
-  with `Available`).
-- `scripts/ops/mimo-account-capacity-state.mjs` dumps the current phase/capacity
-  read-only.
+- `scripts/ops/mimo-account-capacity-clear.mjs` resets stuck gate records
+  through the store API (`tryClaimRecheck` with `Refresh`, which does not wait
+  for `recheck_due`, then `resolveRecheck` with `Available`). It repeats for up
+  to 64 records until none remains or a claim or resolve is refused, and prints
+  the `BEFORE`/`AFTER` state.
+- `scripts/ops/mimo-account-capacity-state.mjs` dumps the current phase and
+  capacity for the demand and account-wide (records of other models or
+  efforts). It uses strict reads: an unreadable record fails the dump instead
+  of being discarded.
 
-Both default to `MODEL_BACKEND=xiaomi-mimo-token-plan`, `ACCOUNT_ID=account-q`,
-and `POOL_DIR=/srv/worker-state/account-pools/live-codex-auth`, overridable via
-env. Clearing the gate record does **not** clear provider-side quota: the first
-provider request writes a fresh limit right back if the quota is truly
-exhausted. Treat the clear as "remove our stale block", not "capacity is back".
+Both read `ACCOUNT_ID` (default `account-q`), `POOL_DIR` (default
+`/srv/worker-state/account-pools/live-codex-auth`), `MODEL` (default
+`mimo-v2.6-pro`, with `high` effort and `default` service tier) and
+`BRIDGE_DIST` (default `/opt/subscription-runtime/mimo-project-bridge-current/dist`,
+the installed runtime the store is loaded from). The clear tool records
+`OWNER_ID` (default `operator-recovery:$USER`) as the claim owner. Both are
+pinned to `MODEL_BACKEND=xiaomi-mimo-token-plan` and exit `2` for any other
+value: the ChatGPT namespace resolves account identity from `auth.json`, which
+these tools must never read. Clearing the gate record does **not** clear
+provider-side quota: the first provider request writes a fresh limit right back
+if the quota is truly exhausted. Treat the clear as "remove our stale block",
+not "capacity is back".
 
 ## Quota block vs gate block
 
@@ -84,17 +124,31 @@ exhausted. Treat the clear as "remove our stale block", not "capacity is back".
   exits with `WINDOW_OPEN` when a recent journal change shows observed output
   (`outputObserved` is serialized as the string `"true"`) or the last attempt
   status is `completed`/`succeeded`/`running` — any job getting that far means
-  the account has capacity. Run it under `nohup`, probe once after it fires.
+  the account has capacity. `--hours` (default 12) bounds the watch and
+  `--glob` overrides the journal pattern. Both outcomes exit `0`, so read the
+  last line (`WINDOW_OPEN` or `WATCH_END no-window`). Never detach it with
+  `nohup`, `disown`, `setsid` or a background shell child (AGENTS.md, Host
+  Access): run it in an attended foreground session, and give a longer watch
+  an owned service. Probe once after it fires.
 - Never substitute a different model to work around a MiMo quota block.
 
 ## Stopping a job
 
 The bridge `stop` operation is protective: for a fresh live worker it returns
-`project_control_fresh_worker_stop_denied` with the required state and a
-`stopCommand` naming the exact tmux session. Execute that `tmux kill-session -t
-<jobId>` command, then `pkill -f <jobId>` and verify no processes remain. The
-job's `progress.json` may keep a stale `status: "running"` after the process
-tree is dead — trust the process table, not the file.
+`project_control_fresh_worker_stop_denied` with
+`requiredState: silent_stale_or_heartbeat_only_no_output` and a `stopCommand`
+naming the job's exact tmux session. Stopping a healthy worker is an operator
+emergency cancellation: run that `stopCommand` exactly as returned, then check
+the process table for the worker's remaining processes. Never pattern-kill
+(`pkill -f <jobId>` or similar): the job id is also in the command line of the
+bridge's own owned operation units (`--execute-owned
+…/<jobId>.<operation>.request.json`), and killing one leaves that operation
+unresolved. Terminate a surviving process only after verifying that it belongs
+to that worker. Then reconcile the job with same-job bridge `status` and
+`stop` as described in
+[hosted-mimo-project-workers.md](./hosted-mimo-project-workers.md). The job's
+`progress.json` may keep a stale `status: "running"` after the process tree is
+dead — trust the process table, not the file.
 
 ## Hard rules
 

@@ -1,5 +1,16 @@
 // Operator recovery: clear a stuck worker-account capacity gate via the store API.
 // This resets the local gate record only — it does not reset provider-side quota.
+// Pinned to the MiMo namespace: the ChatGPT namespace resolves account identity
+// from auth.json, and operator tools must never read credentials.
+const MIMO_MODEL_BACKEND = "xiaomi-mimo-token-plan";
+const modelBackend = process.env.MODEL_BACKEND ?? MIMO_MODEL_BACKEND;
+if (modelBackend !== MIMO_MODEL_BACKEND) {
+  console.error(
+    `MODEL_BACKEND must be ${MIMO_MODEL_BACKEND}, got ${JSON.stringify(modelBackend)}`,
+  );
+  process.exit(2);
+}
+
 const base =
   process.env.BRIDGE_DIST ??
   "/opt/subscription-runtime/mimo-project-bridge-current/dist";
@@ -18,7 +29,6 @@ const {
 
 const poolDir =
   process.env.POOL_DIR ?? "/srv/worker-state/account-pools/live-codex-auth";
-const modelBackend = process.env.MODEL_BACKEND ?? "xiaomi-mimo-token-plan";
 const accountId = process.env.ACCOUNT_ID ?? "account-q";
 const model = process.env.MODEL ?? "mimo-v2.6-pro";
 const ownerId =
