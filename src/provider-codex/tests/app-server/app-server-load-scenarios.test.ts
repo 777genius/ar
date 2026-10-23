@@ -116,6 +116,7 @@ async function waitForTurnStarts(
     }
     await pause(5);
   }
+  throw new Error(`synthetic turn starts never reached ${count}`);
 }
 
 describe("app-server load scenarios without model calls", () => {
@@ -597,10 +598,17 @@ describe("app-server load scenarios without model calls", () => {
       for (const turnId of turnIds) reconnecting(turnId);
       await pause(100);
       // Each turn shows activity, which must clear its grace timer...
-      for (const turnId of turnIds) {
+      const turnStarts = factory.requests.filter(
+        (request) => request.method === "turn/start",
+      );
+      for (const [index, turnId] of turnIds.entries()) {
+        const threadId = String(
+          (turnStarts[index]?.params as { threadId?: unknown } | undefined)
+            ?.threadId ?? "",
+        );
         emit({
           method: "item/started",
-          params: { turnId, threadId: "thread-1", item: { type: "commandExecution", id: `cmd-${turnId}` } },
+          params: { turnId, threadId, item: { type: "commandExecution", id: `cmd-${turnId}` } },
         });
       }
       // ...and is still working well past the grace window before it finishes.
