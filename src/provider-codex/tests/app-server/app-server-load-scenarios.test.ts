@@ -161,11 +161,44 @@ describe("app-server load scenarios without model calls", () => {
       expect(settled[6]?.status).toBe("rejected");
       expect(settled[7]?.status).toBe("rejected");
       expect(reasonMessage(settled[5]!)).toMatch(/codex_app_server_error/);
-      expect(reasonMessage(settled[6]!)).toMatch(/codex_app_server/);
+      expect(reasonMessage(settled[6]!)).toMatch(/codex_app_server_turn_error:fake app-server process failed/);
       expect(reasonMessage(settled[7]!)).toMatch(/codex_app_server_thread_start_failed/);
     } finally {
       await engine.dispose();
       factories.forEach((factory) => factory.processes.forEach((process) => process.kill()));
+    }
+  }, 20000);
+
+  it("isolates a failing run from concurrent siblings sharing one process", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      failTurnStartNumbers: [2],
+      turnStartError: "synthetic sibling turn start failure",
+    });
+    const engine = engineFor(factory);
+    try {
+      const prompts = ["sibling-a", "sibling-b", "sibling-c", "sibling-d"];
+      const settled = await Promise.allSettled(
+        prompts.map((prompt) => run(engine, home, `sibling:${prompt}`)),
+      );
+      const rejected = settled.filter((outcome) => outcome.status === "rejected");
+      const fulfilled = settled.filter(
+        (outcome) => outcome.status === "fulfilled",
+      ) as PromiseFulfilledResult<Awaited<ReturnType<typeof run>>>[];
+      expect(rejected).toHaveLength(1);
+      expect(reasonMessage(rejected[0]!)).toMatch(/codex_app_server_turn_start_failed/);
+      expect(fulfilled).toHaveLength(3);
+      const outputs = fulfilled.map((outcome) => outputOf(outcome.value));
+      outputs.forEach((output) => {
+        expect(prompts.filter((prompt) => output.includes(`sibling:${prompt}`))).toHaveLength(1);
+      });
+      const matched = prompts.filter((prompt) =>
+        outputs.some((output) => output.includes(`sibling:${prompt}`)));
+      expect(matched).toHaveLength(3);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
     }
   }, 20000);
 
@@ -189,7 +222,11 @@ describe("app-server load scenarios without model calls", () => {
       });
       const result = await run(engine, home, "prepared-retry-prompt");
       expect(outputOf(result)).toContain("prepared-retry-prompt");
-      expect(factory.requests.filter((request) => request.method === "turn/start")).toHaveLength(2);
+      const turnStarts = factory.requests.filter((request) => request.method === "turn/start");
+      expect(turnStarts).toHaveLength(2);
+      const turnThreadIds = turnStarts.map((request) =>
+        String((request.params as { threadId?: unknown } | undefined)?.threadId ?? ""));
+      expect(new Set(turnThreadIds).size).toBe(2);
       expect(warningCodesOf(result)).toContain("codex_app_server_prepared_thread_failed");
     } finally {
       await engine.dispose();
@@ -247,7 +284,7 @@ describe("app-server load scenarios without model calls", () => {
       settled.forEach((outcome, index) => {
         if (index % 2 === 0) {
           expect(outcome.status).toBe("rejected");
-          expect(reasonMessage(outcome)).toMatch(/codex_app_server|aborted/);
+          expect(reasonMessage(outcome)).toMatch(/codex_app_server_aborted|codex_app_server_turn_aborted/);
         } else {
           expect(outcome.status).toBe("fulfilled");
           if (outcome.status === "fulfilled") {
@@ -267,7 +304,7 @@ describe("app-server load scenarios without model calls", () => {
       availableModels: [{ model: "gpt-test" }],
       suppressTurnCompletion: true,
     });
-    const engine = engineFor(factory, { timeoutMs: 250 });
+    const engine = engineFor(factory, { timeoutMs: 750 });
     try {
       const outcome = await Promise.allSettled([run(engine, home, "hang-prompt")]);
       expect(outcome[0]?.status).toBe("rejected");
