@@ -239,12 +239,35 @@ export class AppServerGoalRunner {
         });
       }
       this.options.client.assertExecutionActive(input.abortSignal);
+      const waitingRecord = await this.options.runStore.get({ runId: input.runId });
       await this.options.runStore.resume({
         runId: input.runId,
         requestId: input.requestId,
         answer: this.redactForStore(input.redactor, input.answer),
         now: new Date(),
       });
+
+      // The claim I/O is a real async window: an abort landing there never
+      // reached the provider, so compensate the claim back to waiting instead
+      // of consuming the answer. A failed compensation falls through to the
+      // wire's abort fence and the best-effort fail below.
+      if (input.abortSignal.aborted && waitingRecord?.request) {
+        await this.options.runStore.saveWaitingInput({
+          runId: input.runId,
+          request: waitingRecord.request,
+          resumeHandle: input.resumeHandle,
+          ...(waitingRecord.recoveryPacket === undefined ? {} : { recoveryPacket: waitingRecord.recoveryPacket }),
+          ...(waitingRecord.taskId === undefined ? {} : { taskId: waitingRecord.taskId }),
+          ...(waitingRecord.assignedWorkerId === undefined ? {} : { assignedWorkerId: waitingRecord.assignedWorkerId }),
+          ...(waitingRecord.providerInstanceId === undefined ? {} : { providerInstanceId: waitingRecord.providerInstanceId }),
+          ...(waitingRecord.workspacePath === undefined ? {} : { workspacePath: waitingRecord.workspacePath }),
+          ...(waitingRecord.outputText === undefined ? {} : { outputText: waitingRecord.outputText }),
+          now: new Date(),
+        }).then(
+          () => this.options.client.assertExecutionActive(input.abortSignal),
+          () => undefined,
+        );
+      }
 
       try {
         await this.options.client.resumePublicResearchThread({ ...input, threadId });
