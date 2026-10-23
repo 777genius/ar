@@ -238,6 +238,7 @@ export class AppServerGoalRunner {
           workspacePath: input.workspacePath,
         });
       }
+      this.options.client.assertExecutionActive(input.abortSignal);
       await this.options.runStore.resume({
         runId: input.runId,
         requestId: input.requestId,
