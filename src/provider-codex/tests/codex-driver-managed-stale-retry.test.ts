@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
+import { DefaultRedactor, SessionExecutionUseDisposition, type SessionExecutionUse } from "@vioxen/subscription-runtime/core";
 import { makeFakeRuntimeDeps } from "../../core/testing";
 import { CodexJsonAgentDriver } from "../codex-json-agent-driver";
 import { sessionArtifactFromCodexAuthJson } from "../codex-auth-json-codec";
@@ -31,7 +31,7 @@ function waiting(runId: string, requestId: string, workspacePath: string) {
 // A stale retry must not destroy the session the run is being resumed on: the
 // resume validation guard means the claim never happened, so the retained
 // session still belongs to the run's next legitimate resume.
-async function staleRetryFixture() {
+async function staleRetryFixture(use?: SessionExecutionUse) {
   const root = await mkdtemp(join(tmpdir(), "TEST-codex-stale-retry-"));
   const events: string[] = [];
   const sessions: CodexMaterializedSession[] = [];
@@ -51,7 +51,7 @@ async function staleRetryFixture() {
     model: "gpt-test",
     sessionMaterializer: { mode: "ephemeral", materialize: async (input) => {
       const selected = await physical.materialize(input);
-      return { ...selected,
+      return { ...selected, ...(use ? { sessionExecutionUse: use } : {}),
         snapshotSession: async () => { events.push("snapshot"); return await selected.snapshotSession!(); },
         release: async () => { events.push("release"); await selected.release(); } };
     } },
@@ -88,6 +88,24 @@ describe("bug I: a stale retry must keep the run's retained session", () => {
       expect(again.status).toBe("waiting_for_input");
       expect(f.sessions).toHaveLength(3);
       expect(f.sessions[2]).toBe(f.sessions[0]);
+    } finally {
+      await f.driver.dispose().catch(() => undefined);
+    }
+  }, 20000);
+
+  // Binding for the retained-session half of the guard: a hosted materializer
+  // attaches its current use to a fresh session, which only the terminal
+  // finalization (not the resume's finally) releases.
+  it("still finalizes a session it materialized for the refused resume", async () => {
+    const use: SessionExecutionUse = { complete: async () => SessionExecutionUseDisposition.Discharged };
+    const f = await staleRetryFixture(use);
+    try {
+      const stale = await f.driver.resumeManagedRun(f.resumeInput("TEST-stale"));
+      expect(stale.status).toBe("failed");
+      expect(f.events).toEqual(["snapshot", "release"]);
+      expect(f.driver.hasManagedRunSession("TEST-run")).toBe(false);
+      await f.driver.retireTaskSession(use);
+      await expect(f.driver.dispose()).resolves.toBeUndefined();
     } finally {
       await f.driver.dispose().catch(() => undefined);
     }
