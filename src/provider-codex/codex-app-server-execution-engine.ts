@@ -162,7 +162,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     if (lifetime) input = { ...input, session: bindAppServerSessionLifetime(input.session, lifetime),
       abortSignal: AbortSignal.any([input.abortSignal, lifetime.signal]) };
     const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
-    const gated = this.sessionDrain.acquire(input.session);
+    const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
     if (gated) await gated;
     try {
       const result = await this.runViaAppServer(input, schemaPlan, returned);
@@ -209,7 +209,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
-    const gated = this.sessionDrain.acquire(input.session);
+    const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
     if (gated) await gated;
     return await runCodexAppServerLogicalThreadWithSlot(input, {
       goalMode: this.options.goalMode ?? false,
@@ -250,7 +250,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     const schemaPlan = prepareCodexOutputSchemaPlan(input.outputSchema);
-    const gated = this.sessionDrain.acquire(input.session);
+    const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
     if (gated) await gated;
     try {
       const result = await this.resumeViaAppServer(input, schemaPlan);
@@ -289,7 +289,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   }): Promise<CodexExecutionPrewarmResult> {
     if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.executionLifetime) throw new Error("child_prewarm_denied");
-    const gated = this.sessionDrain.acquire(input.session);
+    const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
     if (gated) await gated;
     try {
       const slot = await this.slotPool.ensureSlot(input);

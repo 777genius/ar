@@ -529,3 +529,53 @@ describe("bug D seams: abandoned turns on a draining session", () => {
     }
   }, 20000);
 });
+
+describe("bug D seams: runs gated on a draining session", () => {
+  it("settles an aborted gated run without waiting for the drain, and leaks no ref", async () => {
+    const home = await workspace();
+    const { factory, engine } = harness();
+    try {
+      const deltas: string[] = [];
+      const failing = startRun(engine, home, "gate-fail", deltas);
+      const sibling = startRun(engine, home, "gate-sibling", deltas);
+      sibling.catch(() => undefined);
+      await waitForDelta(deltas, "gate-fail");
+      await waitForDelta(deltas, "gate-sibling");
+      emit(factory, 0, failFrame(turnIdFrom(factory, 0, "gate-fail"), "gate-boom"));
+      expectOwnError(await failing.then(() => null, (error: unknown) => error), "gate-boom");
+      const gatedAbort = new AbortController();
+      const gated = engine
+        .run({ ...startInput(engine, home, "gate-aborted", deltas), abortSignal: gatedAbort.signal })
+        .then(() => null, (error: unknown) => error);
+      await pause(20);
+      gatedAbort.abort();
+      const settled = await Promise.race([gated, pause(1000).then(() => "still-gated" as const)]);
+      expect(settled).not.toBe("still-gated");
+      expect(String(settled)).toContain("codex_app_server_aborted_before_slot_acquired");
+      expect(turnStartCount(factory)).toBe(2);
+      emit(factory, 0, doneFrame(turnIdFrom(factory, 0, "gate-sibling")));
+      expect(outputOf(await sibling)).toContain("app-server output:gate-sibling");
+      // A ref leaked by the aborted waiter would hold the poisoned session forever.
+      const boundary = factory.requests.length;
+      const after = startRun(engine, home, "gate-after", deltas);
+      await waitUntil(() => factory.processes.length === 2, "fresh process after gated abort");
+      await waitForDelta(deltas, "gate-after");
+      emit(factory, 1, doneFrame(turnIdFrom(factory, boundary, "gate-after")));
+      expect(outputOf(await after)).toContain("app-server output:gate-after");
+      // With a leaked ref this solo failure would defer forever and gate every later run.
+      const solo = startRun(engine, home, "gate-solo-fail", deltas);
+      await waitForDelta(deltas, "gate-solo-fail");
+      emit(factory, 1, failFrame(turnIdFrom(factory, boundary, "gate-solo-fail"), "gate-solo-boom"));
+      expectOwnError(await solo.then(() => null, (error: unknown) => error), "gate-solo-boom");
+      const finalBoundary = factory.requests.length;
+      const final = startRun(engine, home, "gate-final", deltas);
+      await waitUntil(() => factory.processes.length === 3, "fresh process after solo failure");
+      await waitForDelta(deltas, "gate-final");
+      emit(factory, 2, doneFrame(turnIdFrom(factory, finalBoundary, "gate-final")));
+      expect(outputOf(await final)).toContain("app-server output:gate-final");
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+});

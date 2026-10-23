@@ -1,5 +1,6 @@
 import type { CodexMaterializedSession } from "../../codex-json-execution-engine";
 import { isReplaySafeTurnStartRejection } from "./app-server-turn-failure";
+import { AppServerSlotAcquireAbortedError } from "./app-server-slot-pool";
 
 type PoisonedHome = {
   readonly session: CodexMaterializedSession;
@@ -17,15 +18,27 @@ export class AppServerSessionDrain {
   constructor(private readonly disposeSessionSlot: (session: CodexMaterializedSession) => Promise<void>) {}
 
   /** Returns a promise only when gated on a poisoned drain; the healthy path
-   * must stay synchronous so callers keep their admission ordering. */
-  acquire(session: CodexMaterializedSession): Promise<void> | undefined {
+   * must stay synchronous so callers keep their admission ordering. An abort
+   * while gated leaves without a ref, exactly like an aborted slot acquire. */
+  acquire(session: CodexMaterializedSession, abortSignal: AbortSignal): Promise<void> | undefined {
     const key = session.codexHome;
     const poisoned = this.poisonedHomes.get(key);
     if (!poisoned) {
       this.refsByHome.set(key, (this.refsByHome.get(key) ?? 0) + 1);
       return undefined;
     }
-    return poisoned.settled.then(() => this.acquire(session)).then(() => undefined);
+    if (abortSignal.aborted) return Promise.reject(new AppServerSlotAcquireAbortedError());
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(new AppServerSlotAcquireAbortedError());
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+      void poisoned.settled.then(() => {
+        abortSignal.removeEventListener("abort", onAbort);
+        // The abort already rejected this waiter; taking a ref now would leak it.
+        if (abortSignal.aborted) return;
+        const next = this.acquire(session, abortSignal);
+        if (next) next.then(resolve, reject); else resolve();
+      });
+    });
   }
 
   release(session: CodexMaterializedSession): void {
