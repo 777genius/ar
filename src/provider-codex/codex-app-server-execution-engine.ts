@@ -143,7 +143,6 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       runStore: this.runStore,
       processFactory: this.usageRelay ? this.usageRelay.wrapProcessFactory(this.modelBackend, options.processFactory ?? spawnCodexAppServerProcess) : options.processFactory ?? spawnCodexAppServerProcess,
       maxOutputBytes: this.maxOutputBytes(),
-      modelBackend: this.modelBackend,
     }));
   }
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {

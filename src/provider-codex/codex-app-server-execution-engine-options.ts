@@ -28,8 +28,6 @@ import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hos
 import type { ProviderCallObserver } from "../provider-usage/provider-call-observation";
 import { AppServerSlotPool } from "./app-server/application/app-server-slot-pool";
 import { signalCodexAppServerChildGroup } from "./app-server/adapters/node-app-server-process";
-import { appServerStartupTimeoutMs } from "./app-server/domain/app-server-errors";
-import { defaultReconnectGraceMs } from "./app-server/domain/app-server-types";
 import type { ResolvedCodexExecutionProfile } from "./codex-execution-profile";
 
 export type CodexAppServerExecutionEngineOptions = {
@@ -165,7 +163,6 @@ export function appServerSlotPoolOptions(input: {
   readonly runStore: ManagedRunStorePort;
   readonly processFactory: CodexAppServerProcessFactory;
   readonly maxOutputBytes: number;
-  readonly modelBackend: CodexModelBackend;
 }): ConstructorParameters<typeof AppServerSlotPool>[0] {
   const { options } = input;
   return {
