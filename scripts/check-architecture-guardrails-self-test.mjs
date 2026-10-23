@@ -22,6 +22,42 @@ const cases = [
     expectText: "Host service installation recipes belong to outer adapters",
   },
   {
+    name: "core rejects copied legacy bus configuration",
+    files: { "src/core/host-infrastructure/bad.ts": "export const SYSTEM_BUS_CONFIG = '';\n" },
+    expectPass: false,
+    expectText: "Host service installation recipes belong to outer adapters",
+  },
+  {
+    name: "core rejects copied service fragment",
+    files: { "src/core/host-infrastructure/bad.ts": "export const SYSTEM_BUS_SERVICE_FRAGMENT = '';\n" },
+    expectPass: false,
+    expectText: "Host service installation recipes belong to outer adapters",
+  },
+  {
+    name: "core rejects copied socket fragment",
+    files: { "src/core/host-infrastructure/bad.ts": "export const SYSTEM_BUS_SOCKET_FRAGMENT = '';\n" },
+    expectPass: false,
+    expectText: "Host service installation recipes belong to outer adapters",
+  },
+  {
+    name: "core rejects D-Bus configuration",
+    files: { "src/core/host-infrastructure/bad.ts": "export const recipe = '<busconfig>';\n" },
+    expectPass: false,
+    expectText: "Host service installation recipes belong to outer adapters",
+  },
+  {
+    name: "core rejects Unit recipes",
+    files: { "src/core/host-infrastructure/bad.ts": "export const recipe = '[Unit]';\n" },
+    expectPass: false,
+    expectText: "Host service installation recipes belong to outer adapters",
+  },
+  {
+    name: "core rejects Socket recipes",
+    files: { "src/core/host-infrastructure/bad.ts": "export const recipe = '[Socket]';\n" },
+    expectPass: false,
+    expectText: "Host service installation recipes belong to outer adapters",
+  },
+  {
     name: "outer compatibility may preserve deprecated configuration exports",
     files: {
       "src/core-compatibility.ts": "export { SYSTEM_BUS_CONFIG } from './provider-codex/app-server/adapters/system-bus-configuration';\n",

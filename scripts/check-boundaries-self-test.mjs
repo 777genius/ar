@@ -34,9 +34,22 @@ const cases = [
     expectText: "compatibility composition is outer-only",
   },
   {
+    name: "core production rejects self-package root compatibility composition",
+    files: { "src/core/application/bad.ts": "import { core } from '@vioxen/subscription-runtime';\n" },
+    expectPass: false,
+    expectText: "compatibility composition is outer-only",
+  },
+  {
+    name: "core production rejects self-package core compatibility composition",
+    files: { "src/core/application/bad.ts": "export * from '@vioxen/subscription-runtime/core';\n" },
+    expectPass: false,
+    expectText: "compatibility composition is outer-only",
+  },
+  {
     name: "pure core transformations and adapter implementation stay allowed",
     files: {
       "src/core/domain/digest.ts": "import { createHash } from 'node:crypto';\nimport { resolve } from 'node:path';\n",
+      "src/core/application/contracts.ts": "import type { ProviderTask } from '../domain/types';\n",
       "src/core/tests/contract.test.ts": "import { readFileSync } from 'node:fs';\n",
       "src/provider-codex/app-server/adapters/mount.ts": "import { openSync } from 'node:fs';\nimport { execFileSync } from 'node:child_process';\n",
       "src/core-compatibility.ts": "export * from './core/index';\nexport * from './provider-codex/app-server/adapters/system-bus-configuration';\n",

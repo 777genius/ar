@@ -1,6 +1,6 @@
 // Coordinates local custody operations without depending on a provider adapter.
 import { createHash, randomBytes } from "node:crypto";
-import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   localFileLeaseDefaultLockAcquireTimeoutMs as defaultLockAcquireTimeoutMs,
@@ -26,9 +26,13 @@ type PersistedLockRecord = {
   readonly expiresAt: string;
   readonly ownerProcess?: {
     readonly bootId: string;
+    readonly pidNamespace: string;
     readonly startTimeTicks: string;
   };
 };
+
+const bootIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
+const pidNamespacePattern = /^pid:\[[1-9]\d*\]$/;
 
 /** Local filesystem transactions share one lock per provider across all processes.
  * TTL permits recovery only after the owner process exits; a delayed live owner
@@ -241,8 +245,11 @@ export class LocalFileProviderLock {
         pid: parsed.pid,
         acquiredAt: parsed.acquiredAt,
         expiresAt: parsed.expiresAt,
-        ...(parsed.ownerProcess && typeof parsed.ownerProcess.bootId === "string" && typeof parsed.ownerProcess.startTimeTicks === "string"
-          ? { ownerProcess: { bootId: parsed.ownerProcess.bootId, startTimeTicks: parsed.ownerProcess.startTimeTicks } }
+        ...(parsed.ownerProcess && typeof parsed.ownerProcess.bootId === "string" && bootIdPattern.test(parsed.ownerProcess.bootId) &&
+          typeof parsed.ownerProcess.pidNamespace === "string" && pidNamespacePattern.test(parsed.ownerProcess.pidNamespace) &&
+          typeof parsed.ownerProcess.startTimeTicks === "string" && /^\d+$/.test(parsed.ownerProcess.startTimeTicks)
+          ? { ownerProcess: { bootId: parsed.ownerProcess.bootId, pidNamespace: parsed.ownerProcess.pidNamespace,
+            startTimeTicks: parsed.ownerProcess.startTimeTicks } }
           : {}),
       };
     } catch (error) {
@@ -254,6 +261,16 @@ export class LocalFileProviderLock {
 
 async function isLockOwnerGone(record: PersistedLockRecord): Promise<boolean> {
   if (!Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
+  if (process.platform === "linux") {
+    const local = await readProcessIdentity(process.pid);
+    // A PID, including ESRCH, has meaning only in its recorded namespace/boot.
+    // Legacy or unreadable identities cannot prove that another owner is gone.
+    if (!record.ownerProcess || !local) return false;
+    // Within the single-host contract, a prior boot proves the owner exited.
+    // Namespace inode values may legitimately change or be reused after reboot.
+    if (record.ownerProcess.bootId !== local.bootId) return true;
+    if (record.ownerProcess.pidNamespace !== local.pidNamespace) return false;
+  }
   try {
     process.kill(record.pid, 0);
   } catch (error) {
@@ -261,26 +278,33 @@ async function isLockOwnerGone(record: PersistedLockRecord): Promise<boolean> {
   }
   if (!record.ownerProcess) return false;
   const current = await readProcessIdentity(record.pid);
-  return current !== undefined && (current.bootId !== record.ownerProcess.bootId ||
-    current.startTimeTicks !== record.ownerProcess.startTimeTicks);
+  return current !== undefined && current.bootId === record.ownerProcess.bootId &&
+    current.pidNamespace === record.ownerProcess.pidNamespace && current.startTimeTicks !== record.ownerProcess.startTimeTicks;
 }
 
 async function readProcessIdentity(pid: number): Promise<PersistedLockRecord["ownerProcess"]> {
   if (process.platform !== "linux") return undefined;
   try {
-    const [bootId, selfStat] = await Promise.all([
+    const [bootId, selfStat, selfStatus, pidNamespace] = await Promise.all([
       readFile("/proc/sys/kernel/random/boot_id", "utf8"),
       readFile("/proc/self/stat", "utf8"),
+      readFile("/proc/self/status", "utf8"),
+      readlink("/proc/self/ns/pid"),
     ]);
     // Sandboxes may expose a host procfs beside a different PID namespace.
     // Such observations cannot prove the identity of the lock's local PID.
-    if (selfStat.slice(0, selfStat.indexOf(" ")) !== String(process.pid)) return undefined;
+    // NSpid lists one column per namespace starting at the procfs mount's view.
+    // Matching the numeric PID alone cannot authenticate that procfs view.
+    const namespacePids = /^NSpid:\s+([^\n]+)$/m.exec(selfStatus)?.[1]?.trim().split(/\s+/);
+    if (namespacePids?.length !== 1 || namespacePids[0] !== String(process.pid) ||
+        !pidNamespacePattern.test(pidNamespace) ||
+        selfStat.slice(0, selfStat.indexOf(" ")) !== String(process.pid)) return undefined;
     const stat = pid === process.pid ? selfStat : await readFile(`/proc/${pid}/stat`, "utf8");
     if (stat.slice(0, stat.indexOf(" ")) !== String(pid)) return undefined;
     // comm (field 2) may contain spaces or parentheses; starttime is field 22.
     const startTimeTicks = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[19];
-    if (!startTimeTicks || !/^\d+$/.test(startTimeTicks) || !bootId.trim()) return undefined;
-    return { bootId: bootId.trim(), startTimeTicks };
+    if (!startTimeTicks || !/^\d+$/.test(startTimeTicks) || !bootIdPattern.test(bootId.trim())) return undefined;
+    return { bootId: bootId.trim(), pidNamespace, startTimeTicks };
   } catch { return undefined; }
 }
 

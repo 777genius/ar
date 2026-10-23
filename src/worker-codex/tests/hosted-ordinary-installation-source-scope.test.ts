@@ -62,7 +62,10 @@ describe("canonical closed manifest derivation", () => {
     expect(ok.selfPackageSpecifiers).toEqual(["@vioxen/subscription-runtime/core"]);
     expect(ok.files.map(file => file.path)).toContain("dist/core/index.js");
   });
-  it("measures the public compatibility composition and its adapter recipes through package exports", () => {
+  // tree() supplies a synthetic package export and facade, rather than reading
+  // package.json or src/core-compatibility.ts. The real ./core export target is
+  // asserted in host-integration/managed-launcher/dependency-full-native-TEST.node-test.ts.
+  it("derives source scope through a synthetic package export and facade", () => {
     const files = tree({
       "package.json": JSON.stringify({ name: "@vioxen/subscription-runtime", exports: {
         "./core": { import: "./dist/core-compatibility.js" },

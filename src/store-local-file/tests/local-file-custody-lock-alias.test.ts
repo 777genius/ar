@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { expect, it, vi } from "vitest";
 import { LocalFileProviderLock } from "../shared/local-file-custody-lock";
+import { captureLocalFileLock } from "./local-file-lock-test-support";
 
 vi.mock("node:fs/promises", async original => ({
   ...await original<typeof import("node:fs/promises")>(),
@@ -40,8 +41,9 @@ it.each(["symlink", "relative"])("keeps provider transactions exclusive while re
   try {
     await mkdir(dirname(lockPath), { recursive: true });
     if (aliasKind === "symlink") await symlink(rootDir, aliasRoot, "dir");
+    const { ownerProcess } = await captureLocalFileLock(rootDir);
     await writeFile(lockPath, JSON.stringify({ storageVersion: "local-file-lease-lock-v1", lockId: "dead-owner",
-      providerInstanceIdHash: "test", pid: 999_999,
+      providerInstanceIdHash: "test", pid: 999_999, ownerProcess,
       acquiredAt: "2020-01-01T00:00:00Z", expiresAt: "2020-01-01T00:00:01Z" }));
 
     vi.spyOn(files, "link").mockImplementation(async (source, target) => {

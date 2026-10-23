@@ -9,6 +9,7 @@ import type { SessionArtifact, SessionWriteResult } from "@vioxen/subscription-r
 import { createLocalFileBackendRuntimeAdapters, LocalFileLeaseStore } from "../index";
 import { LocalFileProviderLock } from "../shared/local-file-custody-lock";
 import * as atomicFiles from "../shared/write-atomic-local-file";
+import { captureLocalFileLock } from "./local-file-lock-test-support";
 
 const providerInstanceId = "transaction-session";
 const encryptionKey = new Uint8Array(32).fill(9);
@@ -273,11 +274,11 @@ describe("process transaction lock recovery", () => {
   it("serializes overlapping reclamation of a dead provider and dead cleanup guard", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "ar-custody-recursive-lock-"));
     try {
-      const setup = new LocalFileProviderLock({ rootDir });
-      await setup.run(providerInstanceId, async () => {});
+      const { ownerProcess } = await captureLocalFileLock(rootDir);
       const lockPath = join(rootDir, "leases", "locks", `${createHash("sha256").update(providerInstanceId).digest("hex")}.lock`);
       const deadRecord = { storageVersion: "local-file-lease-lock-v1", lockId: "dead-provider",
-        providerInstanceIdHash: "test", pid: 999_999, acquiredAt: "2020-01-01T00:00:00Z", expiresAt: "2020-01-01T00:00:01Z" };
+        providerInstanceIdHash: "test", pid: 999_999, ownerProcess,
+        acquiredAt: "2020-01-01T00:00:00Z", expiresAt: "2020-01-01T00:00:01Z" };
       const guardPath = (path: string, id: string) => join(dirname(path), `${createHash("sha256").update(`${basename(path)}\0${id}`).digest("hex")}.cleanup.lock`);
       await writeFile(lockPath, JSON.stringify(deadRecord));
       let path = lockPath;
@@ -301,13 +302,11 @@ describe("process transaction lock recovery", () => {
   it.skipIf(process.platform !== "linux")("reclaims an expired lock when its PID now has another process incarnation", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "ar-custody-reused-pid-"));
     try {
-      const setup = new LocalFileProviderLock({ rootDir });
-      await setup.run(providerInstanceId, async () => {});
+      const { ownerProcess } = await captureLocalFileLock(rootDir);
       const lockPath = join(rootDir, "leases", "locks", `${createHash("sha256").update(providerInstanceId).digest("hex")}.lock`);
-      const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
       await writeFile(lockPath, JSON.stringify({ storageVersion: "local-file-lease-lock-v1", lockId: "previous-incarnation",
         providerInstanceIdHash: "test", pid: process.pid, acquiredAt: "2020-01-01T00:00:00Z", expiresAt: "2020-01-01T00:00:01Z",
-        ownerProcess: { bootId, startTimeTicks: "0" } }));
+        ownerProcess: { ...ownerProcess, startTimeTicks: "0" } }));
       expect(await new LocalFileLeaseStore({ rootDir }).acquire({ providerInstanceId, runId: "replacement", attempt: 1,
         ttlMs: 1_000, restoredGenerationHash: "initial" })).toMatchObject({ status: "granted" });
     } finally { await rm(rootDir, { recursive: true, force: true }); }

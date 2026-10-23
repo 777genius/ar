@@ -37,6 +37,8 @@ const forbidden = [
     imports: [
       /^(?:node:)?(?:fs(?:\/promises)?|child_process)$/,
       /(?:^|\/)core-compatibility(?:\.js)?$/,
+      runtimeSubpathPattern("core$"),
+      new RegExp(`^(?:${runtimePackagePattern})$`),
     ],
     message: "core production must use ports/adapters for file system and process details; compatibility composition is outer-only",
   },
