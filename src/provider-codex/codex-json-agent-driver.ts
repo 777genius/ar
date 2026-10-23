@@ -10,6 +10,7 @@ import type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-pro
 export type { HostedMimoCapacityRecoveryBinder, HostedMimoCurrentCredentialBinding } from "./hosted-mimo-coding-proxy-material";
 export type { HostedMimoCapacityRecoveryProof } from "./hosted-mimo-response-proof";
 import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
+import { isManagedRunResumeValidationError } from "./app-server/application/app-server-managed-run-mapper";
 import { CodexAppServerExecutionEngine, type AppServerExecutionLifetime } from "./codex-app-server-execution-engine";
 import { readHostedMimoWorkerOrigin, assertHostedMimoWorkerHomeRetained, assertHostedMimoCodingWorkerHomeRetained, readHostedMimoWorkerProfileOrigin } from "./hosted-mimo-worker-origin";
 import { join } from "node:path";
@@ -620,8 +621,15 @@ export class CodexJsonAgentDriver implements AgentDriver {
       });
       this.#managedRunSessions.delete(input.runId); return await terminal;
     } catch (error) {
-      ownsMaterialized = true;
       const result = codexDriverFailure({ error, evidenceError: error, redactor: input.redactor, startedAt });
+      // A resume validation error means the run was never claimed: a retained
+      // session still belongs to the run's next legitimate resume and must
+      // survive the stale retry. The caller sees a failed result while
+      // hasManagedRunSession(runId) stays true: nothing here is terminal.
+      if (isManagedRunResumeValidationError(error) && this.#managedRunSessions.get(input.runId) === materialized) {
+        return result;
+      }
+      ownsMaterialized = true;
       const terminal = materialized.sessionExecutionUse ? this.#finishTaskSession(materialized,input.session,input.redactor,result) : Promise.resolve(result);
       this.#managedRunSessions.delete(input.runId); return await terminal;
     } finally {
