@@ -1,4 +1,5 @@
 export * from "./application/policy";
+export * from "./application/task-payload-parser";
 export * from "./application/adapters";
 export * from "./application/redactor";
 export * from "./application/runtime";

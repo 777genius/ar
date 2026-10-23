@@ -1,1 +1,1 @@
-export * from "../core/host-infrastructure/kernel-path-backing";
+export * from "../provider-codex/app-server/adapters/kernel-path-backing";

@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, CiUbuntuPocket, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
+import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciUbuntuArchiveRelativePath, CiUbuntuPocket, ciUbuntuSnapshotBase, ciUbuntuSnapshotId, ciUbuntuSources, findCiUbuntuSecurityPackageIndex, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 // Expected trust anchor is independently fixed from the task/source contract.
 const fp="F6ECB3762474EDA9D21B7022871920D1991BC93C";
 const status=`[GNUPG:] GOODSIG 871920D1991BC93C Ubuntu Archive\n[GNUPG:] VALIDSIG ${fp} 2026-10-09 1791504000 0 4 0 1 8 01 ${fp}\n`;
 test("only genuine-success status with fixed independent primary fingerprint is admissible data",()=>{
  assert.equal(ubuntuArchive2018Fingerprint,fp);
+ assert.equal(ciUbuntuSnapshotId,"20261022T180000Z");
+ assert.equal(ciUbuntuSnapshotBase,"https://snapshot.ubuntu.com/ubuntu/20261022T180000Z");
+ assert.deepEqual(ciUbuntuSources.map(row=>row.pocket),[CiUbuntuPocket.Noble,CiUbuntuPocket.Updates,CiUbuntuPocket.Security]);
+ assert(ciUbuntuSources.every(row=>row.base===ciUbuntuSnapshotBase&&Object.isFrozen(row))&&Object.isFrozen(ciUbuntuSources));
+ // Exercise the actual source-only selection against acquisition-shaped rows;
+ // changing acquisition URLs must never leave a stale literal in this lookup.
+ const indices=ciUbuntuSources.map(source=>({origin:source.base+"/dists/"+source.pocket,path:"main/binary-amd64/Packages",bytes:Buffer.from(source.pocket)}));
+ const expected=indices.find(row=>row.bytes.equals(Buffer.from("noble-security")));assert(expected);
+ const oldMirror={...expected,origin:"https://security.ubuntu.com/ubuntu/dists/noble-security"},wrongComponent={...expected,path:"universe/binary-amd64/Packages"};
+ assert.equal(findCiUbuntuSecurityPackageIndex([oldMirror,wrongComponent,...indices]),expected);
+ assert.equal(findCiUbuntuSecurityPackageIndex([oldMirror,wrongComponent,...indices.filter(row=>row!==expected)]),undefined);
  assert.doesNotThrow(()=>assertUbuntuArchiveSignature(status));
  for(const bad of [status.replace(fp,"0".repeat(40)),status.replace(/F6ECB3762474EDA9D21B7022871920D1991BC93C\n$/,"0".repeat(40)+"\n"),status+"[GNUPG:] BADSIG unknown\n",status+status,"[GNUPG:] GOODSIG anything\n",status.replace(" 1 8 01 "," 1 2 01 ")])assert.throws(()=>assertUbuntuArchiveSignature(bad),/refused/);
 });
@@ -31,6 +42,10 @@ test("same package version architecture hash and size must occur in one complete
  for(const index of [stanza.replace("Size: 42","Size: 43"),stanza.replace(`SHA256: ${archive.sha256}\n`,"")+"\n"+stanza.replace("Size: 42\n",""),stanza+"\n"+stanza.replace(archive.sha256,"b".repeat(64))])assert.throws(()=>joinCompleteUbuntuIndex(fields,Buffer.from(index),archive),/Held|refused/);
 });
 test("public evidence accepts exact Debian epoch and tilde basenames while refusing every path escape",()=>{
+ const archive="pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2.2_amd64.deb",url=ciUbuntuSnapshotBase+"/"+archive;
+ assert.equal(ciUbuntuArchiveRelativePath(url),archive);
+ assert.equal(ciUbuntuArchiveRelativePath(ciUbuntuSnapshotBase+"/pool/main/g/gcc/libgcc_14.2~24.04_amd64.deb"),"pool/main/g/gcc/libgcc_14.2~24.04_amd64.deb");
+ for(const bad of [url.replace("20261022T180000Z","20261023T180000Z"),url.replace(ciUbuntuSnapshotBase,"https://archive.ubuntu.com/ubuntu"),url.replace("snapshot.ubuntu.com","snapshot.ubuntu.com.evil.example"),url.replace("https://","http://"),url+"?token=bad",url+"#fragment",url.replace("https://","https://user@"),url.replace("/pool/","/pool/../"),url.replace("/pool/","/pool/%2e%2e/"),url.replace("/pool/","/pool/%2foutside/")])assert.throws(()=>ciUbuntuArchiveRelativePath(bad));
  for(const name of ["noble-security.Release","libapt-pkg6.0t64_2.8.3_amd64.deb","libgcc-s1_14.2.0-4ubuntu2~24.04_amd64.deb","libc6_2%3a2.39-0ubuntu8.9_amd64.deb","libc6_2:2.39-0ubuntu8.9_amd64.deb"])assert.doesNotThrow(()=>assertCiPublicEvidenceBasename(name));
  for(const name of ["",".","..","/tmp/public.deb","../public.deb","x/y.deb","x\\y.deb","x\n.deb","x\0.deb","x".repeat(256)])assert.throws(()=>assertCiPublicEvidenceBasename(name),/refused/);
 });

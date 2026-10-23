@@ -91,6 +91,7 @@ async function packCleanPackage(buildRoot, sourceGitSha) {
     cwd: buildRoot,
     env: buildMinimalEnvironment(),
   });
+  await rm(sourceArchive);
   const npmEnvironment = buildNpmEnvironment(buildRoot, buildHome, buildTmp);
   runChecked(
     "npm",
@@ -105,6 +106,9 @@ async function packCleanPackage(buildRoot, sourceGitSha) {
     ],
     { cwd: sourceRoot, env: npmEnvironment, timeout: 300_000 },
   );
+  // Build and pack consume the installed tree; the isolated download cache is
+  // no longer needed and would otherwise overlap both copies of the payload.
+  await rm(join(buildRoot, "npm-cache"), { recursive: true, force: true });
   runChecked("npm", ["run", "build"], {
     cwd: sourceRoot,
     env: npmEnvironment,
@@ -125,7 +129,10 @@ async function packCleanPackage(buildRoot, sourceGitSha) {
       timeout: 120_000,
     },
   );
-  return resolveNpmPackTarball(packRoot, result.stdout);
+  const tarballPath = await resolveNpmPackTarball(packRoot, result.stdout);
+  // Validation and publication consume only the complete packed payload.
+  await rm(sourceRoot, { recursive: true, force: true });
+  return tarballPath;
 }
 
 /**
@@ -293,9 +300,25 @@ async function assertNotSymlink(path) {
   }
 }
 
-function buildNpmEnvironment(buildRoot, buildHome, buildTmp) {
+/**
+ * @param {string} buildRoot
+ * @param {string} buildHome
+ * @param {string} buildTmp
+ * @param {NodeJS.ProcessEnv} [parentEnvironment]
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function buildNpmEnvironment(buildRoot, buildHome, buildTmp, parentEnvironment = process.env) {
+  // Keep registry, auth and npm configuration isolated, while allowing the
+  // locked install to use the host's network route and additional trusted CAs.
+  const transportKeys = [
+    "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+  ];
   return {
-    ...buildMinimalEnvironment(),
+    ...buildMinimalEnvironment(parentEnvironment),
+    ...Object.fromEntries(transportKeys.flatMap((key) =>
+      parentEnvironment[key] === undefined ? [] : [[key, parentEnvironment[key]]]
+    )),
     HOME: buildHome,
     TMPDIR: buildTmp,
     npm_config_audit: "false",
@@ -306,10 +329,10 @@ function buildNpmEnvironment(buildRoot, buildHome, buildTmp) {
   };
 }
 
-function buildMinimalEnvironment() {
+function buildMinimalEnvironment(parentEnvironment = process.env) {
   const keys = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "SystemRoot"];
   return Object.fromEntries(
-    keys.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]]]),
+    keys.flatMap((key) => parentEnvironment[key] === undefined ? [] : [[key, parentEnvironment[key]]]),
   );
 }
 

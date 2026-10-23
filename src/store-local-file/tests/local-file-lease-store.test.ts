@@ -8,8 +8,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { captureLocalFileLock, type CapturedLocalFileLock } from "./local-file-lock-test-support";
 import {
   createSubscriptionRuntime,
   DefaultRedactor,
@@ -211,6 +212,7 @@ describe("Local file lease store", () => {
           lockId: "stale-process",
           providerInstanceIdHash: hashTextForTest(providerInstanceId),
           pid: 999_999,
+          ownerProcess: (await captureLocalFileLock(rootDir)).ownerProcess,
           acquiredAt: "2026-05-29T23:00:00.000Z",
           expiresAt: "2026-05-29T23:00:01.000Z",
         })}\n`,
@@ -248,9 +250,10 @@ describe("Local file lease store", () => {
     );
     const staleLockId = "stale-process";
     const freshLockId = "fresh-process";
-    const cleanupLockPath = `${lockPath}.${hashTextForTest(staleLockId)}.cleanup.lock`;
+    const cleanupLockPath = join(dirname(lockPath), `${hashTextForTest(`${basename(lockPath)}\0${staleLockId}`)}.cleanup.lock`);
 
     try {
+      const { ownerProcess } = await captureLocalFileLock(rootDir);
       await mkdir(lockDir, { recursive: true });
       await writeLockRecordForTest({
         path: lockPath,
@@ -258,6 +261,7 @@ describe("Local file lease store", () => {
         providerInstanceId,
         acquiredAt: "2026-05-29T23:00:00.000Z",
         expiresAt: "2026-05-29T23:00:01.000Z",
+        ownerProcess,
       });
       await writeLockRecordForTest({
         path: cleanupLockPath,
@@ -265,6 +269,7 @@ describe("Local file lease store", () => {
         providerInstanceId: `${providerInstanceId}:lock-cleanup:${staleLockId}`,
         acquiredAt: now,
         expiresAt: "2026-05-30T00:01:00.000Z",
+        ownerProcess,
       });
 
       const acquire = store.acquire({
@@ -285,6 +290,7 @@ describe("Local file lease store", () => {
         providerInstanceId,
         acquiredAt: now,
         expiresAt: "2026-05-30T00:01:00.000Z",
+        ownerProcess,
       });
       await rm(cleanupLockPath, { force: true });
 
@@ -744,6 +750,7 @@ async function writeLockRecordForTest(input: {
   readonly providerInstanceId: string;
   readonly acquiredAt: string;
   readonly expiresAt: string;
+  readonly ownerProcess: CapturedLocalFileLock["ownerProcess"];
 }): Promise<void> {
   await writeFile(
     input.path,
@@ -752,6 +759,7 @@ async function writeLockRecordForTest(input: {
       lockId: input.lockId,
       providerInstanceIdHash: hashTextForTest(input.providerInstanceId),
       pid: 999_999,
+      ownerProcess: input.ownerProcess,
       acquiredAt: input.acquiredAt,
       expiresAt: input.expiresAt,
     })}\n`,
