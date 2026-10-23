@@ -145,7 +145,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       processFactory: this.usageRelay ? this.usageRelay.wrapProcessFactory(this.modelBackend, options.processFactory ?? spawnCodexAppServerProcess) : options.processFactory ?? spawnCodexAppServerProcess,
       maxOutputBytes: this.maxOutputBytes(),
     }));
-    this.sessionDrain = new AppServerSessionDrain((session) => this.slotPool.disposeSessionSlot(session));
+    this.sessionDrain = new AppServerSessionDrain((session) => this.slotPool.disposeSessionSlot(session), (session) => this.slotPool.isSessionSlotTerminal(session));
   }
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
     if (this.usageRelay) await this.usageRelay.prepare(input.model);

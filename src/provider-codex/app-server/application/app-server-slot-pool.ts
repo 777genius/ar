@@ -292,6 +292,11 @@ export class AppServerSlotPool {
     return slot;
   }
 
+  /** A terminal client fails every request, so no sibling can still finish on it. */
+  isSessionSlotTerminal(session: CodexMaterializedSession): boolean {
+    return this.slots.get(session.codexHome)?.client.isTerminal() ?? false;
+  }
+
   async disposeSessionSlot(session: CodexMaterializedSession): Promise<void> {
     const key = session.codexHome;
     const lifecycle = this.lifecycleFor(key);
