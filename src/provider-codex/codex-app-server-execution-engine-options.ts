@@ -26,6 +26,9 @@ import type { CodexProviderEgressPolicy } from "./codex-provider-egress-policy";
 import type { PublicResearchSourceReader } from "./app-server/application/public-research-source-port";
 import type { HostedControllerDynamicToolAdapter } from "./app-server/domain/hosted-controller-dynamic-tools";
 import type { ProviderCallObserver } from "../provider-usage/provider-call-observation";
+import { AppServerSlotPool } from "./app-server/application/app-server-slot-pool";
+import { signalCodexAppServerChildGroup } from "./app-server/adapters/node-app-server-process";
+import type { ResolvedCodexExecutionProfile } from "./codex-execution-profile";
 
 export type CodexAppServerExecutionEngineOptions = {
   /** Fixed engine scope prevents pooled children from mixing invocation telemetry. */
@@ -150,5 +153,60 @@ export function appServerEngineCapabilities(
           ],
         }
       : {}),
+  };
+}
+
+
+export function appServerSlotPoolOptions(input: {
+  readonly options: CodexAppServerExecutionEngineOptions;
+  readonly executionProfile: ResolvedCodexExecutionProfile;
+  readonly runStore: ManagedRunStorePort;
+  readonly processFactory: CodexAppServerProcessFactory;
+  readonly maxOutputBytes: number;
+}): ConstructorParameters<typeof AppServerSlotPool>[0] {
+  const { options } = input;
+  return {
+
+    ...(options.childBudget ? { childBudget: options.childBudget } : {}),
+    codexBinaryPath: options.codexBinaryPath,
+    ...(options.sourceEnv === undefined ? {} : { sourceEnv: options.sourceEnv }),
+    ...(options.providerEgressPolicy ? { providerEgressPolicy: options.providerEgressPolicy } : {}),
+    ...(options.publicSourceReader ? { publicSourceReader: options.publicSourceReader } : {}),
+    ...(options.hostedPermissionProfiles === undefined ? {} : { hostedPermissionProfiles: options.hostedPermissionProfiles }),
+    processFactory: input.processFactory,
+    signalChildProcess: signalCodexAppServerChildGroup,
+    runStore: input.runStore,
+    ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
+    executionProfile: input.executionProfile,
+    ...(options.commandApprovalPolicy === undefined
+      ? {}
+      : { commandApprovalPolicy: options.commandApprovalPolicy }),
+    ...(options.hostedCodingAuthority === undefined ? {} : { hostedCodingAuthority: options.hostedCodingAuthority }),
+    ...(options.nativeToolSurface === undefined
+      ? {}
+      : { nativeToolSurface: options.nativeToolSurface }),
+    ...(options.nativeGoalControls === undefined ? {} : { nativeGoalControls: options.nativeGoalControls }),
+    ...(options.hostedControllerTools ? { hostedControllerTools: options.hostedControllerTools } : {}),
+    ...(options.rolloutBudget === undefined
+      ? {}
+      : { rolloutBudget: options.rolloutBudget }),
+    ...(options.bypassHookTrust === undefined ? {} : { bypassHookTrust: options.bypassHookTrust }),
+    ...(options.rateLimitsSnapshotHandler === undefined
+      ? {}
+      : {
+          rateLimitsSnapshotHandler: options.rateLimitsSnapshotHandler,
+        }),
+    cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.startupTimeoutMs === undefined
+      ? {}
+      : { startupTimeoutMs: options.startupTimeoutMs }),
+    ...(options.reconnectGraceMs === undefined
+      ? {}
+      : { reconnectGraceMs: options.reconnectGraceMs }),
+    maxOutputBytes: input.maxOutputBytes,
+    ...(options.modelBackend === undefined
+      ? {}
+      : { modelBackend: options.modelBackend }),
   };
 }

@@ -14,6 +14,8 @@ export type FakeAppServerFactoryOptions = {
   readonly initialGoals?: Readonly<Record<string, { readonly objective: string; readonly status: string }>>;
   readonly failThreadStart?: boolean;
   readonly failThreadStartNumbers?: readonly number[];
+  readonly failTurnStartNumbers?: readonly number[];
+  readonly turnStartError?: string;
   readonly threadStartError?: string;
   readonly threadForkError?: string;
   readonly suppressThreadForkResponse?: boolean;
@@ -119,7 +121,10 @@ export class FakeAppServerFactory {
     this.envs.push({ ...input.env });
     const process = new FakeAppServerProcess({
       ...this.options,
-      onPrompt: (prompt) => this.prompts.push(prompt),
+      onPrompt: (prompt) => {
+        this.prompts.push(prompt);
+        this.options.onPrompt?.(prompt);
+      },
       onRequest: (request) => {
         this.requests.push(request);
         this.options.onRequest?.(request);
@@ -155,6 +160,7 @@ export class FakeAppServerProcess extends EventEmitter {
   private nextThreadId = 1;
   private nextTurnId = 1;
   private threadStartCount = 0;
+  private turnStartCount = 0;
   private emittedTurnErrors = 0;
   private completedTurnCount = 0;
   private exited = false;
@@ -319,6 +325,14 @@ export class FakeAppServerProcess extends EventEmitter {
         continue;
       }
       if (request.method === "turn/start") {
+        this.turnStartCount += 1;
+        if (this.options.failTurnStartNumbers?.includes(this.turnStartCount)) {
+          this.respondError(
+            request.id,
+            this.options.turnStartError ?? "fake turn start failure",
+          );
+          continue;
+        }
         const turnNumber = this.nextTurnId;
         const generatedTurnId = `turn-${turnNumber}`;
         const turnId = this.options.reuseActualTurnId ?? generatedTurnId;

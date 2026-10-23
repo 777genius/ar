@@ -3,6 +3,7 @@ import { AppServerExecutionLifetime, bindAppServerSessionLifetime } from "./app-
 export { AppServerExecutionLifetime, AppServerExecutionReadiness, type AppServerExecutionBinding, type AppServerExecutionReadyEvent } from "./app-server/application/app-server-child-lifetime";
 import { parseAppServerOutputWithUsage } from "./app-server/application/app-server-structured-output";
 import { isAppServerAdmissionError } from "./app-server/application/app-server-admission";
+import { isReplaySafeTurnStartRejection } from "./app-server/application/app-server-turn-failure";
 import { assertHostedAppServerEngineOptions } from "./codex-app-server-hosted-admission";
 import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import type {
@@ -78,7 +79,7 @@ import {
   isCodexAppServerRateLimitsRejectedError,
   type CodexAppServerRateLimitsSnapshotHandler,
 } from "./app-server/application/app-server-rate-limits-monitor";
-import { appServerEngineCapabilities, appServerWireOutputSchema, resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
+import { appServerEngineCapabilities, appServerSlotPoolOptions, appServerWireOutputSchema, resolveAppServerEngineLifetime, type CodexAppServerExecutionEngineOptions } from "./codex-app-server-execution-engine-options";
 import { CodexModelBackend } from "./codex-model-backend";
 import { codexProviderEgressPolicy } from "./codex-provider-egress-policy";
 import { CodexUsageRelay } from "./provider-usage-relay-config";
@@ -136,49 +137,13 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       options.executionProfile,
     );
     this.runStore = options.runStore ?? new InMemoryManagedRunStore();
-    this.slotPool = new AppServerSlotPool({
-      ...(options.childBudget ? { childBudget: options.childBudget } : {}),
-      codexBinaryPath: options.codexBinaryPath,
-      ...(options.sourceEnv === undefined ? {} : { sourceEnv: options.sourceEnv }),
-      ...(this.options.providerEgressPolicy ? { providerEgressPolicy: this.options.providerEgressPolicy } : {}),
-      ...(options.publicSourceReader ? { publicSourceReader: options.publicSourceReader } : {}),
-      ...(options.hostedPermissionProfiles === undefined ? {} : { hostedPermissionProfiles: options.hostedPermissionProfiles }),
-      processFactory: this.usageRelay ? this.usageRelay.wrapProcessFactory(this.modelBackend, options.processFactory ?? spawnCodexAppServerProcess) : options.processFactory ?? spawnCodexAppServerProcess,
-      signalChildProcess: signalCodexAppServerChildGroup,
-      runStore: this.runStore,
-      ...(options.completedTurnCheckpoint ? { completedTurnCheckpoint: options.completedTurnCheckpoint } : {}),
+    this.slotPool = new AppServerSlotPool(appServerSlotPoolOptions({
+      options,
       executionProfile: this.executionProfile,
-      ...(options.commandApprovalPolicy === undefined
-        ? {}
-        : { commandApprovalPolicy: options.commandApprovalPolicy }),
-      ...(options.hostedCodingAuthority === undefined ? {} : { hostedCodingAuthority: options.hostedCodingAuthority }),
-      ...(options.nativeToolSurface === undefined
-        ? {}
-        : { nativeToolSurface: options.nativeToolSurface }),
-      ...(options.nativeGoalControls === undefined ? {} : { nativeGoalControls: options.nativeGoalControls }),
-      ...(options.hostedControllerTools ? { hostedControllerTools: options.hostedControllerTools } : {}),
-      ...(options.rolloutBudget === undefined
-        ? {}
-        : { rolloutBudget: options.rolloutBudget }),
-      ...(options.bypassHookTrust === undefined ? {} : { bypassHookTrust: options.bypassHookTrust }),
-      ...(options.rateLimitsSnapshotHandler === undefined
-        ? {}
-        : {
-            rateLimitsSnapshotHandler: options.rateLimitsSnapshotHandler,
-          }),
-      cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      ...(options.startupTimeoutMs === undefined
-        ? {}
-        : { startupTimeoutMs: options.startupTimeoutMs }),
-      ...(options.reconnectGraceMs === undefined
-        ? {}
-        : { reconnectGraceMs: options.reconnectGraceMs }),
+      runStore: this.runStore,
+      processFactory: this.usageRelay ? this.usageRelay.wrapProcessFactory(this.modelBackend, options.processFactory ?? spawnCodexAppServerProcess) : options.processFactory ?? spawnCodexAppServerProcess,
       maxOutputBytes: this.maxOutputBytes(),
-      ...(options.modelBackend === undefined
-        ? {}
-        : { modelBackend: options.modelBackend }),
-    });
+    }));
   }
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
     if (this.usageRelay) await this.usageRelay.prepare(input.model);
@@ -366,6 +331,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   }
 
   private async disposeFailedSession(session: CodexMaterializedSession, error: unknown, phase: AppServerSessionCleanupPhase): Promise<void> {
+    // A replay-safe turn-start rejection never reached the provider and leaves
+    // the shared session healthy; disposing it would kill concurrent sibling runs.
+    if (isReplaySafeTurnStartRejection(error)) return;
     try { await this.slotPool.disposeSessionSlot(session); }
     catch (cleanupError) { throw new AppServerSessionCleanupError(error, cleanupError, phase); }
   }
