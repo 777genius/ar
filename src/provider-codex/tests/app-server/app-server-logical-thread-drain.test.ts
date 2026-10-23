@@ -152,7 +152,18 @@ async function waitForDelta(deltas: string[], prompt: string): Promise<void> {
   );
 }
 
-describe("bug D seam: logical-thread failure path", () => {
+function turnStarted(factory: FakeAppServerFactory, prompt: string, fromIndex = 0): boolean {
+  return factory.requests.slice(fromIndex).some((request) =>
+    request.method === "turn/start" && JSON.stringify(request.params).includes(prompt));
+}
+
+function threadIdFor(factory: FakeAppServerFactory, prompt: string): string {
+  const request = factory.requests.find((candidate) =>
+    candidate.method === "turn/start" && JSON.stringify(candidate.params).includes(prompt));
+  return String((request?.params as { threadId?: unknown } | undefined)?.threadId ?? "");
+}
+
+describe("bug D seams: logical-thread call site", () => {
   it("keeps the sibling draining through a failed logical thread", async () => {
     const home = await workspace();
     const { factory, engine } = seamHarness(true);
@@ -183,6 +194,41 @@ describe("bug D seam: logical-thread failure path", () => {
       completeFakeGoal(factory, 1, goalThreadIdOf(factory, true));
       emit(factory, 1, doneFrame("turn-1"));
       expect(outputOf(await third)).toContain("app-server output:after-logical-seam");
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("gates a logical thread that arrives while the poisoned session drains", async () => {
+    const home = await workspace();
+    const { factory, engine } = seamHarness(true);
+    try {
+      const deltas: string[] = [];
+      const failing = engine
+        .run(startInput(engine, home, "drain-run-fail", deltas))
+        .then(() => null, (error: unknown) => error);
+      const sibling = engine.run(startInput(engine, home, "drain-run-sibling", deltas));
+      sibling.catch(() => undefined);
+      await waitForDelta(deltas, "drain-run-fail");
+      await waitForDelta(deltas, "drain-run-sibling");
+      emit(factory, 0, failFrame(turnIdFrom(factory, 0, "drain-run-fail"), "drain-run-boom"));
+      expectOwnError(await failing, "drain-run-boom");
+      const boundary = factory.requests.length;
+      const late = engine.runLogicalThread(startInput(engine, home, "logical-during-drain"));
+      late.catch(() => undefined);
+      // The pool hands out a live slot within microtasks, so an ungated thread
+      // would already have started on the poisoned process by now.
+      await pause(20);
+      expect(factory.requests.slice(boundary).map((request) => request.method)).toEqual([]);
+      completeFakeGoal(factory, 0, threadIdFor(factory, "drain-run-sibling"));
+      emit(factory, 0, doneFrame(turnIdFrom(factory, 0, "drain-run-sibling")));
+      expect(outputOf(await sibling)).toContain("app-server output:drain-run-sibling");
+      await waitUntil(() => factory.processes.length === 2, "late logical thread on a fresh process");
+      await waitUntil(() => turnStarted(factory, "logical-during-drain", boundary), "late logical turn started");
+      completeFakeGoal(factory, 1, threadIdFor(factory, "logical-during-drain"));
+      emit(factory, 1, doneFrame(turnIdFrom(factory, boundary, "logical-during-drain")));
+      expect(outputOf(await late)).toContain("app-server output:logical-during-drain");
     } finally {
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());
