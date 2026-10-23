@@ -6,6 +6,7 @@ import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine } from "../../codex-app-server-execution-engine";
 import { FakeAppServerFactory } from "../../app-server/testing/fake-app-server";
 import { StaticRunner } from "../codex-provider-test-support";
+import { isReplaySafeTurnStartRejection } from "../../app-server/application/app-server-turn-failure";
 
 const workspaces: string[] = [];
 
@@ -73,26 +74,35 @@ function harness() {
   return { factory, engine };
 }
 
-function startRun(
-  engine: CodexAppServerExecutionEngine,
+function startInput(
+  _engine: CodexAppServerExecutionEngine,
   home: string,
   prompt: string,
-  deltas: string[],
+  deltas?: string[],
 ) {
-  return engine.run({
+  return {
     session: {
       home, codexHome: home, env: { CODEX_HOME: home },
       sessionHash: "drain-session", release: async () => undefined,
     },
     workspacePath: home,
     model: "gpt-test",
-    reasoningEffort: "low",
+    reasoningEffort: "low" as const,
     runner: new StaticRunner(""),
     redactor: new DefaultRedactor(),
     abortSignal: new AbortController().signal,
-    onTextDelta: (text: string) => deltas.push(text),
+    ...(deltas === undefined ? {} : { onTextDelta: (text: string) => deltas.push(text) }),
     prompt,
-  });
+  };
+}
+
+function startRun(
+  engine: CodexAppServerExecutionEngine,
+  home: string,
+  prompt: string,
+  deltas: string[],
+) {
+  return engine.run(startInput(engine, home, prompt, deltas));
 }
 
 async function waitForDelta(deltas: string[], prompt: string): Promise<void> {
@@ -157,6 +167,37 @@ describe("bug D: run failure must not kill healthy siblings", () => {
       emit(factory, 1, doneFrame(turnIdFrom(factory, boundary, "after-drain")));
       const thirdResult = await third;
       expect(outputOf(thirdResult)).toContain("app-server output:after-drain");
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("keeps the shared session when a goal-thread turn start rejection is replay-safe", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      failTurnStartNumbers: [1],
+      turnStartError: "synthetic logical turn start rejection",
+    });
+    const engine = new CodexAppServerExecutionEngine({
+      codexBinaryPath: "/fake/codex",
+      processFactory: factory.create,
+      cleanThreadPrewarm: false,
+      goalMode: true,
+      timeoutMs: 5000,
+    });
+    try {
+      const rejected = await engine
+        .runLogicalThread(startInput(engine, home, "logical-reject"))
+        .then(() => null, (error: unknown) => error);
+      expect(String(rejected)).toMatch(/turn_start/);
+      expect(isReplaySafeTurnStartRejection(rejected)).toBe(true);
+      expect(factory.spawnCount).toBe(1);
+      expect(factory.processes[0]!.isExited()).toBe(false);
+      const result = await engine.run(startInput(engine, home, "logical-sibling"));
+      expect(outputOf(result)).toContain("app-server output:logical-sibling");
+      expect(factory.spawnCount).toBe(1);
     } finally {
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());

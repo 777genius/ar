@@ -47,9 +47,11 @@ export class AppServerSessionDrain {
     const settled = new Promise<void>((resolve) => { settle = resolve; });
     this.poisonedHomes.set(key, { session, settled, settle });
     if ((this.refsByHome.get(key) ?? 0) > 1) return;
-    this.poisonedHomes.delete(key);
     try { await this.disposeSessionSlot(session); }
-    finally { settle(); }
+    finally {
+      this.poisonedHomes.delete(key);
+      settle();
+    }
   }
 
   settleAll(): void {
@@ -60,11 +62,13 @@ export class AppServerSessionDrain {
   private async maybeDispose(key: string): Promise<void> {
     const poisoned = this.poisonedHomes.get(key);
     if (!poisoned || (this.refsByHome.get(key) ?? 0) > 0) return;
-    this.poisonedHomes.delete(key);
     try { await this.disposeSessionSlot(poisoned.session); }
     // The releasing run already settled; a deferred cleanup failure must never
     // surface in its place. The pool keeps its own unresolved-cleanup state.
     catch { /* deferred cleanup failure */ }
-    poisoned.settle();
+    finally {
+      this.poisonedHomes.delete(key);
+      poisoned.settle();
+    }
   }
 }
