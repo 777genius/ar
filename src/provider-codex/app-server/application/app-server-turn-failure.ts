@@ -1,4 +1,5 @@
 import { safeMessage } from "../domain/app-server-errors";
+import { isAppServerExecutionReplayUnsafe } from "../domain/app-server-execution-safety";
 
 export type AppServerTurnFailurePhase =
   | "turn_start_rejected"
@@ -70,8 +71,26 @@ export function turnFailureError(
 }
 
 export function isExplicitTurnStartRejection(error: unknown): boolean {
-  return error instanceof CodexAppServerTurnError &&
-    error.failureDetails.phase === "turn_start_rejected";
+  const seen = new Set<Error>();
+  while (error instanceof Error && !seen.has(error)) {
+    if (
+      error instanceof CodexAppServerTurnError &&
+      error.failureDetails.phase === "turn_start_rejected"
+    ) {
+      return true;
+    }
+    seen.add(error);
+    error = error.cause;
+  }
+  return false;
+}
+
+/**
+ * The app-server refused turn/start before any request could reach the
+ * provider, so the shared session stays healthy and must not be torn down.
+ */
+export function isReplaySafeTurnStartRejection(error: unknown): boolean {
+  return isExplicitTurnStartRejection(error) && !isAppServerExecutionReplayUnsafe(error);
 }
 
 function boundedTurnNumber(value: number | undefined): number {

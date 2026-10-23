@@ -9,6 +9,13 @@ import {
   type FakeAppServerFactoryOptions,
 } from "../../app-server/testing/fake-app-server";
 import { StaticRunner } from "../codex-provider-test-support";
+import {
+  isExplicitTurnStartRejection,
+  isReplaySafeTurnStartRejection,
+  turnFailureError,
+} from "../../app-server/application/app-server-turn-failure";
+import { AppServerRequestMayHaveReachedProviderError } from "../../app-server/domain/app-server-execution-safety";
+import { AppServerUsageError } from "../../app-server/domain/app-server-usage-error";
 
 // Load and failure storms through the synthetic fake app-server: no model calls,
 // no official Codex package, deterministic request counters instead of wall-clock.
@@ -196,6 +203,8 @@ describe("app-server load scenarios without model calls", () => {
       const matched = prompts.filter((prompt) =>
         outputs.some((output) => output.includes(`sibling:${prompt}`)));
       expect(matched).toHaveLength(3);
+      expect(factory.spawnCount).toBe(1);
+      expect(factory.processes[0]!.isExited()).toBe(false);
     } finally {
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());
@@ -331,4 +340,57 @@ describe("app-server load scenarios without model calls", () => {
       factory.processes.forEach((process) => process.kill());
     }
   }, 20000);
+
+  it("keeps the shared session alive when a prewarm warmup turn start is rejected", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      failTurnStartNumbers: [1],
+      turnStartError: "synthetic warmup turn start failure",
+    });
+    const engine = engineFor(factory);
+    try {
+      await expect(engine.prewarm({
+        session: sessionFor(home),
+        workspacePath: home,
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        model: "gpt-test",
+        reasoningEffort: "low",
+        warmupPrompt: "warmup-prompt",
+        abortSignal: new AbortController().signal,
+      })).rejects.toThrow(/codex_app_server_turn_start_failed/);
+      const result = await run(engine, home, "after-failed-prewarm");
+      expect(outputOf(result)).toContain("after-failed-prewarm");
+      expect(factory.spawnCount).toBe(1);
+      expect(factory.processes[0]!.isExited()).toBe(false);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("recognizes a wrapped turn start rejection through the cause chain", () => {
+    const rejection = turnFailureError(new Error("synthetic turn start failure"), {
+      phase: "turn_start_rejected",
+      turnNumber: 1,
+      elapsedMs: 1,
+    });
+    expect(isExplicitTurnStartRejection(new AppServerUsageError(rejection))).toBe(true);
+    expect(isExplicitTurnStartRejection(new Error("wrapped", { cause: rejection }))).toBe(true);
+    expect(isReplaySafeTurnStartRejection(new AppServerUsageError(rejection))).toBe(true);
+  });
+
+  it("keeps disposing on a replay-unsafe turn start rejection", () => {
+    const rejection = turnFailureError(new AppServerRequestMayHaveReachedProviderError(
+      new Error("codex_app_server_turn_id_missing"),
+      "turn/start",
+    ), {
+      phase: "turn_start_rejected",
+      turnNumber: 1,
+      elapsedMs: 1,
+    });
+    expect(isExplicitTurnStartRejection(rejection)).toBe(true);
+    expect(isReplaySafeTurnStartRejection(rejection)).toBe(false);
+  });
 });
