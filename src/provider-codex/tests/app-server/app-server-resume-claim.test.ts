@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine } from "../../codex-app-server-execution-engine";
-import { FakeAppServerFactory } from "../../app-server/testing/fake-app-server";
+import {
+  FakeAppServerFactory,
+  type FakeAppServerFactoryOptions,
+} from "../../app-server/testing/fake-app-server";
 import { StaticRunner } from "../codex-provider-test-support";
 import { codexHostedDefaultEgressPolicy } from "../../codex-provider-egress-policy";
 import { InMemoryManagedRunStore } from "../../codex-app-server-managed-run-store";
@@ -72,24 +75,36 @@ function failFrame(turnId: string, message: string): unknown {
   };
 }
 
-// A runStore.resume failure after the thread was already resumed must not
-// leave the run retryable, or a retry re-executes thread/resume.
-function claimHarness() {
+// The durable claim (runStore.resume) is the at-most-once fence for the
+// thread/resume side effect: nothing may reach the wire before it, and once it
+// holds, a failure past it must never hand the run back as retryable.
+function resumeHarness(input: {
+  readonly factory?: Partial<FakeAppServerFactoryOptions>;
+  readonly resumeFailures?: number;
+  readonly failWriteError?: Error;
+} = {}) {
   const factory = new FakeAppServerFactory({
     availableModels: [{ model: "gpt-test" }],
     emitTurnEventsWithStartResponse: true,
     suppressTurnCompletion: true,
+    ...input.factory,
   });
   const runStore = new InMemoryManagedRunStore();
   const originalResume = runStore.resume.bind(runStore);
-  let resumeFailures = 1;
-  (runStore as unknown as { resume: typeof runStore.resume }).resume = async (input) => {
+  let resumeFailures = input.resumeFailures ?? 0;
+  (runStore as unknown as { resume: typeof runStore.resume }).resume = async (resumeInput) => {
     if (resumeFailures > 0) {
       resumeFailures -= 1;
       throw new Error("store-flip-boom");
     }
-    return await originalResume(input);
+    return await originalResume(resumeInput);
   };
+  const failWriteError = input.failWriteError;
+  if (failWriteError) {
+    (runStore as unknown as { fail: typeof runStore.fail }).fail = async () => {
+      throw failWriteError;
+    };
+  }
   const engine = new CodexAppServerExecutionEngine({
     codexBinaryPath: "/fake/codex",
     processFactory: factory.create,
@@ -102,6 +117,44 @@ function claimHarness() {
   return { factory, engine, runStore };
 }
 
+async function waitingRun(runStore: InMemoryManagedRunStore, home: string) {
+  const resumeHandle = {
+    runId: "claim-run",
+    providerId: "codex",
+    agentId: "codex-json",
+    workspacePath: home,
+    threadId: "claim-thread",
+  };
+  const request = {
+    id: "claim-request",
+    kind: "decision_required" as const,
+    audience: "user" as const,
+    question: "Continue the claim run?",
+  };
+  await runStore.saveWaitingInput({
+    runId: resumeHandle.runId,
+    resumeHandle,
+    request,
+    now: new Date(),
+  });
+  return {
+    runId: resumeHandle.runId,
+    requestId: request.id,
+    answer: "continue",
+    resumeHandle,
+    session: {
+      home, codexHome: home, env: { CODEX_HOME: home },
+      sessionHash: "resume-claim-session", release: async () => undefined,
+    },
+    workspacePath: home,
+    runner: new StaticRunner(""),
+    redactor: new DefaultRedactor(),
+    model: "gpt-test",
+    reasoningEffort: "low" as const,
+    abortSignal: new AbortController().signal,
+  };
+}
+
 function threadResumeCount(factory: FakeAppServerFactory): number {
   return factory.requests.filter((r) => r.method === "thread/resume").length;
 }
@@ -109,49 +162,16 @@ function threadResumeCount(factory: FakeAppServerFactory): number {
 describe("bug E: resume must claim the run before reopening the thread", () => {
   it("never re-executes thread/resume after a failed store flip", async () => {
     const home = await workspace();
-    const { factory, engine, runStore } = claimHarness();
+    const { factory, engine, runStore } = resumeHarness({ resumeFailures: 1 });
     try {
-      const resumeHandle = {
-        runId: "claim-run",
-        providerId: "codex",
-        agentId: "codex-json",
-        workspacePath: home,
-        threadId: "claim-thread",
-      };
-      const request = {
-        id: "claim-request",
-        kind: "decision_required" as const,
-        audience: "user" as const,
-        question: "Continue the claim run?",
-      };
-      await runStore.saveWaitingInput({
-        runId: resumeHandle.runId,
-        resumeHandle,
-        request,
-        now: new Date(),
-      });
-      const resumeInput = {
-        runId: resumeHandle.runId,
-        requestId: request.id,
-        answer: "continue",
-        resumeHandle,
-        session: {
-          home, codexHome: home, env: { CODEX_HOME: home },
-          sessionHash: "resume-claim-session", release: async () => undefined,
-        },
-        workspacePath: home,
-        runner: new StaticRunner(""),
-        redactor: new DefaultRedactor(),
-        model: "gpt-test",
-        reasoningEffort: "low" as const,
-        abortSignal: new AbortController().signal,
-      };
+      const resumeInput = await waitingRun(runStore, home);
       const first = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
       expect(String(first)).toContain("store-flip-boom");
       // The claim must run before any side effect: a failed claim leaves the
       // record waiting and the thread untouched.
       expect(threadResumeCount(factory)).toBe(0);
-      expect((await runStore.get({ runId: resumeHandle.runId }))?.status).toBe("waiting_for_input");
+      expect((await runStore.get({ runId: resumeInput.runId }))?.status).toBe("waiting_for_input");
+      const retryFrom = factory.requests.length;
       const retry = engine.resume(resumeInput).then(() => null, (error: unknown) => error);
       // Let the retry reach whatever it reaches, then settle it one way or another.
       await waitUntil(
@@ -159,10 +179,59 @@ describe("bug E: resume must claim the run before reopening the thread", () => {
           factory.requests.some((r) => r.method === "turn/start"),
         "retry side effect observed",
       );
-      emit(factory, 0, failFrame(turnIdFrom(factory, 0, "continue"), "end-probe"));
-      await retry;
+      // The failed claim poisoned the first slot, so the retry runs on a fresh
+      // process; settle its turn there instead of waiting out the turn timeout.
+      emit(factory, factory.processes.length - 1, failFrame(turnIdFrom(factory, retryFrom, "continue"), "end-probe"));
+      expect(String(await retry)).toContain("end-probe");
       // The durable claim must prevent a second thread/resume side effect.
       expect(threadResumeCount(factory)).toBe(1);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("fails a claimed run whose thread/resume broke instead of stranding it active", async () => {
+    const home = await workspace();
+    const { factory, engine, runStore } = resumeHarness({
+      factory: { throwOnRequestMethod: "thread/resume" },
+    });
+    try {
+      const resumeInput = await waitingRun(runStore, home);
+      const first = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
+      expect(String(first)).toContain("fake app-server stdin write failed");
+      // Whether the broken request reached the server is unknown, so the claim
+      // stays spent: the run is terminal, never handed back as waiting.
+      const record = await runStore.get({ runId: resumeInput.runId });
+      expect(record?.status).toBe("failed");
+      expect(record?.failure?.code).toBe("unknown_runtime_failure");
+      const spawned = factory.spawnCount;
+      const retry = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
+      expect(String(retry)).toContain("codex_managed_run_not_waiting_for_input");
+      expect(factory.spawnCount).toBe(spawned);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("surfaces the original failure when the best-effort fail write is lost", async () => {
+    const home = await workspace();
+    const { factory, engine, runStore } = resumeHarness({
+      factory: { throwOnRequestMethod: "thread/resume" },
+      failWriteError: new Error("fail-write-boom"),
+    });
+    try {
+      const resumeInput = await waitingRun(runStore, home);
+      const first = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
+      expect(String(first)).toContain("fake app-server stdin write failed");
+      // The lost fail write leaves the claim in place, which still fences the
+      // side effect: a retry is refused before any process is touched.
+      expect((await runStore.get({ runId: resumeInput.runId }))?.status).toBe("active");
+      const spawned = factory.spawnCount;
+      const retry = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
+      expect(String(retry)).toContain("codex_managed_run_not_waiting_for_input");
+      expect(factory.spawnCount).toBe(spawned);
     } finally {
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());
