@@ -1,4 +1,5 @@
 import { AppServerUsageError } from "../domain/app-server-usage-error";
+import type { AppServerWarning } from "../domain/app-server-types";
 import type { TurnState } from "./app-server-turn-state";
 
 export function waitForAppServerTurn(input: {
@@ -42,4 +43,26 @@ export function waitForAppServerTurn(input: {
     input.abortSignal.addEventListener("abort", abort, { once: true });
     if (input.abortSignal.aborted) abort();
   });
+}
+
+/** A turn abandoned before the provider completed it keeps running on the
+ * shared process, which can outlive this run while its siblings drain. */
+export function releaseAppServerTurn(input: {
+  readonly turn: TurnState;
+  readonly terminal: boolean;
+  readonly interrupt: () => void;
+  readonly warn: (warning: AppServerWarning) => void;
+  readonly clear: () => void;
+}): void {
+  try {
+    if (!input.turn.completed && !input.terminal) input.interrupt();
+  } catch {
+    // Best effort: the poisoned session's disposal still stops the turn.
+    input.warn({
+      code: "codex_app_server_turn_interrupt_failed",
+      safeMessage: "Codex app-server turn interrupt could not be sent.",
+    });
+  } finally {
+    input.clear();
+  }
 }

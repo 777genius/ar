@@ -443,3 +443,89 @@ describe("app-server dispose race boundary", () => {
     factory.processes.forEach((process) => process.kill());
   }, 20000);
 });
+
+function interruptsOf(factory: FakeAppServerFactory): { threadId: string; turnId: string }[] {
+  return factory.requests
+    .filter((request) => request.method === "turn/interrupt")
+    .map((request) => ({
+      threadId: String((request.params as { threadId?: unknown } | undefined)?.threadId ?? ""),
+      turnId: String((request.params as { turnId?: unknown } | undefined)?.turnId ?? ""),
+    }));
+}
+
+function threadIdFor(factory: FakeAppServerFactory, prompt: string): string {
+  const request = factory.requests.find((candidate) =>
+    candidate.method === "turn/start" && JSON.stringify(candidate.params).includes(prompt));
+  return String((request?.params as { threadId?: unknown } | undefined)?.threadId ?? "");
+}
+
+// A deferred dispose keeps the shared process alive, so a turn the failing run
+// stopped waiting on keeps executing on the provider unless it is interrupted.
+describe("bug D seams: abandoned turns on a draining session", () => {
+  it("interrupts the aborted run's turn while the sibling keeps running", async () => {
+    const home = await workspace();
+    const { factory, engine } = harness();
+    try {
+      const deltas: string[] = [];
+      const victimAbort = new AbortController();
+      const victim = engine
+        .run({ ...startInput(engine, home, "abort-victim", deltas), abortSignal: victimAbort.signal })
+        .then(() => null, (error: unknown) => error);
+      const sibling = startRun(engine, home, "abort-sibling", deltas);
+      sibling.catch(() => undefined);
+      await waitForDelta(deltas, "abort-victim");
+      await waitForDelta(deltas, "abort-sibling");
+      const victimTurn = turnIdFrom(factory, 0, "abort-victim");
+      const siblingTurn = turnIdFrom(factory, 0, "abort-sibling");
+      victimAbort.abort();
+      expect(String(await victim)).toContain("codex_app_server_turn_aborted");
+      expect(factory.processes[0]!.isExited()).toBe(false);
+      expect(interruptsOf(factory)).toEqual([
+        { threadId: threadIdFor(factory, "abort-victim"), turnId: victimTurn },
+      ]);
+      emit(factory, 0, doneFrame(siblingTurn));
+      expect(outputOf(await sibling)).toContain("app-server output:abort-sibling");
+      expect(interruptsOf(factory).map((entry) => entry.turnId)).not.toContain(siblingTurn);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("interrupts a timed-out run's turn while the sibling keeps running", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      emitTurnEventsWithStartResponse: true,
+      suppressTurnCompletion: true,
+    });
+    const engine = new CodexAppServerExecutionEngine({
+      codexBinaryPath: "/fake/codex",
+      processFactory: factory.create,
+      cleanThreadPrewarm: false,
+      timeoutMs: 1500,
+    });
+    try {
+      const deltas: string[] = [];
+      const victim = startRun(engine, home, "timeout-victim", deltas)
+        .then(() => null, (error: unknown) => error);
+      await waitForDelta(deltas, "timeout-victim");
+      await pause(700);
+      const sibling = startRun(engine, home, "timeout-sibling", deltas);
+      sibling.catch(() => undefined);
+      await waitForDelta(deltas, "timeout-sibling");
+      const victimTurn = turnIdFrom(factory, 0, "timeout-victim");
+      const siblingTurn = turnIdFrom(factory, 0, "timeout-sibling");
+      expect(String(await victim)).toContain("codex_app_server_turn_timeout");
+      expect(factory.processes[0]!.isExited()).toBe(false);
+      expect(interruptsOf(factory)).toEqual([
+        { threadId: threadIdFor(factory, "timeout-victim"), turnId: victimTurn },
+      ]);
+      emit(factory, 0, doneFrame(siblingTurn));
+      expect(outputOf(await sibling)).toContain("app-server output:timeout-sibling");
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+});
