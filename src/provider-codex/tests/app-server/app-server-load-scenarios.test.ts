@@ -9,6 +9,7 @@ import {
   type FakeAppServerFactoryOptions,
 } from "../../app-server/testing/fake-app-server";
 import { StaticRunner } from "../codex-provider-test-support";
+import { InMemoryManagedRunStore } from "../../codex-app-server-managed-run-store";
 import {
   isExplicitTurnStartRejection,
   isReplaySafeTurnStartRejection,
@@ -46,13 +47,24 @@ function sessionFor(home: string) {
 
 function engineFor(
   factory: FakeAppServerFactory,
-  options: { timeoutMs?: number; cleanThreadPrewarm?: boolean } = {},
+  options: {
+    timeoutMs?: number;
+    cleanThreadPrewarm?: boolean;
+    reconnectGraceMs?: number;
+    goalMode?: boolean;
+    runStore?: InMemoryManagedRunStore;
+  } = {},
 ): CodexAppServerExecutionEngine {
   return new CodexAppServerExecutionEngine({
     codexBinaryPath: "/fake/codex",
     processFactory: factory.create,
     cleanThreadPrewarm: options.cleanThreadPrewarm ?? false,
     timeoutMs: options.timeoutMs ?? 5000,
+    ...(options.reconnectGraceMs === undefined
+      ? {}
+      : { reconnectGraceMs: options.reconnectGraceMs }),
+    ...(options.goalMode === undefined ? {} : { goalMode: options.goalMode }),
+    ...(options.runStore === undefined ? {} : { runStore: options.runStore }),
   });
 }
 
@@ -87,6 +99,24 @@ function reasonMessage(outcome: PromiseSettledResult<unknown>): string {
   return outcome.status === "rejected"
     ? String((outcome.reason as Error)?.message ?? outcome.reason)
     : "";
+}
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForTurnStarts(
+  factory: FakeAppServerFactory,
+  count: number,
+): Promise<void> {
+  for (let waited = 0; waited < 400; waited += 5) {
+    if (
+      factory.requests.filter((request) => request.method === "turn/start")
+        .length >= count
+    ) {
+      return;
+    }
+    await pause(5);
+  }
+  throw new Error(`synthetic turn starts never reached ${count}`);
 }
 
 describe("app-server load scenarios without model calls", () => {
@@ -393,4 +423,228 @@ describe("app-server load scenarios without model calls", () => {
     expect(isExplicitTurnStartRejection(rejection)).toBe(true);
     expect(isReplaySafeTurnStartRejection(rejection)).toBe(false);
   });
+
+  it("keeps the shared session alive when a resume turn start is rejected", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      failTurnStartNumbers: [1],
+      turnStartError: "synthetic resume turn start rejection",
+    });
+    const runStore = new InMemoryManagedRunStore();
+    const resumeHandle = {
+      runId: "load-resume-run",
+      providerId: "codex",
+      agentId: "codex-json",
+      workspacePath: home,
+      threadId: "load-resume-thread",
+    };
+    const request = {
+      id: "load-resume-request",
+      kind: "decision_required" as const,
+      audience: "user" as const,
+      question: "Continue the load-scenario run?",
+    };
+    await runStore.saveWaitingInput({
+      runId: resumeHandle.runId,
+      resumeHandle,
+      request,
+      now: new Date(),
+    });
+    const engine = engineFor(factory, { goalMode: true, runStore });
+    try {
+      const rejected = await engine
+        .resume({
+          runId: resumeHandle.runId,
+          requestId: request.id,
+          answer: "continue",
+          resumeHandle,
+          session: sessionFor(home),
+          workspacePath: home,
+          runner: new StaticRunner(""),
+          redactor: new DefaultRedactor(),
+          model: "gpt-test",
+          reasoningEffort: "low",
+          abortSignal: new AbortController().signal,
+        })
+        .then(() => null, (error: unknown) => error as Error);
+      expect(rejected).toBeInstanceOf(AppServerUsageError);
+      expect(rejected?.message).toMatch(/codex_app_server_turn_start_failed/);
+      expect(isReplaySafeTurnStartRejection(rejected)).toBe(true);
+      expect(factory.spawnCount).toBe(1);
+      expect(factory.processes[0]!.isExited()).toBe(false);
+      const result = await run(engine, home, "resume-sibling-prompt");
+      expect(outputOf(result)).toContain("resume-sibling-prompt");
+      expect(factory.spawnCount).toBe(1);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("still disposes the session when a resume turn start may have reached the provider", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      // An empty turn id in the turn/start response is the replay-unsafe
+      // codex_app_server_turn_id_missing path: the request may have reached
+      // the provider, so the shared session must be torn down.
+      reuseActualTurnId: "",
+    });
+    const runStore = new InMemoryManagedRunStore();
+    const resumeHandle = {
+      runId: "load-veto-run",
+      providerId: "codex",
+      agentId: "codex-json",
+      workspacePath: home,
+      threadId: "load-veto-thread",
+    };
+    const request = {
+      id: "load-veto-request",
+      kind: "decision_required" as const,
+      audience: "user" as const,
+      question: "Continue the veto-scenario run?",
+    };
+    await runStore.saveWaitingInput({
+      runId: resumeHandle.runId,
+      resumeHandle,
+      request,
+      now: new Date(),
+    });
+    const engine = engineFor(factory, { goalMode: true, runStore });
+    try {
+      const rejected = await engine
+        .resume({
+          runId: resumeHandle.runId,
+          requestId: request.id,
+          answer: "continue",
+          resumeHandle,
+          session: sessionFor(home),
+          workspacePath: home,
+          runner: new StaticRunner(""),
+          redactor: new DefaultRedactor(),
+          model: "gpt-test",
+          reasoningEffort: "low",
+          abortSignal: new AbortController().signal,
+        })
+        .then(() => null, (error: unknown) => error as Error);
+      expect(rejected?.message).toMatch(/codex_app_server_turn_id_missing/);
+      expect(isReplaySafeTurnStartRejection(rejected)).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(factory.processes[0]!.isExited()).toBe(true);
+      await run(engine, home, "veto-followup-prompt").catch(() => undefined);
+      expect(factory.spawnCount).toBe(2);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("keeps the shared session alive when goal mode wraps a turn start rejection", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      failTurnStartNumbers: [1],
+      turnStartError: "synthetic goal turn start rejection",
+    });
+    const engine = engineFor(factory, { goalMode: true });
+    try {
+      const rejected = await run(engine, home, "goal-wrap-prompt").then(
+        () => null,
+        (error: unknown) => error as Error,
+      );
+      expect(rejected).toBeInstanceOf(AppServerUsageError);
+      expect(rejected?.message).toMatch(/codex_app_server_turn_start_failed/);
+      expect(isReplaySafeTurnStartRejection(rejected)).toBe(true);
+      expect(factory.spawnCount).toBe(1);
+      expect(factory.processes[0]!.isExited()).toBe(false);
+      const result = await run(engine, home, "goal-sibling-prompt");
+      expect(outputOf(result)).toContain("goal-sibling-prompt");
+      expect(factory.spawnCount).toBe(1);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("settles a reconnect storm: live turns outlast the grace window and only silence times out", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      emitTurnEventsWithStartResponse: true,
+      suppressTurnCompletion: true,
+      agentMessageDeltas: [],
+    });
+    const engine = engineFor(factory, { reconnectGraceMs: 250 });
+    const turnIds = ["turn-1", "turn-2", "turn-3", "turn-4"];
+    const emit = (frame: unknown) => {
+      factory.processes[0]!.stdout.emit("data", `${JSON.stringify(frame)}\n`);
+    };
+    const reconnecting = (turnId: string) =>
+      emit({
+        method: "error",
+        params: { turnId, error: { message: "Reconnecting... 1/8" }, willRetry: true },
+      });
+    try {
+      const pending = turnIds.map((_, index) =>
+        run(engine, home, `reconnect-storm-${index}`).then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (error: Error) => ({ status: "rejected" as const, error }),
+        ),
+      );
+      await waitForTurnStarts(factory, 4);
+      await pause(80);
+      // A network drop defers every in-flight turn onto its reconnect grace timer.
+      for (const turnId of turnIds) reconnecting(turnId);
+      await pause(100);
+      // Each turn shows activity, which must clear its grace timer...
+      const turnStarts = factory.requests.filter(
+        (request) => request.method === "turn/start",
+      );
+      for (const [index, turnId] of turnIds.entries()) {
+        const threadId = String(
+          (turnStarts[index]?.params as { threadId?: unknown } | undefined)
+            ?.threadId ?? "",
+        );
+        emit({
+          method: "item/started",
+          params: { turnId, threadId, item: { type: "commandExecution", id: `cmd-${turnId}` } },
+        });
+      }
+      // ...and is still working well past the grace window before it finishes.
+      await pause(300);
+      for (const turnId of turnIds) {
+        emit({
+          method: "item/completed",
+          params: {
+            turnId,
+            item: { type: "agentMessage", content: [{ type: "output_text", text: `reconnected:${turnId}` }] },
+          },
+        });
+        emit({ method: "turn/completed", params: { turn: { id: turnId, status: { type: "completed" } } } });
+      }
+      const outcomes = await Promise.all(pending);
+      const rejected = outcomes.filter((outcome) => outcome.status === "rejected");
+      expect(rejected).toHaveLength(0);
+      const outputs = outcomes.map((outcome) =>
+        outputOf((outcome as { value: unknown }).value),
+      );
+      expect(new Set(outputs)).toEqual(
+        new Set(turnIds.map((turnId) => `reconnected:${turnId}`)),
+      );
+      // A turn that reconnects and then goes silent must time out on its own.
+      const silent = run(engine, home, "reconnect-silent-prompt").then(
+        () => null,
+        (error: Error) => error as Error,
+      );
+      await waitForTurnStarts(factory, 5);
+      await pause(80);
+      reconnecting("turn-5");
+      const timedOut = await silent;
+      expect(timedOut?.message).toMatch(/codex_app_server_reconnect_timeout/);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
 });
