@@ -19,6 +19,12 @@ export const ciUbuntuSources=Object.freeze([
 ]);
 export const ciIndexOperationalBytes=128*1024*1024; // CI data-operation ceiling, not a native catalog limit.
 const requireFact=(value:unknown,why:string):void=>{if(!value)throw new Error("TEST CI signed data refused: "+why);};
+/** Select from the same configured origin used by authenticated acquisition.
+ * A different pocket/component or an old mirror cannot supply this index. */
+export function findCiUbuntuSecurityPackageIndex<T extends Readonly<{origin:string;path:string}>>(indices:readonly T[]):T|undefined {
+ const source=ciUbuntuSources.find(row=>row.pocket===CiUbuntuPocket.Security);requireFact(source,"configured security source");
+ return indices.find(row=>row.origin===source!.base+"/dists/"+source!.pocket&&row.path===CiUbuntuComponent.Main+"/binary-amd64/Packages");
+}
 /** APT transfer plans may address only the same fixed archive as their indices. */
 export function ciUbuntuArchiveRelativePath(value:string):string {
  const prefix=ciUbuntuSnapshotBase+"/",url=new URL(value);

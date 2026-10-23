@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciUbuntuArchiveRelativePath, CiUbuntuPocket, ciUbuntuSnapshotBase, ciUbuntuSnapshotId, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
+import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciUbuntuArchiveRelativePath, CiUbuntuPocket, ciUbuntuSnapshotBase, ciUbuntuSnapshotId, ciUbuntuSources, findCiUbuntuSecurityPackageIndex, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 // Expected trust anchor is independently fixed from the task/source contract.
 const fp="F6ECB3762474EDA9D21B7022871920D1991BC93C";
 const status=`[GNUPG:] GOODSIG 871920D1991BC93C Ubuntu Archive\n[GNUPG:] VALIDSIG ${fp} 2026-10-09 1791504000 0 4 0 1 8 01 ${fp}\n`;
@@ -11,6 +11,13 @@ test("only genuine-success status with fixed independent primary fingerprint is 
  assert.equal(ciUbuntuSnapshotBase,"https://snapshot.ubuntu.com/ubuntu/20261022T180000Z");
  assert.deepEqual(ciUbuntuSources.map(row=>row.pocket),[CiUbuntuPocket.Noble,CiUbuntuPocket.Updates,CiUbuntuPocket.Security]);
  assert(ciUbuntuSources.every(row=>row.base===ciUbuntuSnapshotBase&&Object.isFrozen(row))&&Object.isFrozen(ciUbuntuSources));
+ // Exercise the actual source-only selection against acquisition-shaped rows;
+ // changing acquisition URLs must never leave a stale literal in this lookup.
+ const indices=ciUbuntuSources.map(source=>({origin:source.base+"/dists/"+source.pocket,path:"main/binary-amd64/Packages",bytes:Buffer.from(source.pocket)}));
+ const expected=indices.find(row=>row.bytes.equals(Buffer.from("noble-security")));assert(expected);
+ const oldMirror={...expected,origin:"https://security.ubuntu.com/ubuntu/dists/noble-security"},wrongComponent={...expected,path:"universe/binary-amd64/Packages"};
+ assert.equal(findCiUbuntuSecurityPackageIndex([oldMirror,wrongComponent,...indices]),expected);
+ assert.equal(findCiUbuntuSecurityPackageIndex([oldMirror,wrongComponent,...indices.filter(row=>row!==expected)]),undefined);
  assert.doesNotThrow(()=>assertUbuntuArchiveSignature(status));
  for(const bad of [status.replace(fp,"0".repeat(40)),status.replace(/F6ECB3762474EDA9D21B7022871920D1991BC93C\n$/,"0".repeat(40)+"\n"),status+"[GNUPG:] BADSIG unknown\n",status+status,"[GNUPG:] GOODSIG anything\n",status.replace(" 1 8 01 "," 1 2 01 ")])assert.throws(()=>assertUbuntuArchiveSignature(bad),/refused/);
 });
