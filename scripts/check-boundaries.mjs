@@ -33,6 +33,14 @@ function internalPathPattern(subpathPattern) {
 
 const forbidden = [
   {
+    from: /^src\/core\/(?!tests\/|.*\/tests\/|.*\.test\.ts$)/,
+    imports: [
+      /^(?:node:)?(?:fs(?:\/promises)?|child_process)$/,
+      /(?:^|\/)core-compatibility(?:\.js)?$/,
+    ],
+    message: "core production must use ports/adapters for file system and process details; compatibility composition is outer-only",
+  },
+  {
     from: /^src\/worker-codex\/(?:codex-goal-project-custody-recovery|codex-goal-mcp-project-control-admin|application\/project-control\/legacy-consumed-output-repair)\.ts$/,
     imports: [runtimeSubpathPattern("worker-local"), internalPathPattern("worker-local")],
     message: "project-control recovery application must receive filesystem adapters through core ports",

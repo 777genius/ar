@@ -12,6 +12,40 @@ Recommended first deployment shape:
 - N Codex worker slots with prewarm enabled;
 - async job API plus optional sync wait endpoint.
 
+## Local Storage Guarantees
+
+Use this initial deployment on one host. Processes that share a provider
+instance must use the same canonical local `stateRootDir` and encryption key.
+The local backend coordinates compare-and-swap writes and lease ownership in
+that state root. The standalone encrypted store provides generation checks;
+use `createLocalFileBackendRuntimeAdapters` to compose it with lease fencing.
+Reusing an idempotency key requires the same write intent.
+
+A lease prevents a superseded owner from starting a new writeback. It does not
+cancel an already running provider request or undo a remote token rotation.
+Size the lease lifetime for the provider operation and handle loss of ownership
+through the runtime's failure and recovery path. A durable receipt can confirm a
+previously completed write after its acknowledgment was lost.
+
+For upgrades from the original local record format, an exact current-generation
+retry can migrate its receipt when the stored artifact, generation, lease and
+effective metadata establish the original intent. Older historical receipts
+without that evidence fail with `local_store_legacy_idempotency_unverifiable`.
+Handle that result through reconciliation; do not blindly retry it with a fresh
+idempotency key. Old lock records without a process birth identity also remain
+conservative when their recorded PID is alive.
+
+These are same-host, process-concurrency guarantees. They do not certify NFS,
+SMB, multiple hosts, arbitrary direct edits to stored files, or persistence
+through a power failure. Keep the state root private to its owner. Before
+multi-host deployment, supply storage and lease adapters with transactional CAS
+and fencing in the shared authority, and run the adapter contracts against the
+real backing service. A shared Redis/BullMQ queue distributes jobs; it does not
+replace the session, capacity, lease or run-state stores.
+
+For backend differences and goal support, see
+[Provider Capabilities](provider-capabilities.md).
+
 Run account diagnostics before scheduling large batches:
 
 ```bash

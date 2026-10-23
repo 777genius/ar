@@ -62,6 +62,24 @@ describe("canonical closed manifest derivation", () => {
     expect(ok.selfPackageSpecifiers).toEqual(["@vioxen/subscription-runtime/core"]);
     expect(ok.files.map(file => file.path)).toContain("dist/core/index.js");
   });
+  it("measures the public compatibility composition and its adapter recipes through package exports", () => {
+    const files = tree({
+      "package.json": JSON.stringify({ name: "@vioxen/subscription-runtime", exports: {
+        "./core": { import: "./dist/core-compatibility.js" },
+      } }),
+      [entry]: 'import "@vioxen/subscription-runtime/core";\n',
+      "dist/core-compatibility.js": 'export * from "./core/index.js";\nexport * from "./provider-codex/app-server/adapters/system-bus-configuration.js";\n',
+      "dist/core/index.js": "export const contract = 1;\n",
+    });
+    const scope = derive(files), manifest = JSON.parse(scope.bytes.toString("utf8"));
+    expect(scope.files.map(file => file.path)).toEqual(expect.arrayContaining([
+      "dist/core-compatibility.js", "dist/core/index.js",
+      "dist/provider-codex/app-server/adapters/system-bus-configuration.js",
+    ]));
+    expect(() => admitQualificationSourceFiles(manifest, reader(files))).not.toThrow();
+    files.set("dist/provider-codex/app-server/adapters/system-bus-configuration.js", Buffer.from("changed recipe"));
+    expect(() => admitQualificationSourceFiles(manifest, reader(files))).toThrow("ordinary_launcher_qualification_held");
+  });
   // Regression (F4): the issuers and the mechanisms they depend on are not part of the required set, so an admitted source packet could omit the very code that issues authority and still be accepted.
   const issuerModules = ["dist/worker-codex/hosted-ordinary-installation-source-scope.js", "dist/worker-codex/hosted-runtime-stage-curator.js", "dist/worker-codex/hosted-fd-collector-profile-issuer.js",
     "dist/worker-codex/hosted-runtime-issuer-cli.js", "dist/provider-codex/app-server/adapters/elf-closure.js"];

@@ -25,10 +25,13 @@ export function createLocalFileBackendRuntimeAdapters(
       providerId: options.providerId,
       rootDir: options.rootDir,
       encryptionKey,
+      requireLease: true,
+      ...(options.now ? { now: options.now } : {}),
       ...(options.metadata ? { metadata: options.metadata } : {}),
     }),
     leaseStore: new LocalFileLeaseStore({
       rootDir: options.rootDir,
+      requireSessionReceipt: true,
       ...(options.now ? { now: options.now } : {}),
     }),
   };

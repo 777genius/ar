@@ -6,13 +6,27 @@ export enum CiUbuntuComponent { Main="main", Universe="universe" }
 // Independent fixed trust anchor from Ubuntu security documentation, not a fetched key hash:
 // https://documentation.ubuntu.com/security/software-integrity/image-verification/
 export const ubuntuArchive2018Fingerprint="F6ECB3762474EDA9D21B7022871920D1991BC93C";
+// Reproduce the qualified image after moving mirrors retire pinned versions.
+// The official snapshot retains signed InRelease/Packages/Sources and archives;
+// all signature, expiry, complete-index and exact-package checks still apply.
+// https://snapshot.ubuntu.com/ and docs/ci-signed-package-data.md
+export const ciUbuntuSnapshotId="20261022T180000Z";
+export const ciUbuntuSnapshotBase="https://snapshot.ubuntu.com/ubuntu/"+ciUbuntuSnapshotId;
 export const ciUbuntuSources=Object.freeze([
- Object.freeze({base:"https://archive.ubuntu.com/ubuntu",pocket:CiUbuntuPocket.Noble}),
- Object.freeze({base:"https://archive.ubuntu.com/ubuntu",pocket:CiUbuntuPocket.Updates}),
- Object.freeze({base:"https://security.ubuntu.com/ubuntu",pocket:CiUbuntuPocket.Security}),
+ Object.freeze({base:ciUbuntuSnapshotBase,pocket:CiUbuntuPocket.Noble}),
+ Object.freeze({base:ciUbuntuSnapshotBase,pocket:CiUbuntuPocket.Updates}),
+ Object.freeze({base:ciUbuntuSnapshotBase,pocket:CiUbuntuPocket.Security}),
 ]);
 export const ciIndexOperationalBytes=128*1024*1024; // CI data-operation ceiling, not a native catalog limit.
 const requireFact=(value:unknown,why:string):void=>{if(!value)throw new Error("TEST CI signed data refused: "+why);};
+/** APT transfer plans may address only the same fixed archive as their indices. */
+export function ciUbuntuArchiveRelativePath(value:string):string {
+ const prefix=ciUbuntuSnapshotBase+"/",url=new URL(value);
+ requireFact(value.startsWith(prefix+"pool/")&&url.href===value&&!url.username&&!url.password&&!url.search&&!url.hash,"fixed snapshot archive URL");
+ const path=decodeURIComponent(value.slice(prefix.length));
+ requireFact(/^pool\/[A-Za-z0-9_+%:~.\/-]+\.deb$/.test(path)&&path.split("/").every(part=>part!=="."&&part!==".."&&part!==""),"canonical snapshot archive path");
+ return path;
+}
 /** Curated public records and original Debian archives share one basename rule. */
 export function assertCiPublicEvidenceBasename(name:string):void {
  requireFact(name.length>0&&name.length<=255&&name!=="."&&name!==".."&&/^[A-Za-z0-9_.+%:~-]+$/.test(name),"single public evidence basename");

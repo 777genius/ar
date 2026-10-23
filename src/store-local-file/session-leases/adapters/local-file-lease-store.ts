@@ -1,11 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { writeAtomicLocalFile } from "../../shared/write-atomic-local-file";
 import { dirname, join } from "node:path";
+import { LocalFileProviderLock } from "../../shared/local-file-provider-lock";
 import {
-  localFileLeaseDefaultLockAcquireTimeoutMs as defaultLockAcquireTimeoutMs,
-  localFileLeaseDefaultLockPollMs as defaultLockPollMs,
-  localFileLeaseDefaultLockTtlMs as defaultLockTtlMs,
-  localFileLeaseLockStorageVersion,
   localFileLeaseStoreCapabilities,
   localFileLeaseStoreStorageVersion as storageVersion,
 } from "../domain/local-file-lease-store-policy";
@@ -25,6 +23,8 @@ export type LocalFileLeaseStoreOptions = {
   readonly lockTtlMs?: number;
   readonly lockAcquireTimeoutMs?: number;
   readonly lockPollMs?: number;
+  /** Factory composition requires evidence of a persisted session write. */
+  readonly requireSessionReceipt?: boolean;
 };
 
 type LeaseState =
@@ -52,22 +52,46 @@ type PersistedLeaseRecord = {
   readonly keyId?: string;
   readonly nextGenerationHash?: string;
   readonly idempotencyKey?: string;
+  readonly persistedWrite?: {
+    readonly generationHash: string;
+    readonly idempotencyKey: string;
+  };
 };
 
-type PersistedLockRecord = {
-  readonly storageVersion: typeof localFileLeaseLockStorageVersion;
-  readonly lockId: string;
-  readonly providerInstanceIdHash: string;
-  readonly pid: number;
-  readonly acquiredAt: string;
-  readonly expiresAt: string;
+type LocalFileSessionWriteGuard = {
+  readonly authorize: (input: {
+    readonly leaseId: string;
+    readonly restoredGenerationHash: string;
+    readonly bootstrap: boolean;
+    readonly requireLease: boolean;
+  }) => Promise<void>;
+  readonly recordReceipt: (input: {
+    readonly leaseId: string;
+    readonly generationHash: string;
+    readonly idempotencyKey: string;
+  }) => Promise<void>;
 };
+type LocalFileSessionTransaction = <T>(providerInstanceId: string, operation: (guard: LocalFileSessionWriteGuard) => Promise<T>) => Promise<T>;
+const sessionTransactions = new WeakMap<LocalFileLeaseStore, LocalFileSessionTransaction>();
+
+/** Internal adapter composition; deliberately not exported from package entrypoints. */
+export function withLocalFileSessionWriteTransaction<T>(
+  store: LocalFileLeaseStore,
+  providerInstanceId: string,
+  operation: (guard: LocalFileSessionWriteGuard) => Promise<T>,
+): Promise<T> {
+  const transaction = sessionTransactions.get(store);
+  if (!transaction) throw new Error("local_file_session_transaction_unavailable");
+  return transaction(providerInstanceId, operation);
+}
 
 export class LocalFileLeaseStore implements LeaseStorePort {
   readonly leaseStoreId = localFileLeaseStoreCapabilities.leaseStoreId;
   readonly capabilities: LeaseStoreCapabilities = localFileLeaseStoreCapabilities;
 
-  constructor(private readonly options: LocalFileLeaseStoreOptions) {}
+  constructor(private readonly options: LocalFileLeaseStoreOptions) {
+    sessionTransactions.set(this, (providerInstanceId, operation) => this.#withSessionWriteTransaction(providerInstanceId, operation));
+  }
 
   async acquire(input: {
     readonly providerInstanceId: string;
@@ -76,7 +100,7 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     readonly ttlMs: number;
     readonly restoredGenerationHash: string;
   }): Promise<LeaseAcquireResult> {
-    if (input.ttlMs <= 0) {
+    if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) {
       throw new Error("local_file_lease_invalid_ttl");
     }
 
@@ -142,11 +166,15 @@ export class LocalFileLeaseStore implements LeaseStorePort {
       if (record.restoredGenerationHash !== input.restoredGenerationHash) {
         throw new Error("local_file_lease_generation_hash_mismatch");
       }
-      if (record.state === "committed") {
+      if (record.state === "committed" || record.persistedWrite) {
         return {
           leaseId: record.leaseId,
           restoredGenerationHash: record.restoredGenerationHash,
         };
+      }
+      await this.assertCurrentLeaseLocked(record);
+      if (record.state === "finalized" || record.state === "writeback_started") {
+        return { leaseId: record.leaseId, restoredGenerationHash: record.restoredGenerationHash };
       }
 
       await this.persistLeaseTransitionLocked({
@@ -169,9 +197,14 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     const initial = await this.requireLeaseRecord(input.leaseId);
     await this.withProviderLock(initial.providerInstanceId, async () => {
       const record = await this.requireLeaseRecord(input.leaseId);
-      if (record.state === "committed") {
+      if (record.state === "committed" || record.persistedWrite) {
         return;
       }
+      await this.assertCurrentLeaseLocked(record);
+      if (record.state !== "finalized" && record.state !== "writeback_started") {
+        throw new Error("local_file_lease_not_finalized");
+      }
+      if (record.state === "writeback_started") return;
 
       await this.persistLeaseTransitionLocked({
         ...record,
@@ -195,6 +228,10 @@ export class LocalFileLeaseStore implements LeaseStorePort {
           record.nextGenerationHash === input.nextGenerationHash &&
           record.idempotencyKey === input.idempotencyKey
         ) {
+          // A previous attempt may have persisted the committed record and
+          // failed before clearing its active pointer. Replay completes that
+          // cleanup without disturbing a successor's different lease.
+          await this.removeActiveIfMatchesLocked(record);
           return { status: "idempotent_replay" };
         }
         return {
@@ -202,6 +239,23 @@ export class LocalFileLeaseStore implements LeaseStorePort {
           safeMessage:
             "Lease was already committed with different writeback metadata.",
         };
+      }
+
+      // A receipt proves the session rename completed while this lease owned
+      // the provider transaction. A late acknowledgement is safe even if a new
+      // lease now exists; it must never authorize a fresh session mutation.
+      if (record.persistedWrite) {
+        if (record.persistedWrite.generationHash !== input.nextGenerationHash ||
+            record.persistedWrite.idempotencyKey !== input.idempotencyKey) {
+          return { status: "stale_generation", safeMessage: "Lease writeback receipt did not match." };
+        }
+      } else {
+        const unchanged = record.state === "finalized" && input.nextGenerationHash === record.restoredGenerationHash;
+        if (this.options.requireSessionReceipt && !unchanged) {
+          return { status: "stale_generation", safeMessage: "Lease has no persisted writeback receipt." };
+        }
+        await this.assertCurrentLeaseLocked(record);
+        if (record.state !== "writeback_started" && !unchanged) throw new Error("local_file_lease_writeback_not_started");
       }
 
       const committed = {
@@ -238,6 +292,59 @@ export class LocalFileLeaseStore implements LeaseStorePort {
       await this.persistLeaseTransitionLocked(released);
       await this.removeActiveIfMatchesLocked(released);
     });
+  }
+
+  /** Session CAS and lease fencing execute under the same filesystem lock.
+   * The receipt is recorded after session publication. If that recording fails,
+   * an exact idempotent replay reconstructs it before returning acknowledgement.
+   */
+  async #withSessionWriteTransaction<T>(
+    providerInstanceId: string,
+    operation: (guard: LocalFileSessionWriteGuard) => Promise<T>,
+  ): Promise<T> {
+    return this.withProviderLock(providerInstanceId, () => operation({
+      authorize: async (input) => {
+        if (input.leaseId.startsWith("local-file-lease:")) {
+          const record = await this.requireLeaseRecord(input.leaseId);
+          if (record.providerInstanceId !== providerInstanceId) throw new Error("local_file_lease_provider_mismatch");
+          await this.assertCurrentLeaseLocked(record);
+          if (record.state !== "writeback_started") throw new Error("local_file_lease_writeback_not_started");
+          if (record.persistedWrite) throw new Error("local_file_lease_already_written");
+          if (record.restoredGenerationHash !== input.restoredGenerationHash) throw new Error("local_file_lease_generation_hash_mismatch");
+          return;
+        }
+        const active = await this.readActive(providerInstanceId);
+        if (active && !isExpired(active, this.now())) throw new Error("local_file_lease_unavailable");
+        // Initial imports and the established worker seed operation use CAS,
+        // and cannot replace the session while any live lease owns it.
+        if (input.requireLease && !input.bootstrap && input.leaseId !== "seed-local-file-backend") {
+          throw new Error("local_file_lease_not_found");
+        }
+      },
+      recordReceipt: async (input) => {
+        if (!input.leaseId.startsWith("local-file-lease:")) return;
+        const record = await this.requireLeaseRecord(input.leaseId);
+        if (record.providerInstanceId !== providerInstanceId) throw new Error("local_file_lease_provider_mismatch");
+        if (record.persistedWrite) {
+          if (record.persistedWrite.generationHash !== input.generationHash || record.persistedWrite.idempotencyKey !== input.idempotencyKey) {
+            throw new Error("local_file_lease_receipt_conflict");
+          }
+          return;
+        }
+        await this.persistLeaseTransitionLocked({
+          ...record,
+          persistedWrite: { generationHash: input.generationHash, idempotencyKey: input.idempotencyKey },
+        });
+      },
+    }));
+  }
+
+  private async assertCurrentLeaseLocked(record: PersistedLeaseRecord): Promise<void> {
+    if (record.state === "released" || record.state === "committed" || isExpired(record, this.now())) {
+      throw new Error("local_file_lease_expired_or_released");
+    }
+    const active = await this.readActive(record.providerInstanceId);
+    if (active?.leaseId !== record.leaseId) throw new Error("local_file_lease_superseded");
   }
 
   private async persistLeaseTransitionLocked(
@@ -310,14 +417,7 @@ export class LocalFileLeaseStore implements LeaseStorePort {
   ): Promise<void> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const serialized = `${JSON.stringify(record, null, 2)}\n`;
-    if (options.exclusive) {
-      await writeFile(path, serialized, { flag: "wx", mode: 0o600 });
-      return;
-    }
-
-    const tempPath = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-    await writeFile(tempPath, serialized, { mode: 0o600 });
-    await rename(tempPath, path);
+    await writeAtomicLocalFile(path, serialized, options.exclusive);
   }
 
   private async removeActiveIfMatchesLocked(
@@ -368,213 +468,9 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     operation: () => Promise<T>,
   ): Promise<T> {
     await this.ensureDirs();
-    const lockId = `local-file-lock:${randomBytes(16).toString("hex")}`;
-    const lockPath = this.lockPath(providerInstanceId);
-    const deadline =
-      Date.now() +
-      (this.options.lockAcquireTimeoutMs ?? defaultLockAcquireTimeoutMs);
-    await this.acquireProviderLock({
-      providerInstanceId,
-      lockId,
-      lockPath,
-      deadline,
-    });
-    try {
-      return await operation();
-    } finally {
-      await this.releaseProviderLock({
-        providerInstanceId,
-        lockId,
-        lockPath,
-      });
-    }
+    return new LocalFileProviderLock(this.options).run(providerInstanceId, operation);
   }
 
-  private async acquireProviderLock(input: {
-    readonly providerInstanceId: string;
-    readonly lockId: string;
-    readonly lockPath: string;
-    readonly deadline: number;
-    readonly guardedStaleRemoval?: boolean;
-  }): Promise<void> {
-    const pollMs = this.options.lockPollMs ?? defaultLockPollMs;
-    while (true) {
-      const now = this.now();
-      const record: PersistedLockRecord = {
-        storageVersion: localFileLeaseLockStorageVersion,
-        lockId: input.lockId,
-        providerInstanceIdHash: hashText(input.providerInstanceId),
-        pid: process.pid,
-        acquiredAt: now.toISOString(),
-        expiresAt: new Date(
-          now.getTime() + (this.options.lockTtlMs ?? defaultLockTtlMs),
-        ).toISOString(),
-      };
-      try {
-        await writeFile(
-          input.lockPath,
-          `${JSON.stringify(record, null, 2)}\n`,
-          {
-            flag: "wx",
-            mode: 0o600,
-          },
-        );
-        return;
-      } catch (error) {
-        if (!isAlreadyExistsError(error)) throw error;
-      }
-
-      const existing = await this.readLockRecord(input.lockPath);
-      if (!existing) {
-        if (Date.now() >= input.deadline) {
-          throw new Error("local_file_lease_lock_timeout");
-        }
-        await delay(pollMs);
-        continue;
-      }
-      if (isLockExpired(existing, this.now())) {
-        if (input.guardedStaleRemoval === false) {
-          await this.removeLockIfMatches({
-            lockId: existing.lockId,
-            lockPath: input.lockPath,
-          });
-        } else {
-          await this.removeLockIfMatchesGuarded({
-            providerInstanceId: input.providerInstanceId,
-            lockId: existing.lockId,
-            lockPath: input.lockPath,
-            deadline: input.deadline,
-          });
-        }
-        continue;
-      }
-
-      if (Date.now() >= input.deadline) {
-        throw new Error("local_file_lease_lock_timeout");
-      }
-      await delay(pollMs);
-    }
-  }
-
-  private async releaseProviderLock(input: {
-    readonly providerInstanceId: string;
-    readonly lockId: string;
-    readonly lockPath: string;
-    readonly guarded?: boolean;
-  }): Promise<void> {
-    if (input.guarded === false) {
-      await this.removeLockIfMatches(input);
-      return;
-    }
-
-    await this.removeLockIfMatchesGuarded({
-      providerInstanceId: input.providerInstanceId,
-      lockId: input.lockId,
-      lockPath: input.lockPath,
-      deadline:
-        Date.now() +
-        (this.options.lockAcquireTimeoutMs ?? defaultLockAcquireTimeoutMs),
-    });
-  }
-
-  private async removeLockIfMatchesGuarded(input: {
-    readonly providerInstanceId: string;
-    readonly lockId: string;
-    readonly lockPath: string;
-    readonly deadline: number;
-  }): Promise<void> {
-    const removalLockId = `local-file-lock-cleanup:${randomBytes(16).toString("hex")}`;
-    const removalLockPath = this.lockRemovalGuardPath(
-      input.lockPath,
-      input.lockId,
-    );
-    const removalProviderInstanceId = `${input.providerInstanceId}:lock-cleanup:${input.lockId}`;
-    await this.acquireProviderLock({
-      providerInstanceId: removalProviderInstanceId,
-      lockId: removalLockId,
-      lockPath: removalLockPath,
-      deadline: input.deadline,
-      guardedStaleRemoval: false,
-    });
-    try {
-      const candidate = await this.readLockRecord(input.lockPath);
-      if (candidate?.lockId !== input.lockId) return;
-      await this.removeLockIfMatches(input);
-    } finally {
-      await this.releaseProviderLock({
-        providerInstanceId: removalProviderInstanceId,
-        lockId: removalLockId,
-        lockPath: removalLockPath,
-        guarded: false,
-      });
-    }
-  }
-
-  private async removeLockIfMatches(input: {
-    readonly lockId: string;
-    readonly lockPath: string;
-  }): Promise<void> {
-    const candidate = await this.readLockRecord(input.lockPath);
-    if (candidate?.lockId !== input.lockId) return;
-
-    const tombstonePath = `${input.lockPath}.${process.pid}.${randomBytes(6).toString("hex")}.removing`;
-    try {
-      await rename(input.lockPath, tombstonePath);
-    } catch (error) {
-      if (isMissingFileError(error)) return;
-      throw error;
-    }
-
-    const existing = await this.readLockRecord(tombstonePath);
-    if (existing?.lockId === input.lockId) {
-      await rm(tombstonePath, { force: true });
-      return;
-    }
-
-    try {
-      await rename(tombstonePath, input.lockPath);
-    } catch (error) {
-      await rm(tombstonePath, { force: true }).catch(() => {});
-      if (!isAlreadyExistsError(error)) {
-        throw error;
-      }
-    }
-  }
-
-  private lockRemovalGuardPath(lockPath: string, lockId: string): string {
-    return `${lockPath}.${hashText(lockId)}.cleanup.lock`;
-  }
-
-  private async readLockRecord(
-    path: string,
-  ): Promise<PersistedLockRecord | null> {
-    try {
-      const parsed = JSON.parse(
-        await readFile(path, "utf8"),
-      ) as Partial<PersistedLockRecord>;
-      if (
-        parsed.storageVersion !== localFileLeaseLockStorageVersion ||
-        typeof parsed.lockId !== "string" ||
-        typeof parsed.providerInstanceIdHash !== "string" ||
-        typeof parsed.pid !== "number" ||
-        typeof parsed.acquiredAt !== "string" ||
-        typeof parsed.expiresAt !== "string"
-      ) {
-        return null;
-      }
-      return {
-        storageVersion: localFileLeaseLockStorageVersion,
-        lockId: parsed.lockId,
-        providerInstanceIdHash: parsed.providerInstanceIdHash,
-        pid: parsed.pid,
-        acquiredAt: parsed.acquiredAt,
-        expiresAt: parsed.expiresAt,
-      };
-    } catch (error) {
-      if (isMissingFileError(error)) return null;
-      return null;
-    }
-  }
 }
 
 function makeLeaseRecord(input: {
@@ -659,6 +555,9 @@ function parseLeaseRecord(value: string): PersistedLeaseRecord {
     ...(typeof parsed.idempotencyKey === "string"
       ? { idempotencyKey: parsed.idempotencyKey }
       : {}),
+    ...(parsed.persistedWrite && typeof parsed.persistedWrite.generationHash === "string" && typeof parsed.persistedWrite.idempotencyKey === "string"
+      ? { persistedWrite: { generationHash: parsed.persistedWrite.generationHash, idempotencyKey: parsed.persistedWrite.idempotencyKey } }
+      : {}),
   };
 }
 
@@ -673,11 +572,8 @@ function isLeaseState(value: unknown): value is LeaseState {
 }
 
 function isExpired(record: PersistedLeaseRecord, now: Date): boolean {
-  return new Date(record.expiresAt).getTime() <= now.getTime();
-}
-
-function isLockExpired(record: PersistedLockRecord, now: Date): boolean {
-  return new Date(record.expiresAt).getTime() <= now.getTime();
+  const expiresAt = new Date(record.expiresAt).getTime();
+  return !Number.isFinite(expiresAt) || expiresAt <= now.getTime();
 }
 
 function hashText(value: string): string {
@@ -698,10 +594,6 @@ function isAlreadyExistsError(error: unknown): boolean {
     "code" in error &&
     (error as NodeJS.ErrnoException).code === "EEXIST"
   );
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Actual fixed composition captures these implementations before any escape.

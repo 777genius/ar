@@ -17,8 +17,8 @@ import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, fsyncSy
 import { basename, dirname, join, posix } from "node:path";
 import { FullRemovalCase, FullRestoreConsumer, fullNativeRemovalCase, fullNativeRestoreConsumer, readOriginalFullParentPaths, originalFullParentGuestRoot, assertRetainedCurrentFullParent } from "../../host-integration/managed-launcher/dependency-full-native-TEST.js";
 import { hostedDependencySystemdRunExecutable } from "../../dist/provider-codex/app-server/adapters/hosted-dependency-systemd-command.js";
-import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
-  SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
+import { SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_EXECUTABLE } from "../../dist/core/host-infrastructure/system-bus-infrastructure.js";
+import { SYSTEM_BUS_CONFIG, SYSTEM_BUS_SERVICE_FRAGMENT, SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/provider-codex/app-server/adapters/system-bus-configuration.js";
 import { busDiagnosticDropIn, busDiagnosticDropInPath, busDiagnosticSink, command as runCommand, currentBackingRuntimeModules, directory, elfPackages, fileDigest, json, OwnedOsMode, OwnedOsScenario, readonlyStorage, runtime, type OwnedOsFixtureScenario } from "./common.ts";
 
 export function assembleCurrentFull(parent:object,root: string, state: string, source: string, toolchain: string, sourceSha: string, machineId: string,

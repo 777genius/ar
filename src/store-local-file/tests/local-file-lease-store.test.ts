@@ -8,7 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createSubscriptionRuntime,
@@ -248,7 +248,7 @@ describe("Local file lease store", () => {
     );
     const staleLockId = "stale-process";
     const freshLockId = "fresh-process";
-    const cleanupLockPath = `${lockPath}.${hashTextForTest(staleLockId)}.cleanup.lock`;
+    const cleanupLockPath = join(dirname(lockPath), `${hashTextForTest(`${lockPath}\0${staleLockId}`)}.cleanup.lock`);
 
     try {
       await mkdir(lockDir, { recursive: true });

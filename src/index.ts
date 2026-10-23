@@ -1,4 +1,4 @@
-export * as core from "./core/index.js";
+export * as core from "./core-compatibility.js";
 export * as agentTask from "./agent-task/index.js";
 export * as agentRuntimeTask from "./agent-runtime-task/index.js";
 export * as agentRuntimeTaskRunner from "./agent-runtime-task-runner/index.js";
