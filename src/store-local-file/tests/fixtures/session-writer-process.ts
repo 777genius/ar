@@ -1,10 +1,13 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 
 // Exercise source adapters in independent Node processes without requiring a
 // concurrent repository build or importing the test runner in each child.
+// Node 26 removed native TS transformation, so the locked project compiler
+// transforms parameter properties and other non-erasable syntax in adapters.
 const repo = fileURLToPath(new URL("../../../../", import.meta.url));
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -18,6 +21,17 @@ registerHooks({
       }
     }
     return nextResolve(specifier, context);
+  },
+  load(url, context, nextLoad) {
+    if (url.startsWith(pathToFileURL(join(repo, "src")).href + "/") && url.endsWith(".ts")) {
+      const fileName = fileURLToPath(url);
+      const { outputText } = transpileModule(readFileSync(fileName, "utf8"), {
+        fileName,
+        compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022, verbatimModuleSyntax: true },
+      });
+      return { format: "module", source: outputText, shortCircuit: true };
+    }
+    return nextLoad(url, context);
   },
 });
 

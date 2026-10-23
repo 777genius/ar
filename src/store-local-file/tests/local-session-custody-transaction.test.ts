@@ -2,7 +2,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionArtifact, SessionWriteResult } from "@vioxen/subscription-runtime/core";
@@ -249,7 +249,7 @@ describe("process transaction lock recovery", () => {
   it("recovers the lock of a terminated real process through the public factory", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "ar-custody-killed-lock-"));
     const child = fork(fileURLToPath(new URL("./fixtures/session-writer-process.ts", import.meta.url)), [rootDir, "hold-lock", "0"], {
-      execArgv: ["--experimental-transform-types", "--disable-warning=ExperimentalWarning"], silent: true,
+      execArgv: [], silent: true,
     });
     try {
       await new Promise<void>((resolve, reject) => {
@@ -278,7 +278,7 @@ describe("process transaction lock recovery", () => {
       const lockPath = join(rootDir, "leases", "locks", `${createHash("sha256").update(providerInstanceId).digest("hex")}.lock`);
       const deadRecord = { storageVersion: "local-file-lease-lock-v1", lockId: "dead-provider",
         providerInstanceIdHash: "test", pid: 999_999, acquiredAt: "2020-01-01T00:00:00Z", expiresAt: "2020-01-01T00:00:01Z" };
-      const guardPath = (path: string, id: string) => join(dirname(path), `${createHash("sha256").update(`${path}\0${id}`).digest("hex")}.cleanup.lock`);
+      const guardPath = (path: string, id: string) => join(dirname(path), `${createHash("sha256").update(`${basename(path)}\0${id}`).digest("hex")}.cleanup.lock`);
       await writeFile(lockPath, JSON.stringify(deadRecord));
       let path = lockPath;
       let id = deadRecord.lockId;
@@ -336,7 +336,7 @@ async function processWriters(rootDir: string, mode: string): Promise<SessionWri
   try {
     const writers = Array.from({ length: 8 }, (_, index) => {
       const child = fork(fileURLToPath(new URL("./fixtures/session-writer-process.ts", import.meta.url)), [rootDir, mode, String(index)], {
-        execArgv: ["--experimental-transform-types", "--disable-warning=ExperimentalWarning"], silent: true,
+        execArgv: [], silent: true,
       });
       children.push(child);
       let errorOutput = "";

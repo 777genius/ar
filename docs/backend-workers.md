@@ -35,6 +35,12 @@ Handle that result through reconciliation; do not blindly retry it with a fresh
 idempotency key. Old lock records without a process birth identity also remain
 conservative when their recorded PID is alive.
 
+For this storage upgrade, drain active operations and stop all processes that
+can write sessions or own leases in the shared state root before restarting
+them on the new version. Mixed old and new binaries do not share the revised
+cleanup mutex. Keep persisted lock records in place; removing lock files while
+an owner is running can break mutual exclusion.
+
 These are same-host, process-concurrency guarantees. They do not certify NFS,
 SMB, multiple hosts, arbitrary direct edits to stored files, or persistence
 through a power failure. Keep the state root private to its owner. Before

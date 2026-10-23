@@ -3,9 +3,66 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { resolveNpmPackTarball } from "./build-agent-runtime-task-artifact.mjs";
+import { buildNpmEnvironment, resolveNpmPackTarball } from "./build-agent-runtime-task-artifact.mjs";
 
 const unsafeFilename = /npm pack returned an unsafe artifact filename/u;
+
+test("clean npm builds retain proxy routing and additional trusted CAs without inheriting configuration or secrets", () => {
+  const parentEnvironment = {
+    PATH: "/usr/bin",
+    HOME: "/parent/home",
+    TMPDIR: "/parent/tmp",
+    LANG: "C.UTF-8",
+    HTTP_PROXY: "http://upper-http.example:8080",
+    http_proxy: "http://lower-http.example:8080",
+    HTTPS_PROXY: "http://upper-https.example:8080",
+    https_proxy: "http://lower-https.example:8080",
+    NO_PROXY: "upper.example",
+    no_proxy: "lower.example",
+    NODE_EXTRA_CA_CERTS: "/trusted/transport-ca.pem",
+    NPM_TOKEN: "synthetic-npm-secret",
+    NODE_AUTH_TOKEN: "synthetic-auth-secret",
+    OPENAI_API_KEY: "synthetic-provider-secret",
+    npm_config_registry: "https://untrusted.example",
+    NPM_CONFIG_REGISTRY: "https://untrusted-upper.example",
+    npm_config_userconfig: "/parent/npmrc",
+    NPM_CONFIG_USERCONFIG: "/parent/upper-npmrc",
+    npm_config_cache: "/parent/cache",
+    npm_config_ignore_scripts: "false",
+    NODE_OPTIONS: "--require=/parent/injected.cjs",
+    NODE_TLS_REJECT_UNAUTHORIZED: "0",
+    npm_config_strict_ssl: "false",
+    NPM_CONFIG_STRICT_SSL: "false",
+    npm_config_cafile: "/parent/npm-ca.pem",
+    SSL_CERT_FILE: "/parent/openssl-ca.pem",
+  };
+  assert.deepEqual(buildNpmEnvironment("/clean/build", "/clean/home", "/clean/tmp", parentEnvironment), {
+    PATH: "/usr/bin",
+    LANG: "C.UTF-8",
+    HTTP_PROXY: "http://upper-http.example:8080",
+    http_proxy: "http://lower-http.example:8080",
+    HTTPS_PROXY: "http://upper-https.example:8080",
+    https_proxy: "http://lower-https.example:8080",
+    NO_PROXY: "upper.example",
+    no_proxy: "lower.example",
+    NODE_EXTRA_CA_CERTS: "/trusted/transport-ca.pem",
+    HOME: "/clean/home",
+    TMPDIR: "/clean/tmp",
+    npm_config_audit: "false",
+    npm_config_cache: "/clean/build/npm-cache",
+    npm_config_fund: "false",
+    npm_config_ignore_scripts: "true",
+    npm_config_userconfig: "/dev/null",
+  });
+});
+
+test("clean npm transport forwarding preserves an empty no-proxy value and omits unset values", () => {
+  const environment = buildNpmEnvironment("/clean/build", "/clean/home", "/clean/tmp", { NO_PROXY: "" });
+  assert.equal(environment.NO_PROXY, "");
+  for (const key of ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "no_proxy", "NODE_EXTRA_CA_CERTS"]) {
+    assert.equal(Object.hasOwn(environment, key), false, key);
+  }
+});
 
 async function withPackRoot(run: (packRoot: string, scratch: string) => Promise<void>): Promise<void> {
   const scratch = await mkdtemp(join(tmpdir(), "issue333-pack-test-"));

@@ -178,9 +178,17 @@ describe("source-bound Codex refresh writeback", () => {
       const files = await readdir(dir);
       expect(files).toHaveLength(1);
       const slot = join(dir, files[0]!);
-      const records = await readdir(slot);
+      const entries = await readdir(slot, { withFileTypes: true });
+      const records = entries.filter(entry => entry.isFile());
       expect(records).toHaveLength(1);
-      const record = join(slot, records[0]!);
+      // The session transaction also creates its shared lease infrastructure;
+      // this source-bound publication leaves no managed lease or held lock.
+      const directories = entries.filter(entry => entry.isDirectory());
+      expect(directories.map(entry => entry.name)).toEqual(["leases"]);
+      expect(entries).toHaveLength(records.length + directories.length);
+      expect(await Promise.all(["active", "records", "locks"].map(name => readdir(join(slot, "leases", name)))))
+        .toEqual([[], [], []]);
+      const record = join(slot, records[0]!.name);
       expect((await stat(record)).mode & 0o777).toBe(0o600);
       const encrypted = await readFile(record, "utf8");
       expect(encrypted.includes("synthetic-provider-refresh")).toBe(false);

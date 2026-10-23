@@ -1,7 +1,7 @@
 // Coordinates local custody operations without depending on a provider adapter.
 import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   localFileLeaseDefaultLockAcquireTimeoutMs as defaultLockAcquireTimeoutMs,
   localFileLeaseDefaultLockPollMs as defaultLockPollMs,
@@ -212,7 +212,9 @@ export class LocalFileProviderLock {
   }
 
   private lockRemovalGuardPath(lockPath: string, lockId: string): string {
-    return join(dirname(lockPath), `${hashText(`${lockPath}\0${lockId}`)}.cleanup.lock`);
+    // The directory scopes the mutex; root aliases must share its basename.
+    // Hashing also keeps recursive recovery paths bounded.
+    return join(dirname(lockPath), `${hashText(`${basename(lockPath)}\0${lockId}`)}.cleanup.lock`);
   }
 
   private async readLockRecord(
