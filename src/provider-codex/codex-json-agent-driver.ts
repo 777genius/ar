@@ -624,7 +624,8 @@ export class CodexJsonAgentDriver implements AgentDriver {
       const result = codexDriverFailure({ error, evidenceError: error, redactor: input.redactor, startedAt });
       // A resume validation error means the run was never claimed: a retained
       // session still belongs to the run's next legitimate resume and must
-      // survive the stale retry.
+      // survive the stale retry. The caller sees a failed result while
+      // hasManagedRunSession(runId) stays true: nothing here is terminal.
       if (isManagedRunResumeValidationError(error) && this.#managedRunSessions.get(input.runId) === materialized) {
         return result;
       }
