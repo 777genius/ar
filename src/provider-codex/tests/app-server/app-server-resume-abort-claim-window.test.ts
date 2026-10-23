@@ -27,9 +27,9 @@ function threadResumeCount(factory: FakeAppServerFactory): number {
   return factory.requests.filter((r) => r.method === "thread/resume").length;
 }
 
-// Where the abort lands in one resume: during the pre-claim snapshot read or
-// during the claim I/O.
-type AbortPoint = "snapshot" | "claim";
+// Where the abort lands in one resume: during the pre-claim snapshot read,
+// during the claim I/O, or once thread/resume is already on the wire.
+type AbortPoint = "snapshot" | "claim" | "wire";
 
 // Real store I/O is a macrotask window, so the in-flight store call completes
 // anyway and only then does the runner see the signal. Waiting writes after
@@ -42,6 +42,9 @@ function storeWindowHarness(abort: AbortController, input: {
     availableModels: [{ model: "gpt-test" }],
     emitTurnEventsWithStartResponse: true,
     suppressTurnCompletion: true,
+    onRequest: (request) => {
+      if (input.abortAt === "wire" && request.method === "thread/resume") abort.abort();
+    },
   });
   const runStore = new InMemoryManagedRunStore();
   const engine = new CodexAppServerExecutionEngine({
@@ -105,6 +108,16 @@ async function waitingRun(runStore: InMemoryManagedRunStore, home: string, abort
     runId: resumeHandle.runId,
     resumeHandle,
     request,
+    recoveryPacket: {
+      originalPrompt: "Run the claim abort goal.",
+      lastOutput: "Partial claim abort output.",
+      blockerQuestion: request.question,
+    },
+    taskId: "claim-abort-task",
+    assignedWorkerId: "claim-abort-worker",
+    providerInstanceId: "claim-abort-instance",
+    workspacePath: home,
+    outputText: "Partial claim abort output.",
     now: new Date(),
   });
   return {
@@ -132,12 +145,16 @@ describe("bug H: abort during the claim I/O must not consume the answer", () => 
     const { factory, engine, runStore } = storeWindowHarness(abort, { abortAt: "claim" });
     try {
       const resumeInput = await waitingRun(runStore, home, abort.signal);
+      const seeded = await runStore.get({ runId: resumeInput.runId });
       const first = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
       expect(String(first)).toMatch(/abort/i);
       expect(threadResumeCount(factory)).toBe(0);
       const record = await runStore.get({ runId: resumeInput.runId });
       expect(record?.status).toBe("waiting_for_input");
       expect(record?.request?.id).toBe(resumeInput.requestId);
+      // The whole waiting record comes back, not just its status: this store's
+      // saveWaitingInput does not carry outputText over by itself.
+      expect({ ...record, updatedAt: null }).toEqual({ ...seeded, updatedAt: null });
     } finally {
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());
@@ -162,6 +179,50 @@ describe("bug H: abort during the claim I/O must not consume the answer", () => 
       const record = await runStore.get({ runId: resumeInput.runId });
       expect(record?.status).toBe("waiting_for_input");
       expect(record?.request?.id).toBe(resumeInput.requestId);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  // Binding test for the compensation fallback: a lost compensation must still
+  // reach the best-effort fail, never strand the claimed run active.
+  it("fails the claimed run when the compensation write is lost", async () => {
+    const home = await workspace();
+    const abort = new AbortController();
+    const { factory, engine, runStore } = storeWindowHarness(abort, {
+      abortAt: "claim",
+      loseLateWaitingWrites: true,
+    });
+    try {
+      const resumeInput = await waitingRun(runStore, home, abort.signal);
+      const first = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
+      const record = await runStore.get({ runId: resumeInput.runId });
+      expect(record?.status).toBe("failed");
+      expect(record?.failure?.code).toBe("task_cancelled");
+      expect(String(first)).toMatch(/abort/i);
+      expect(threadResumeCount(factory)).toBe(0);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  // The other side of the boundary: once thread/resume is on the wire the
+  // claim stays the point of no return, so an abort there still fails the run.
+  it("still fails the run when the signal aborts after thread/resume is on the wire", async () => {
+    const home = await workspace();
+    const abort = new AbortController();
+    const { factory, engine, runStore, claims } = storeWindowHarness(abort, { abortAt: "wire" });
+    try {
+      const resumeInput = await waitingRun(runStore, home, abort.signal);
+      const first = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
+      const record = await runStore.get({ runId: resumeInput.runId });
+      expect(record?.status).toBe("failed");
+      expect(record?.failure?.code).toBe("task_cancelled");
+      expect(String(first)).toMatch(/abort/i);
+      expect(claims()).toBe(1);
+      expect(threadResumeCount(factory)).toBe(1);
     } finally {
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());
