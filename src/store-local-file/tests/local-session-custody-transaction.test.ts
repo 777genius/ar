@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionArtifact, SessionWriteResult } from "@vioxen/subscription-runtime/core";
 import { createLocalFileBackendRuntimeAdapters, LocalFileLeaseStore } from "../index";
-import { LocalFileProviderLock } from "../shared/local-file-provider-lock";
+import { LocalFileProviderLock } from "../shared/local-file-custody-lock";
 import * as atomicFiles from "../shared/write-atomic-local-file";
 
 const providerInstanceId = "transaction-session";

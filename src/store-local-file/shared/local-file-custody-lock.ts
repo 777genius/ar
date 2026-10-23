@@ -1,3 +1,4 @@
+// Coordinates local custody operations without depending on a provider adapter.
 import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";

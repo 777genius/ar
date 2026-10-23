@@ -30,7 +30,7 @@ const { sessionStore } = createLocalFileBackendRuntimeAdapters({
   providerId: "fake", rootDir, encryptionKey: new Uint8Array(32).fill(9),
 });
 if (mode === "hold-lock") {
-  const { LocalFileProviderLock } = await import(pathToFileURL(join(repo, "src/store-local-file/shared/local-file-provider-lock.ts")).href);
+  const { LocalFileProviderLock } = await import(pathToFileURL(join(repo, "src/store-local-file/shared/local-file-custody-lock.ts")).href);
   await new LocalFileProviderLock({ rootDir, lockTtlMs: 1 }).run("transaction-session", async () => {
     process.send?.({ ready: true });
     await new Promise<void>(() => {});

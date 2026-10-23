@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { writeAtomicLocalFile } from "../../shared/write-atomic-local-file";
 import { dirname, join } from "node:path";
-import { LocalFileProviderLock } from "../../shared/local-file-provider-lock";
+import { LocalFileProviderLock } from "../../shared/local-file-custody-lock";
 import {
   localFileLeaseStoreCapabilities,
   localFileLeaseStoreStorageVersion as storageVersion,
