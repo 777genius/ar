@@ -238,8 +238,10 @@ export class AppServerGoalRunner {
           workspacePath: input.workspacePath,
         });
       }
-      this.options.client.assertExecutionActive(input.abortSignal);
+      // Snapshot before the fence: the fence must stay the last step before
+      // the claim, so an abort landing during this read never claims at all.
       const waitingRecord = await this.options.runStore.get({ runId: input.runId });
+      this.options.client.assertExecutionActive(input.abortSignal);
       await this.options.runStore.resume({
         runId: input.runId,
         requestId: input.requestId,

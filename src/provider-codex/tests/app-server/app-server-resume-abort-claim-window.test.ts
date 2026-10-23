@@ -27,23 +27,23 @@ function threadResumeCount(factory: FakeAppServerFactory): number {
   return factory.requests.filter((r) => r.method === "thread/resume").length;
 }
 
-// The abort fires while the durable claim is in flight: real claim I/O is a
-// macrotask window, so the claim commits anyway and only then does the runner
-// see the signal. The answer never reached the provider, so the claim must be
-// compensated back to waiting_for_input instead of consuming the answer.
-function claimWindowHarness(abort: AbortController) {
+// Where the abort lands in one resume: during the pre-claim snapshot read or
+// during the claim I/O.
+type AbortPoint = "snapshot" | "claim";
+
+// Real store I/O is a macrotask window, so the in-flight store call completes
+// anyway and only then does the runner see the signal. Waiting writes after
+// the slot is ready can be lost, which models a failed compensation.
+function storeWindowHarness(abort: AbortController, input: {
+  readonly abortAt: AbortPoint;
+  readonly loseLateWaitingWrites?: boolean;
+}) {
   const factory = new FakeAppServerFactory({
     availableModels: [{ model: "gpt-test" }],
     emitTurnEventsWithStartResponse: true,
     suppressTurnCompletion: true,
   });
   const runStore = new InMemoryManagedRunStore();
-  const originalResume = runStore.resume.bind(runStore);
-  runStore.resume = async (input) => {
-    const claimed = originalResume(input);
-    abort.abort();
-    return await claimed;
-  };
   const engine = new CodexAppServerExecutionEngine({
     codexBinaryPath: "/fake/codex",
     processFactory: factory.create,
@@ -53,56 +53,115 @@ function claimWindowHarness(abort: AbortController) {
     goalMode: true,
     providerEgressPolicy: codexHostedDefaultEgressPolicy(),
   });
-  return { factory, engine, runStore };
+  const pool = (engine as unknown as {
+    slotPool: { ensureSlot: (...args: unknown[]) => Promise<unknown> };
+  }).slotPool;
+  const originalEnsureSlot = pool.ensureSlot.bind(pool);
+  let slotReady = false;
+  pool.ensureSlot = async (...args: unknown[]) => {
+    const slot = await originalEnsureSlot(...args);
+    slotReady = true;
+    return slot;
+  };
+  // The engine validates before the slot exists, so the first read after the
+  // slot is ready is the runner's pre-claim snapshot.
+  const originalGet = runStore.get.bind(runStore);
+  runStore.get = async (getInput) => {
+    const read = originalGet(getInput);
+    if (input.abortAt === "snapshot" && slotReady) abort.abort();
+    return await read;
+  };
+  let claims = 0;
+  const originalResume = runStore.resume.bind(runStore);
+  runStore.resume = async (resumeInput) => {
+    claims += 1;
+    const claimed = originalResume(resumeInput);
+    if (input.abortAt === "claim") abort.abort();
+    return await claimed;
+  };
+  const originalSaveWaitingInput = runStore.saveWaitingInput.bind(runStore);
+  runStore.saveWaitingInput = async (saveInput) => {
+    if (input.loseLateWaitingWrites && slotReady) throw new Error("managed_run_store_unavailable");
+    return await originalSaveWaitingInput(saveInput);
+  };
+  return { factory, engine, runStore, claims: () => claims };
+}
+
+async function waitingRun(runStore: InMemoryManagedRunStore, home: string, abortSignal: AbortSignal) {
+  const resumeHandle = {
+    runId: "claim-abort-run",
+    providerId: "codex",
+    agentId: "codex-json",
+    workspacePath: home,
+    threadId: "claim-abort-thread",
+  };
+  const request = {
+    id: "claim-abort-request",
+    kind: "decision_required" as const,
+    audience: "user" as const,
+    question: "Continue the claim abort run?",
+  };
+  await runStore.saveWaitingInput({
+    runId: resumeHandle.runId,
+    resumeHandle,
+    request,
+    now: new Date(),
+  });
+  return {
+    runId: resumeHandle.runId,
+    requestId: request.id,
+    answer: "continue",
+    resumeHandle,
+    session: {
+      home, codexHome: home, env: { CODEX_HOME: home },
+      sessionHash: "resume-claim-abort-session", release: async () => undefined,
+    },
+    workspacePath: home,
+    runner: new StaticRunner(""),
+    redactor: new DefaultRedactor(),
+    model: "gpt-test",
+    reasoningEffort: "low" as const,
+    abortSignal,
+  };
 }
 
 describe("bug H: abort during the claim I/O must not consume the answer", () => {
   it("leaves the run waiting when the signal aborts while the claim is in flight", async () => {
     const home = await workspace();
     const abort = new AbortController();
-    const { factory, engine, runStore } = claimWindowHarness(abort);
+    const { factory, engine, runStore } = storeWindowHarness(abort, { abortAt: "claim" });
     try {
-      const resumeHandle = {
-        runId: "claim-abort-run",
-        providerId: "codex",
-        agentId: "codex-json",
-        workspacePath: home,
-        threadId: "claim-abort-thread",
-      };
-      const request = {
-        id: "claim-abort-request",
-        kind: "decision_required" as const,
-        audience: "user" as const,
-        question: "Continue the claim abort run?",
-      };
-      await runStore.saveWaitingInput({
-        runId: resumeHandle.runId,
-        resumeHandle,
-        request,
-        now: new Date(),
-      });
-      const resumeInput = {
-        runId: resumeHandle.runId,
-        requestId: request.id,
-        answer: "continue",
-        resumeHandle,
-        session: {
-          home, codexHome: home, env: { CODEX_HOME: home },
-          sessionHash: "resume-claim-abort-session", release: async () => undefined,
-        },
-        workspacePath: home,
-        runner: new StaticRunner(""),
-        redactor: new DefaultRedactor(),
-        model: "gpt-test",
-        reasoningEffort: "low" as const,
-        abortSignal: abort.signal,
-      };
+      const resumeInput = await waitingRun(runStore, home, abort.signal);
       const first = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
       expect(String(first)).toMatch(/abort/i);
       expect(threadResumeCount(factory)).toBe(0);
-      const record = await runStore.get({ runId: resumeHandle.runId });
+      const record = await runStore.get({ runId: resumeInput.runId });
       expect(record?.status).toBe("waiting_for_input");
-      expect(record?.request?.id).toBe(request.id);
+      expect(record?.request?.id).toBe(resumeInput.requestId);
+    } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  // Binding test for the fence order: the snapshot read is store I/O too, and
+  // a fence ahead of it would let this abort claim and lean on compensation.
+  it("never claims when the signal aborts during the pre-claim snapshot read", async () => {
+    const home = await workspace();
+    const abort = new AbortController();
+    const { factory, engine, runStore, claims } = storeWindowHarness(abort, {
+      abortAt: "snapshot",
+      loseLateWaitingWrites: true,
+    });
+    try {
+      const resumeInput = await waitingRun(runStore, home, abort.signal);
+      const first = await engine.resume(resumeInput).then(() => null, (error: unknown) => error);
+      expect(String(first)).toMatch(/abort/i);
+      expect(claims()).toBe(0);
+      expect(threadResumeCount(factory)).toBe(0);
+      const record = await runStore.get({ runId: resumeInput.runId });
+      expect(record?.status).toBe("waiting_for_input");
+      expect(record?.request?.id).toBe(resumeInput.requestId);
     } finally {
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());
