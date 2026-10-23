@@ -3,6 +3,8 @@ import { AppServerExecutionLifetime, bindAppServerSessionLifetime } from "./app-
 export { AppServerExecutionLifetime, AppServerExecutionReadiness, type AppServerExecutionBinding, type AppServerExecutionReadyEvent } from "./app-server/application/app-server-child-lifetime";
 import { parseAppServerOutputWithUsage } from "./app-server/application/app-server-structured-output";
 import { isAppServerAdmissionError } from "./app-server/application/app-server-admission";
+import { isExplicitTurnStartRejection } from "./app-server/application/app-server-turn-failure";
+import { isAppServerExecutionReplayUnsafe } from "./app-server/domain/app-server-execution-safety";
 import { assertHostedAppServerEngineOptions } from "./codex-app-server-hosted-admission";
 import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import type {
@@ -208,7 +210,11 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       error = returned.retain(error);
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       this.executionLifetime?.close(error);
-      await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Run);
+      // A rejected turn start never reached the provider and leaves the shared
+      // session healthy; disposing it would kill concurrent sibling runs.
+      if (!(isExplicitTurnStartRejection(error) && !isAppServerExecutionReplayUnsafe(error))) {
+        await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Run);
+      }
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
