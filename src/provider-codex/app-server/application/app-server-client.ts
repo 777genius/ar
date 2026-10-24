@@ -786,13 +786,15 @@ export class CodexAppServerClient {
         stringField(params, "turnId") ??
         stringField(params, "turn_id") ??
         stringField(readRecord(params?.turn), "id");
-      if (turnId) this.dynamicTools.cancelTurn(turnId);
+      // An abort must name its turn; unattributable junk must never fail live turns.
+      if (!turnId) return;
+      this.dynamicTools.cancelTurn(turnId);
       const reason =
         stringField(params, "reason") ??
         stringField(readRecord(params?.status), "reason") ??
         "unknown";
       const error = new Error(
-        `codex_app_server_turn_aborted:${reason}:${turnId ?? "unknown"}`,
+        `codex_app_server_turn_aborted:${reason}:${turnId}`,
       );
       this.failTurnOrAll(turnId, error, stringField(params, "threadId"));
       return;
@@ -917,10 +919,8 @@ export class CodexAppServerClient {
     let turn = this.turns.get(canonicalTurnId);
     if (!turn) {
       if (!this.hasActiveTurnWork()) return createTurnState();
-      if (this.turns.size >= maxRetainedTurnStates) {
-        this.failProtocol(new Error("codex_app_server_turn_state_limit_exceeded"));
-        return createTurnState();
-      }
+      // Junk frames at the cap are dropped, never fatal to live turns.
+      if (this.turns.size >= maxRetainedTurnStates) return createTurnState();
       turn = createTurnState();
       this.turns.set(canonicalTurnId, turn);
     }
@@ -1038,13 +1038,11 @@ export class CodexAppServerClient {
 
   private aliasTurnId(actualTurnId: string, expectedTurnId: string): void {
     if (actualTurnId === expectedTurnId) return;
+    // Junk aliases at the cap are dropped, never fatal to live turns.
     if (
       !this.turnIdAliases.has(actualTurnId) &&
       this.turnIdAliases.size >= maxRetainedTurnAliases
-    ) {
-      this.failProtocol(new Error("codex_app_server_turn_alias_limit_exceeded"));
-      return;
-    }
+    ) return;
     this.turnIdAliases.set(actualTurnId, expectedTurnId);
     this.dynamicTools.aliasTurn(actualTurnId, expectedTurnId);
     const actual = this.turns.get(actualTurnId);
