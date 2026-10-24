@@ -13,6 +13,12 @@ import * as workerAccountLeases from "../worker-account-leases";
 import * as workerControlInbox from "../worker-control-inbox";
 
 describe("store-local-file boundary modules", () => {
+  it("keeps the session transaction coordinator out of public exports", () => {
+    expect(publicApi).not.toHaveProperty("withLocalFileSessionWriteTransaction");
+    expect(sessionLeases).not.toHaveProperty("withLocalFileSessionWriteTransaction");
+    expect(Object.getOwnPropertyNames(publicApi.LocalFileLeaseStore.prototype)).not.toContain("withSessionWriteTransaction");
+  });
+
   it("keeps public exports stable while delegating to feature-owned modules", () => {
     expect(publicApi.LocalEncryptedFileStore).toBe(
       sessionCustody.LocalEncryptedFileStore,

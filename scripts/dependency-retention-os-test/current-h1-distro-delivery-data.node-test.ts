@@ -5,7 +5,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createHash} from "node:crypto";
 import {assembleH1DistroDeliveryData,H1DeliveryMissing,h1DeliveryLimits} from "./current-h1-distro-delivery-data.ts";
-import {ubuntuArchive2018Fingerprint} from "./current-h1-tool-inputs-ci-index.ts";
+import {ciUbuntuSnapshotBase,ubuntuArchive2018Fingerprint} from "./current-h1-tool-inputs-ci-index.ts";
 const hash=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex"),sourceSha="a".repeat(40);
 function fixture(run:(root:string,input:string)=>void){const root=realpathSync(mkdtempSync(join(tmpdir(),"TEST-h1-delivery-"))),input=join(root,"exports");mkdirSync(input,{mode:0o700});try{run(root,input);}finally{rmSync(root,{recursive:true,force:true});}}
 function file(root:string,name:string,body:Buffer|string){writeFileSync(join(root,name),body,{mode:0o600});}
@@ -41,14 +41,15 @@ test("apt epoch local archive names bind by original hash instead of guessed rep
 test("hardlinked original export refuses before publication",()=>fixture((root,input)=>{file(input,"ubuntu-archive-keyring.gpg","public key");linkSync(join(input,"ubuntu-archive-keyring.gpg"),join(root,"same-inode"));assert.throws(()=>assemble(root,input));assert.equal(readdirSync(join(root,"delivery")).length,0);}));
 
 import {h1SourceOnlyBinaryAssociationData} from "./current-h1-distro-delivery-data.ts";
-function sourceOnlyRecord(){return {sourceSha,purpose:"HOST_VERSION_SOURCE_CANDIDATE_ONLY",association:{binary:{package:"systemd-container",version:"255.4-1ubuntu8.18",arch:"amd64",sha256:"4692e521e9330c8d87427ffbeeed3b21d487857804dbdf630df650ba0f2b6573",size:417242,filename:"pool/main/s/systemd/systemd-container_255.4-1ubuntu8.18_amd64.deb"},source:{name:"systemd",version:"255.4-1ubuntu8.18"},indices:[{origin:"https://security.ubuntu.com/ubuntu/dists/noble-security",releaseSha256:"a".repeat(64),path:"main/binary-amd64/Packages",sha256:"b".repeat(64),size:10}]},stagedImageUnchanged:true,hostNspawnProvenance:false,compiledInputEquality:false,nativeQualified:false};}
+function sourceOnlyRecord(){return {sourceSha,purpose:"HOST_VERSION_SOURCE_CANDIDATE_ONLY",association:{binary:{package:"systemd-container",version:"255.4-1ubuntu8.18",arch:"amd64",sha256:"4692e521e9330c8d87427ffbeeed3b21d487857804dbdf630df650ba0f2b6573",size:417242,filename:"pool/main/s/systemd/systemd-container_255.4-1ubuntu8.18_amd64.deb"},source:{name:"systemd",version:"255.4-1ubuntu8.18"},indices:[{origin:ciUbuntuSnapshotBase+"/dists/noble-security",releaseSha256:"a".repeat(64),path:"main/binary-amd64/Packages",sha256:"b".repeat(64),size:10}]},stagedImageUnchanged:true,hostNspawnProvenance:false,compiledInputEquality:false,nativeQualified:false};}
 test("finite source-only HOST archive remains unadmitted and binds the exact producer pin",()=>{
  const r=sourceOnlyRecord(),a=h1SourceOnlyBinaryAssociationData(r,sourceSha);assert.deepEqual(a.binary,r.association.binary);assert.deepEqual(a.source,r.association.source);
  for(const changed of [{...r,nativeQualified:true},{...r,compiledInputEquality:true},{...r,stagedImageUnchanged:false},{...r,hostNspawnProvenance:true},{...r,purpose:"qualified_package"},{...r,association:{...r.association,binary:{...r.association.binary,sha256:"c".repeat(64)}}},{...r,association:{...r.association,source:{name:"systemd",version:"255.4-1ubuntu8.17"}}}])assert.throws(()=>h1SourceOnlyBinaryAssociationData(changed,sourceSha));
 });
 test("source-only metadata cannot choose another pocket, ignore extra origin fields or relabel runtime source",()=>{
  const r=sourceOnlyRecord();assert.throws(()=>h1SourceOnlyBinaryAssociationData(r,"d".repeat(40)));
- for(const indices of [[{...r.association.indices[0],origin:"https://archive.ubuntu.com/ubuntu/dists/noble"}],[{...r.association.indices[0],extra:true}],[]])assert.throws(()=>h1SourceOnlyBinaryAssociationData({...r,association:{...r.association,indices}},sourceSha));
+ for(const origin of ["https://security.ubuntu.com/ubuntu/dists/noble-security",ciUbuntuSnapshotBase+"/dists/noble",ciUbuntuSnapshotBase.replace("20261022T180000Z","20261021T180000Z")+"/dists/noble-security"])assert.throws(()=>h1SourceOnlyBinaryAssociationData({...r,association:{...r.association,indices:[{...r.association.indices[0],origin}]}},sourceSha));
+ for(const indices of [[{...r.association.indices[0],path:"universe/binary-amd64/Packages"}],[{...r.association.indices[0],extra:true}],[]])assert.throws(()=>h1SourceOnlyBinaryAssociationData({...r,association:{...r.association,indices}},sourceSha));
 });
 test("present source-only association must rejoin complete original index before extraction or qualification",()=>fixture((root,input)=>{
  release(input);file(input,"source-only-binary-association-UNADMITTED.json",JSON.stringify(sourceOnlyRecord())+"\n");
@@ -63,7 +64,7 @@ test("source-only complete-index selection with missing originals never enters q
  // no assertion treats this synthetic signature status as cryptographic proof.
  for(const name of readdirSync(input).filter(n=>n.startsWith("noble")))renameSync(join(input,name),join(input,name.replace("noble","noble-security")));
  const releasePath=join(input,"noble-security.Release");file(input,"noble-security.Release",readFileSync(releasePath,"utf8").replace("Suite: noble\n","Suite: noble-security\n"));
- r.association.indices[0]={origin:"https://security.ubuntu.com/ubuntu/dists/noble-security",releaseSha256:hash(readFileSync(join(input,"noble-security.InRelease"))),path:"main/binary-amd64/Packages",sha256:hash(binary),size:binary.length};
+ r.association.indices[0]={origin:ciUbuntuSnapshotBase+"/dists/noble-security",releaseSha256:hash(readFileSync(join(input,"noble-security.InRelease"))),path:"main/binary-amd64/Packages",sha256:hash(binary),size:binary.length};
  file(input,"source-only-binary-association-UNADMITTED.json",JSON.stringify(r)+"\n");const c=assemble(root,input);
  assert.equal(c.packages.length,0);assert.equal(c.sourceOnlyAssociations.length,0);assert.equal(c.nativeQualified,false);assert.equal(c.protectedReviewIssued,false);
  assert(c.missing.some(row=>row.reason===H1DeliveryMissing.Source&&row.subject==="source_only_systemd"));assert(c.missing.some(row=>row.reason===H1DeliveryMissing.Signature));

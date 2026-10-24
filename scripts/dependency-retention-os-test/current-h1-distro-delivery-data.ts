@@ -6,7 +6,7 @@ import {constants,openSync,closeSync,fstatSync,lstatSync,readSync,writeSync,fsyn
 import {dirname,join,resolve,sep} from "node:path";
 import {assertCiPublicEvidenceBasename,assertCompleteUbuntuIndex,parseUbuntuRelease,assertUbuntuArchiveSignature,ciUbuntuSources,CiUbuntuComponent,CiUbuntuPocket} from "./current-h1-tool-inputs-ci-index.ts";
 import {joinH1BinarySource,joinH1SourceSelection,validateH1SourceDsc,type H1SourceSelection} from "./current-h1-source-record-TEST.ts";
-import {joinCompleteUbuntuIndex} from "./current-h1-tool-inputs-ci-index.ts";
+import {findCiUbuntuSecurityPackageIndex,joinCompleteUbuntuIndex} from "./current-h1-tool-inputs-ci-index.ts";
 import {ToolInputArchitecture} from "./current-h1-tool-inputs-package.ts";
 import {h1DistroAssetName,h1DistroSourceInventoryData,H1DistroDefinition} from "../../host-integration/managed-launcher/dependency-full-h1-constructor-build-facts-TEST.js";
 
@@ -33,7 +33,7 @@ export function h1SourceOnlyBinaryAssociationData(value:unknown,sourceSha:string
  const a=object(v.association);assert.equal(Object.keys(a).sort().join(","),"binary,indices,source");assert.deepEqual(a.binary,sourceOnlyBinary);
  assert.deepEqual(a.source,{name:"systemd",version:"255.4-1ubuntu8.18"});const origins=array(a.indices,1);assert.equal(origins.length,1);const origin=object(origins[0]);
  assert.equal(Object.keys(origin).sort().join(","),"origin,path,releaseSha256,sha256,size");
- assert(origin.origin==="https://security.ubuntu.com/ubuntu/dists/noble-security"&&origin.path==="main/binary-amd64/Packages"&&sha(origin.releaseSha256)&&sha(origin.sha256)&&count(origin.size));
+ assert(typeof origin.origin==="string"&&typeof origin.path==="string"&&findCiUbuntuSecurityPackageIndex([{origin:origin.origin,path:origin.path}])&&sha(origin.releaseSha256)&&sha(origin.sha256)&&count(origin.size));
  return {binary:sourceOnlyBinary,source:{name:"systemd",version:"255.4-1ubuntu8.18"},origin};
 }
 /** Input may be incomplete. Contradictory present bytes refuse; missing evidence
