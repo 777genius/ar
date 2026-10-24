@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DefaultRedactor } from "@vioxen/subscription-runtime/core";
 import { CodexAppServerExecutionEngine } from "../../codex-app-server-execution-engine";
 import { FakeAppServerFactory } from "../../app-server/testing/fake-app-server";
-import { StaticRunner } from "../codex-provider-test-support";
+import { RecordingJsonEngine, StaticRunner } from "../codex-provider-test-support";
 import { InMemoryManagedRunStore } from "../../codex-app-server-managed-run-store";
 import { isReplaySafeTurnStartRejection } from "../../app-server/application/app-server-turn-failure";
 
@@ -574,6 +574,208 @@ describe("bug D seams: runs gated on a draining session", () => {
       emit(factory, 2, doneFrame(turnIdFrom(factory, finalBoundary, "gate-final")));
       expect(outputOf(await final)).toContain("app-server output:gate-final");
     } finally {
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+});
+
+class GatedFallback extends RecordingJsonEngine {
+  entered = false;
+  release!: () => void;
+  private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+
+  override async run(input: Parameters<RecordingJsonEngine["run"]>[0]) {
+    this.entered = true;
+    await this.gate;
+    return await super.run(input);
+  }
+}
+
+describe("bug D seams: fallback after a poisoned failure", () => {
+  it("does not hold the drain while the failing run executes its fallback", async () => {
+    const home = await workspace();
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      emitTurnEventsWithStartResponse: true,
+      suppressTurnCompletion: true,
+      failThreadStartNumbers: [2],
+    });
+    const fallback = new GatedFallback("fallback-output");
+    const engine = new CodexAppServerExecutionEngine({
+      codexBinaryPath: "/fake/codex",
+      processFactory: factory.create,
+      cleanThreadPrewarm: false,
+      timeoutMs: 5000,
+      fallback,
+    });
+    try {
+      const deltas: string[] = [];
+      const sibling = startRun(engine, home, "fb-sibling", deltas);
+      sibling.catch(() => undefined);
+      await waitForDelta(deltas, "fb-sibling");
+      const failing = startRun(engine, home, "fb-fail", deltas);
+      failing.catch(() => undefined);
+      await waitUntil(() => fallback.entered, "failing run inside its fallback");
+      emit(factory, 0, doneFrame(turnIdFrom(factory, 0, "fb-sibling")));
+      expect(outputOf(await sibling)).toContain("app-server output:fb-sibling");
+      // The fallback never touches the app-server slot, so it must not gate the home.
+      const boundary = factory.requests.length;
+      const third = startRun(engine, home, "fb-third", deltas);
+      third.catch(() => undefined);
+      await waitUntil(() => factory.processes.length === 2, "fresh process while the fallback runs");
+      await waitForDelta(deltas, "fb-third");
+      emit(factory, 1, doneFrame(turnIdFrom(factory, boundary, "fb-third")));
+      expect(outputOf(await third)).toContain("app-server output:fb-third");
+      expect(fallback.prompts).toEqual([]);
+      fallback.release();
+      expect(outputOf(await failing)).toContain("fallback-output");
+    } finally {
+      fallback.release();
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+});
+
+const deadSlotResumeThreadId = "dead-slot-resume-thread";
+
+class GatedGetRunStore extends InMemoryManagedRunStore {
+  armed = false;
+  entered = false;
+  release!: () => void;
+  private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+
+  override async get(input: { readonly runId: string }) {
+    if (this.armed) {
+      this.armed = false;
+      this.entered = true;
+      await this.gate;
+    }
+    return await super.get(input);
+  }
+}
+
+async function parkResume(
+  engine: CodexAppServerExecutionEngine,
+  runStore: GatedGetRunStore,
+  home: string,
+): Promise<{ runId: string; settled: Promise<unknown> }> {
+  const resumeHandle = {
+    runId: "dead-slot-resume-run",
+    providerId: "codex",
+    agentId: "codex-json",
+    workspacePath: home,
+    threadId: deadSlotResumeThreadId,
+  };
+  const request = {
+    id: "dead-slot-resume-request",
+    kind: "decision_required" as const,
+    audience: "user" as const,
+    question: "Continue after the shared process died?",
+  };
+  await runStore.saveWaitingInput({ runId: resumeHandle.runId, resumeHandle, request, now: new Date() });
+  runStore.armed = true;
+  const settled = engine
+    .resume({
+      runId: resumeHandle.runId,
+      requestId: request.id,
+      answer: "continue",
+      resumeHandle,
+      session: startInput(engine, home, "ignored").session,
+      workspacePath: home,
+      runner: new StaticRunner(""),
+      redactor: new DefaultRedactor(),
+      model: "gpt-test",
+      reasoningEffort: "low",
+      abortSignal: new AbortController().signal,
+    })
+    .then((result) => result, (error: unknown) => error);
+  // Parked in the store read after acquire, before ensureSlot: it holds a drain ref.
+  await waitUntil(() => runStore.entered, "resume parked holding a drain ref");
+  return { runId: resumeHandle.runId, settled };
+}
+
+async function finishResumeOnFreshProcess(
+  factory: FakeAppServerFactory,
+  runStore: GatedGetRunStore,
+  resume: { runId: string; settled: Promise<unknown> },
+): Promise<void> {
+  const boundary = factory.requests.length;
+  runStore.release();
+  await waitUntil(() => factory.processes.length === 2, "resume on a fresh process");
+  await waitUntil(
+    () => factory.requests.slice(boundary).some((request) => request.method === "turn/start"),
+    "resume turn on the fresh process",
+  );
+  await pause(10);
+  completeFakeGoal(factory, 1, deadSlotResumeThreadId);
+  emit(factory, 1, doneFrame("turn-1"));
+  const outcome = await resume.settled;
+  expect(String(outcome)).not.toContain("Error");
+  expect((await runStore.get({ runId: resume.runId }))?.status).not.toBe("failed");
+}
+
+describe("bug D seams: a dead shared process is never drained", () => {
+  function deadSlotHarness() {
+    const factory = new FakeAppServerFactory({
+      availableModels: [{ model: "gpt-test" }],
+      emitTurnEventsWithStartResponse: true,
+      suppressTurnCompletion: true,
+      initialGoals: { [deadSlotResumeThreadId]: { objective: "dead slot resume", status: "active" } },
+    });
+    const runStore = new GatedGetRunStore();
+    const engine = new CodexAppServerExecutionEngine({
+      codexBinaryPath: "/fake/codex",
+      processFactory: factory.create,
+      cleanThreadPrewarm: false,
+      timeoutMs: 5000,
+      runStore,
+      goalMode: true,
+    });
+    return { factory, engine, runStore };
+  }
+
+  it("hands a ref holder a fresh process when the shared one died before the poison", async () => {
+    const home = await workspace();
+    const { factory, engine, runStore } = deadSlotHarness();
+    try {
+      const deltas: string[] = [];
+      const sibling = engine.run(startInput(engine, home, "dead-sibling", deltas))
+        .then(() => null, (error: unknown) => error);
+      await waitForDelta(deltas, "dead-sibling");
+      const resume = await parkResume(engine, runStore, home);
+      factory.processes[0]!.kill();
+      expect(String(await sibling)).toContain("codex_app_server_exited");
+      await finishResumeOnFreshProcess(factory, runStore, resume);
+    } finally {
+      runStore.release();
+      await engine.dispose();
+      factory.processes.forEach((process) => process.kill());
+    }
+  }, 20000);
+
+  it("stops a drained session at once when its process dies mid-drain", async () => {
+    const home = await workspace();
+    const { factory, engine, runStore } = deadSlotHarness();
+    try {
+      const deltas: string[] = [];
+      const failing = engine.run(startInput(engine, home, "mid-fail", deltas))
+        .then(() => null, (error: unknown) => error);
+      const survivor = engine.run(startInput(engine, home, "mid-survivor", deltas))
+        .then(() => null, (error: unknown) => error);
+      await waitForDelta(deltas, "mid-fail");
+      await waitForDelta(deltas, "mid-survivor");
+      const resume = await parkResume(engine, runStore, home);
+      // A turn-level failure on a live process defers the dispose for the siblings.
+      emit(factory, 0, failFrame(turnIdFrom(factory, 0, "mid-fail"), "mid-boom"));
+      expectOwnError(await failing, "mid-boom");
+      expect(factory.processes[0]!.isExited()).toBe(false);
+      factory.processes[0]!.kill();
+      expect(String(await survivor)).toContain("codex_app_server_exited");
+      await finishResumeOnFreshProcess(factory, runStore, resume);
+    } finally {
+      runStore.release();
       await engine.dispose();
       factory.processes.forEach((process) => process.kill());
     }
