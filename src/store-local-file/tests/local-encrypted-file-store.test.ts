@@ -197,8 +197,9 @@ function makeArtifact(value: string): SessionArtifact {
 
 async function readStoredFiles(rootDir: string): Promise<readonly string[]> {
   const { readdir } = await import("node:fs/promises");
-  const fileNames = await readdir(rootDir);
-  return Promise.all(
-    fileNames.map((fileName) => readFile(join(rootDir, fileName), "utf8")),
-  );
+  const entries = await readdir(rootDir, { withFileTypes: true });
+  const files = await Promise.all(entries.map((entry) => entry.isDirectory()
+    ? readStoredFiles(join(rootDir, entry.name))
+    : readFile(join(rootDir, entry.name), "utf8").then((value) => [value])));
+  return files.flat();
 }

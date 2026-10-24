@@ -30,6 +30,18 @@ run, how to prioritize a backlog and when a workflow is complete.
 - GitHub Actions no-plaintext secret writeback and runner adapters;
 - contract fakes and adapter certification helpers.
 
+## Start Here
+
+Run the [credential-free consumer smoke example](docs/package-consumption.md#first-run-without-provider-credentials)
+to verify installation and the refresh/writeback/task lifecycle. Then choose a
+provider using the [capability matrix](docs/provider-capabilities.md) and add
+its authentication and execution adapter.
+
+The local file backend coordinates processes on one host and one local state
+root. A Redis/BullMQ queue does not make session custody or leases distributed.
+See [local storage guarantees](docs/backend-workers.md#local-storage-guarantees)
+before deploying workers on more than one host.
+
 ## Consumer Storage Root
 
 Use one SDK input, `storageRootDir`, to select a consumer-owned writable root.
@@ -137,7 +149,7 @@ npm install @vioxen/subscription-runtime
 
 Production consumers should commit their lockfile so deployments use the exact
 artifact that was reviewed. Published versions and release notes are available
-in [GitHub Releases](https://github.com/vioxen/subscription-runtime/releases).
+in [GitHub Releases](https://github.com/777genius/ar/releases).
 See [Package Consumption](docs/package-consumption.md) for CI authentication
 and update guidance.
 
@@ -175,6 +187,12 @@ import { createSubscriptionRuntime } from "@vioxen/subscription-runtime/core";
 import { FileBackendCodexWorker } from "@vioxen/subscription-runtime/worker-codex";
 import { BoundedSubscriptionWorkerPool } from "@vioxen/subscription-runtime/worker-core";
 ```
+
+Legacy system-bus configuration constants remain available from the public
+`core` entrypoint through a compatibility facade. New host setup code should
+import those recipes from `provider-codex`. The internal `src/core/index.ts`
+contains provider-neutral contracts and policies; Linux filesystem/process
+observations and installation recipes live in outer adapters.
 
 ## Minimal Codex Worker
 
@@ -331,6 +349,7 @@ For adapter-level guarantees, see
 | Topic | Document |
 | --- | --- |
 | Package installation and lockfiles | [Package Consumption](docs/package-consumption.md) |
+| Codex / Claude capabilities and current limits | [Provider Capabilities](docs/provider-capabilities.md) |
 | High-level module boundaries | [Architecture](docs/architecture.md) |
 | DDD, feature slices and dependency rules | [Runtime DDD And Feature Architecture](docs/runtime-ddd-feature-architecture.md) |
 | Provider contracts and certification | [Provider Authoring](docs/provider-authoring.md), [Adapter Certification](docs/adapter-certification.md) |
@@ -348,10 +367,11 @@ For adapter-level guarantees, see
 
 ## Development
 
-For development and tests, use Node.js 22.23.3 or a newer maintained 22.x,
-or Node.js 24.21.0 (the verified worker profile); for newer 24.x, use the
-project-supported profile. Checked-in CI uses Node.js 22; the explicitly
-verified test profiles are 22.23.3 and 24.21.0.
+Use Node.js 26.11.1 to reproduce the primary checked-in
+[CI workflow](.github/workflows/ci.yml). Its separate worker-profile check uses
+Node.js 24.21.0. The package's declared consumer minimum remains Node.js 20;
+that minimum does not mean every managed-host or native qualification profile
+is certified on every newer Node.js release.
 
 Install dependencies and run the complete local quality gate:
 
@@ -403,4 +423,6 @@ pass `check:packed-consumer` before release.
 
 ## License
 
-UNLICENSED. This is a private repository and internal package.
+Licensed under [Apache-2.0](LICENSE). Source and release history are maintained
+in [777genius/ar](https://github.com/777genius/ar). The published npm package
+retains its existing name, `@vioxen/subscription-runtime`, on GitHub Packages.
