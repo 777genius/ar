@@ -124,8 +124,7 @@ export class CodexAppServerClient {
   private readonly dynamicTools: AppServerDynamicToolHandler;
   private readonly warnings = createBoundedAppServerWarningCollector();
   private readonly interruptTurn = (threadId: string, turnId: string): void => { this.child?.stdin.write(encodeJsonRpcMessage({ id: this.nextId++, method: "turn/interrupt", params: { threadId, turnId } })); };
-  private readonly releaseTurn = (turn: TurnState, turnId: string, threadId: string): void => releaseAppServerTurn({ turn, terminal: this.terminalError !== null,
-    interrupt: () => this.interruptTurn(threadId, turnId), warn: warning => this.warnings.push(warning), clear: () => this.clearTurnTracking(turnId, threadId) });
+  private readonly releaseTurn = (turn: TurnState, turnId: string, threadId: string): void => releaseAppServerTurn({ turn, terminal: this.isTerminal(), interrupt: () => this.interruptTurn(threadId, turnId), warn: warning => this.warnings.push(warning), clear: () => this.clearTurnTracking(turnId, threadId) });
   private exited = false;
   private terminalError: Error | null = null;
   private stopping: Promise<void> | null = null;
@@ -998,6 +997,7 @@ export class CodexAppServerClient {
     void this.stopChild().catch(() => undefined);
   }
 
+  isTerminal(): boolean { return this.terminalError !== null; }
   /** Scoped process stop request only; this does not prove host custody release. */
   requestChildCleanup(error: unknown): void {
     if (this.childLifetime) this.childLifetime.cleanup(error); else this.failProtocol(error);
