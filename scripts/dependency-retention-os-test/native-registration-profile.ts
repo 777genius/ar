@@ -11,7 +11,8 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, writeFileSync } from "node:fs";
 
 import { verifySystemBusInfrastructure } from "../../dist/provider-codex/index.js";
-import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT, SYSTEM_BUS_SOCKET_FRAGMENT, SystemBusQueryRenderer, type SystemBusQueryTool, type SystemBusFilePin, type SystemBusInfrastructure } from "../../dist/core/index.js";
+import { SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_SERVICE_FRAGMENT, SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/provider-codex/app-server/adapters/system-bus-configuration.js";
+import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_EXECUTABLE, SystemBusQueryRenderer, type SystemBusQueryTool, type SystemBusFilePin, type SystemBusInfrastructure } from "../../dist/core/index.js";
 
 import { assertPinnedSystemBusQueryTool, observeSystemdServiceEmptyArrays, SystemdServiceArrayKind, type SystemdEmptyArrayFact } from "../../dist/provider-codex/app-server/adapters/systemd-service-arrays.js";
 import { DependencyInstallArchitecture, DependencyLibcFamily, DependencyToolRootKind } from "../../dist/worker-core/index.js";

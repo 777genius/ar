@@ -10,7 +10,7 @@ import { CodexWorkerCacheSessionMaterializer, codexWorkerCacheRoot, codexWorkerC
 import { sessionArtifactFromCodexAuthJson } from "../../provider-codex/codex-auth-json-codec";
 import { assertHostedOrdinaryEffectPaths, parseHostedOrdinaryWriterExtent } from "../../provider-codex/app-server/adapters/hosted-ordinary-writer-extent";
 import { spawnCodexAppServerProcess } from "../../provider-codex/app-server/adapters/node-app-server-process";
-import { inspectKernelPathBacking } from "../../core/host-infrastructure/kernel-path-backing";
+import { inspectKernelPathBacking } from "../../provider-codex/app-server/adapters/kernel-path-backing";
 import { codexSafeExecutorId } from "../codex-account-identity";
 import { codexSessionHomeCacheKey } from "../codex-session-home-profile";
 import { parseFlags } from "../codex-goal-cli-support";
