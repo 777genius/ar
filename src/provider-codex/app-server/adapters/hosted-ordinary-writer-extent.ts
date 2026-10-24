@@ -3,7 +3,7 @@ import { CodexModelBackend } from "../../codex-model-backend";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { inspectKernelPathBacking, inspectKernelPathBackings, inspectKernelProcessPathBackings, type KernelPathBacking } from "../../../core/host-infrastructure/kernel-path-backing";
+import { inspectKernelPathBacking, inspectKernelPathBackings, inspectKernelProcessPathBackings, type KernelPathBacking } from "./kernel-path-backing";
 import { assertHostedActivationFence, decodeHostedActivationBytes, readHostedActivationBytes,
   readHostedOrdinaryProcessOrigin, withHostedActivationFence, type HostedActivationFence } from "./hosted-process-activation";
 

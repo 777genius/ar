@@ -128,6 +128,33 @@ export function sessionStoreContract(
       ).resolves.toMatchObject({ status: "stale_generation" });
     });
 
+    it("serializes concurrent compare-and-swap writes", async () => {
+      const fixture = factory();
+      if (!fixture.store.capabilities.supportsCompareAndSwap) return;
+      await fixture.seed({ generation: 1 });
+      const results = await Promise.all(Array.from({ length: 8 }, (_, index) => fixture.store.write({
+        providerInstanceId: fixture.providerInstanceId,
+        expectedGeneration: 1,
+        nextArtifact: fixture.nextArtifact,
+        idempotencyKey: `concurrent-cas-${index}`,
+        leaseId: "lease-1",
+      })));
+      expect(results.filter((result) => result.status === "accepted")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "stale_generation")).toHaveLength(7);
+    });
+
+    it("accepts a concurrent idempotent intent exactly once", async () => {
+      const fixture = factory();
+      if (!fixture.store.capabilities.supportsCompareAndSwap || !fixture.store.capabilities.supportsIdempotency) return;
+      await fixture.seed({ generation: 1 });
+      const intent = { providerInstanceId: fixture.providerInstanceId, expectedGeneration: 1,
+        nextArtifact: fixture.nextArtifact, idempotencyKey: "concurrent-replay", leaseId: "lease-1" };
+      const results = await Promise.all(Array.from({ length: 8 }, () => fixture.store.write(intent)));
+      expect(results.filter((result) => result.status === "accepted")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "idempotent_replay")).toHaveLength(7);
+      expect(await fixture.store.read({ providerInstanceId: fixture.providerInstanceId, purpose: "health-check" })).toMatchObject({ generation: 2 });
+    });
+
     it("handles idempotent replay without creating a new generation", async () => {
       const fixture = factory();
       await fixture.seed({ generation: 1 });

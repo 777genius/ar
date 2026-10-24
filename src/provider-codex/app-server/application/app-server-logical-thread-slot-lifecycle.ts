@@ -19,12 +19,13 @@ export function createAppServerLogicalThreadSlotLifecycle(input: {
   }) => Promise<AppServerSlot>;
   readonly disposeSessionSlot: (
     session: CodexExecutionInput["session"],
+    error: unknown,
   ) => Promise<void>;
 }): {
   readonly runGoal: (
     goalInput: Parameters<AppServerGoalRunner["runLogicalThreadGoal"]>[0],
   ) => ReturnType<AppServerGoalRunner["runLogicalThreadGoal"]>;
-  readonly disposeSession: () => Promise<void>;
+  readonly disposeSession: (error: unknown) => Promise<void>;
 } {
   let slotAcquired = false;
   return {
@@ -37,9 +38,9 @@ export function createAppServerLogicalThreadSlotLifecycle(input: {
       slotAcquired = true;
       return await slot.goalRunner.runLogicalThreadGoal(goalInput);
     },
-    disposeSession: async () => {
+    disposeSession: async (error: unknown) => {
       if (slotAcquired) {
-        await input.disposeSessionSlot(input.execution.session);
+        await input.disposeSessionSlot(input.execution.session, error);
       }
     },
   };
@@ -59,6 +60,7 @@ export async function runCodexAppServerLogicalThreadWithSlot(
     }) => Promise<AppServerSlot>;
     readonly disposeSessionSlot: (
       session: CodexExecutionInput["session"],
+      error: unknown,
     ) => Promise<void>;
     readonly redact: (
       result: AppServerRunResult,

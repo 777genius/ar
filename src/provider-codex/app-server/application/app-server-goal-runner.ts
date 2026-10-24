@@ -238,7 +238,7 @@ export class AppServerGoalRunner {
           workspacePath: input.workspacePath,
         });
       }
-      await this.options.client.resumePublicResearchThread({ ...input, threadId });
+      this.options.client.assertExecutionActive(input.abortSignal);
       await this.options.runStore.resume({
         runId: input.runId,
         requestId: input.requestId,
@@ -247,6 +247,7 @@ export class AppServerGoalRunner {
       });
 
       try {
+        await this.options.client.resumePublicResearchThread({ ...input, threadId });
         return await this.continueGoal({
           ...input,
           threadId,
@@ -268,7 +269,7 @@ export class AppServerGoalRunner {
             }),
           },
           now: new Date(),
-        });
+        }).catch(() => undefined);
         throw error;
       }
     } finally {

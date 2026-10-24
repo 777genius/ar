@@ -1,5 +1,5 @@
 /** Exact signed image previously qualified by the H1 DATA pipeline.
- * Package availability still requires current authenticated complete indices. */
+ * Package availability requires authenticated complete official snapshot indices. */
 import {ToolInputArchitecture,type AcquiredSignedPackage} from "./current-h1-tool-inputs-package.ts";
 export const qualifiedH1PackageVectorSha256="76a701735a773c8a1909ea320a711c7b9f521796c383191c985ac67854024187";
 type QualifiedPackagePin=Readonly<Pick<AcquiredSignedPackage,"package"|"version"|"arch"|"sha256"|"size">>;

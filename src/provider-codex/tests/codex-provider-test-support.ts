@@ -214,7 +214,7 @@ export class RecordingManagedRunStore implements ManagedRunStorePort {
   }): Promise<ManagedRunRecord> {
     const current = this.records.get(input.runId);
     if (!current || current.request?.id !== input.requestId) {
-      throw new Error("managed_run_request_mismatch");
+      throw new Error("codex_managed_run_request_mismatch");
     }
     const record: ManagedRunRecord = {
       runId: input.runId,

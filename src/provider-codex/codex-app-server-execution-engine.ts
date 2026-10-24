@@ -3,7 +3,6 @@ import { AppServerExecutionLifetime, bindAppServerSessionLifetime } from "./app-
 export { AppServerExecutionLifetime, AppServerExecutionReadiness, type AppServerExecutionBinding, type AppServerExecutionReadyEvent } from "./app-server/application/app-server-child-lifetime";
 import { parseAppServerOutputWithUsage } from "./app-server/application/app-server-structured-output";
 import { isAppServerAdmissionError } from "./app-server/application/app-server-admission";
-import { isReplaySafeTurnStartRejection } from "./app-server/application/app-server-turn-failure";
 import { assertHostedAppServerEngineOptions } from "./codex-app-server-hosted-admission";
 import { AppServerReturnedEvidence } from "./app-server/application/app-server-returned-evidence";
 import type {
@@ -73,6 +72,7 @@ import {
   AppServerSlotPool,
   AppServerSlotAcquireAbortedError,
 } from "./app-server/application/app-server-slot-pool";
+import { AppServerSessionDrain } from "./app-server/application/app-server-session-drain";
 import { runCodexAppServerLogicalThreadWithSlot } from "./app-server/application/app-server-logical-thread-slot-lifecycle";
 import { isCodexModelUnavailableError } from "./app-server/domain/model-catalog";
 import {
@@ -108,6 +108,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   private readonly runStore: ManagedRunStorePort;
   private readonly slotPool: AppServerSlotPool;
   private readonly usageRelay: CodexUsageRelay | undefined;
+  private readonly sessionDrain: AppServerSessionDrain;
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
     const captured = { ...options };
     this.options = { ...captured, ...(captured.providerEgressPolicy ? {
@@ -144,6 +145,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       processFactory: this.usageRelay ? this.usageRelay.wrapProcessFactory(this.modelBackend, options.processFactory ?? spawnCodexAppServerProcess) : options.processFactory ?? spawnCodexAppServerProcess,
       maxOutputBytes: this.maxOutputBytes(),
     }));
+    this.sessionDrain = new AppServerSessionDrain((session) => this.slotPool.disposeSessionSlot(session), (session) => this.slotPool.isSessionSlotTerminal(session));
   }
   async run(input: CodexExecutionInput): Promise<CodexExecutionResult> {
     if (this.usageRelay) await this.usageRelay.prepare(input.model);
@@ -160,6 +162,10 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     if (lifetime) input = { ...input, session: bindAppServerSessionLifetime(input.session, lifetime),
       abortSignal: AbortSignal.any([input.abortSignal, lifetime.signal]) };
     const schemaPlan = input.outputSchemaPlan ?? prepareCodexOutputSchemaPlan(input.outputSchema);
+    const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
+    if (gated) await gated;
+    let holdsDrainRef = true;
+    const releaseDrainRef = () => { if (holdsDrainRef) { holdsDrainRef = false; this.sessionDrain.release(input.session); } };
     try {
       const result = await this.runViaAppServer(input, schemaPlan, returned);
       returned.capture(result);
@@ -174,6 +180,9 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       this.executionLifetime?.close(error);
       await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Run);
+      // The fallback never touches the app-server slot; holding the ref through
+      // it would keep the poisoned session alive and gate every new run.
+      releaseDrainRef();
       if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (isCodexAppServerBudgetExceededError(error)) throw error;
       if (isCodexAppServerRateLimitsRejectedError(error)) throw error;
@@ -193,6 +202,8 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         result: fallbackResult,
         redactor: input.redactor,
       });
+    } finally {
+      releaseDrainRef();
     }
   }
   async runLogicalThread(
@@ -203,6 +214,8 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
+    const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
+    if (gated) await gated;
     return await runCodexAppServerLogicalThreadWithSlot(input, {
       goalMode: this.options.goalMode ?? false,
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
@@ -210,7 +223,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       goalContinuePrompt:
         this.options.goalContinuePrompt ?? defaultGoalContinuePrompt,
       ensureSlot: (slotInput) => this.slotPool.ensureSlot(slotInput),
-      disposeSessionSlot: (session) => this.slotPool.disposeSessionSlot(session),
+      disposeSessionSlot: (session, error) => this.sessionDrain.poison(session, error),
       redact: (result, schemaWarnings) =>
         redactCompletedAppServerResult({
           result,
@@ -220,7 +233,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         }),
       parse: async (result, parseInput, schemaPlan) =>
         await parseAppServerOutputWithUsage({ result, requested: Boolean(parseInput.outputSchema), ...(schemaPlan ? { schemaPlan } : {}), goalMode: this.options.goalMode, ...(parseInput.runId ? { runId: parseInput.runId } : {}), runStore: this.runStore }),
-    });
+    }).finally(() => { this.sessionDrain.release(input.session); });
   }
   async resume(input: {
     readonly runId: string;
@@ -242,6 +255,8 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     if (this.options.completedGoalOutputValidator) throw new Error("validated_goal_output_one_shot_only");
     if (this.executionLifetime) throw new Error("child_continuation_denied");
     const schemaPlan = prepareCodexOutputSchemaPlan(input.outputSchema);
+    const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
+    if (gated) await gated;
     try {
       const result = await this.resumeViaAppServer(input, schemaPlan);
       if (result.status === "waiting_for_input") return result;
@@ -252,13 +267,18 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
         await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Resume);
       }
       throw error;
+    } finally {
+      this.sessionDrain.release(input.session);
     }
   }
 
   async dispose(): Promise<void> {
     this.executionLifetime?.close();
     try { await this.slotPool.dispose(); }
-    finally { await this.usageRelay?.close(); }
+    finally {
+      this.sessionDrain.settleAll();
+      await this.usageRelay?.close();
+    }
     await this.options.fallback?.dispose?.();
   }
   async prewarm(input: {
@@ -274,6 +294,8 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
   }): Promise<CodexExecutionPrewarmResult> {
     if (this.usageRelay) await this.usageRelay.prepare(input.model);
     if (this.executionLifetime) throw new Error("child_prewarm_denied");
+    const gated = this.sessionDrain.acquire(input.session, input.abortSignal);
+    if (gated) await gated;
     try {
       const slot = await this.slotPool.ensureSlot(input);
       const warmupPrompt = input.warmupPrompt?.trim();
@@ -327,14 +349,13 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       if (error instanceof AppServerSlotAcquireAbortedError || isAppServerAdmissionError(error)) throw error;
       await this.disposeFailedSession(input.session, error, AppServerSessionCleanupPhase.Prewarm);
       throw error;
+    } finally {
+      this.sessionDrain.release(input.session);
     }
   }
 
   private async disposeFailedSession(session: CodexMaterializedSession, error: unknown, phase: AppServerSessionCleanupPhase): Promise<void> {
-    // A replay-safe turn-start rejection never reached the provider and leaves
-    // the shared session healthy; disposing it would kill concurrent sibling runs.
-    if (isReplaySafeTurnStartRejection(error)) return;
-    try { await this.slotPool.disposeSessionSlot(session); }
+    try { await this.sessionDrain.poison(session, error); }
     catch (cleanupError) { throw new AppServerSessionCleanupError(error, cleanupError, phase); }
   }
   private async runViaAppServer(input: CodexExecutionInput,

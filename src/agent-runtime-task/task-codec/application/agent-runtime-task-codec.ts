@@ -1,15 +1,11 @@
-import { parseNativeWebEvidence } from "@vioxen/subscription-runtime/core";
+import { createProviderTaskPayloadParser } from "@vioxen/subscription-runtime/core";
 import {
   AgentRuntimeExecutionMode,
   AgentRuntimeTaskEventType,
   AgentRuntimeTaskResultStatus,
   isProviderFailureCode,
   providerTaskSystemPromptValidationError,
-  type AgentCost,
-  type AgentToolCall,
-  type AgentUsage,
   type ManagedRunInputRequest,
-  type ManagedRunResumeHandle,
   type ProviderFailure,
   type ProviderFailureCode,
   type ProviderTask,
@@ -86,12 +82,6 @@ const providerTaskKinds = new Set<ProviderTaskKind>([
   "structured-prompt",
   "health-check",
 ]);
-const toolCallStatuses = new Set<NonNullable<AgentToolCall["status"]>>([
-  "started",
-  "completed",
-  "failed",
-  "denied",
-]);
 const finishReasons = new Set<
   NonNullable<ProviderTaskTelemetry["finishReason"]>
 >([
@@ -103,6 +93,25 @@ const finishReasons = new Set<
   "budget_exceeded",
   "provider_error",
 ]);
+const {
+  parseManagedRunResumeHandle,
+  parseUsage,
+  parseToolCall,
+  parseTelemetry: parseProviderTelemetry,
+} = createProviderTaskPayloadParser({
+  objectAt,
+  stringAt,
+  nonEmptyStringAt,
+  positiveIntegerAt,
+  nonNegativeNumberAt,
+  optionalJsonObjectField,
+  resultError: (message) => protocolError("agent_runtime_task_result_invalid", message),
+});
+
+function parseTelemetry(value: unknown): ProviderTaskTelemetry {
+  return parseProviderTelemetry(value, finishReasons);
+}
+
 export function createAgentRuntimeTaskRequest(
   input: Omit<AgentRuntimeTaskRequestV1, "protocolVersion">,
 ): AgentRuntimeTaskRequestV1 {
@@ -710,31 +719,6 @@ function parseManagedRunInputRequest(
   };
 }
 
-function parseManagedRunResumeHandle(
-  value: unknown,
-  path: string,
-): ManagedRunResumeHandle {
-  const input = objectAt(value, path);
-  return {
-    runId: nonEmptyStringAt(input.runId, `${path}.runId`),
-    providerId: nonEmptyStringAt(input.providerId, `${path}.providerId`),
-    ...optionalStringField(
-      input,
-      "providerInstanceId",
-      `${path}.providerInstanceId`,
-    ),
-    ...optionalStringField(input, "agentId", `${path}.agentId`),
-    ...optionalStringField(input, "workerId", `${path}.workerId`),
-    workspacePath: nonEmptyStringAt(input.workspacePath, `${path}.workspacePath`),
-    ...optionalStringField(input, "threadId", `${path}.threadId`),
-    ...optionalStringRecordField(
-      input,
-      "providerState",
-      `${path}.providerState`,
-    ),
-  };
-}
-
 function parseFailure(value: unknown, path: string): ProviderFailure {
   const input = objectAt(value, path);
   const code = stringAt(input.code, `${path}.code`);
@@ -755,72 +739,6 @@ function parseFailure(value: unknown, path: string): ProviderFailure {
     ...optionalStringField(input, "causeCategory", `${path}.causeCategory`),
     ...optionalMetadataField(input, "details", `${path}.details`),
   };
-}
-
-function parseTelemetry(value: unknown): ProviderTaskTelemetry {
-  const input = objectAt(value, "telemetry");
-  let nativeWeb: ProviderTaskTelemetry["nativeWeb"];
-  try { nativeWeb = input.nativeWeb === undefined ? undefined : parseNativeWebEvidence(input.nativeWeb); }
-  catch { throw protocolError("agent_runtime_task_result_invalid", "telemetry.nativeWeb must contain finite validated transport observations"); }
-  return {
-    ...(nativeWeb === undefined ? {} : { nativeWeb }),
-    ...optionalStringField(input, "providerRunId", "telemetry.providerRunId"),
-    ...optionalStringField(
-      input,
-      "providerSessionId",
-      "telemetry.providerSessionId",
-    ),
-    ...optionalNonNegativeNumberField(
-      input,
-      "durationMs",
-      "telemetry.durationMs",
-    ),
-    ...optionalPositiveIntegerField(input, "turns", "telemetry.turns"),
-    ...optionalUsageField(input, "usage", "telemetry.usage"),
-    ...optionalCostField(input, "cost", "telemetry.cost"),
-    ...optionalToolCallsField(input, "toolCalls", "telemetry.toolCalls"),
-    ...optionalResultEnumField(
-      input,
-      "finishReason",
-      "telemetry.finishReason",
-      finishReasons,
-    ),
-  } as ProviderTaskTelemetry;
-}
-
-function parseUsage(value: unknown, path: string): AgentUsage {
-  const input = objectAt(value, path);
-  return Object.assign({}, ...[
-    "inputTokens", "outputTokens", "totalTokens", "cachedInputTokens",
-    "cacheWriteInputTokens", "reasoningOutputTokens",
-  ].map((key) => optionalPositiveIntegerField(input, key, `${path}.${key}`)));
-}
-
-function parseCost(value: unknown, path: string): AgentCost {
-  const input = objectAt(value, path);
-  const currency = stringAt(input.currency, `${path}.currency`);
-  if (currency !== "USD") {
-    throw protocolError(
-      "agent_runtime_task_result_invalid",
-      `${path}.currency must be USD`,
-    );
-  }
-  return {
-    amount: nonNegativeNumberAt(input.amount, `${path}.amount`),
-    currency,
-  };
-}
-
-function parseToolCall(value: unknown, path: string): AgentToolCall {
-  const input = objectAt(value, path);
-  return {
-    ...optionalStringField(input, "id", `${path}.id`),
-    name: stringAt(input.name, `${path}.name`),
-    ...optionalResultEnumField(input, "status", `${path}.status`, toolCallStatuses),
-    ...optionalJsonObjectField(input, "safeInput", `${path}.safeInput`),
-    ...optionalStringField(input, "safeInputPreview", `${path}.safeInputPreview`),
-    ...optionalStringField(input, "safeOutputPreview", `${path}.safeOutputPreview`),
-  } as AgentToolCall;
 }
 
 function optionalControlsField(
@@ -850,41 +768,6 @@ function parseTelemetryAt(value: unknown, path: string): ProviderTaskTelemetry {
     }
     throw error;
   }
-}
-
-function optionalUsageField(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-): { readonly usage?: AgentUsage } {
-  return input[key] === undefined ? {} : { usage: parseUsage(input[key], path) };
-}
-
-function optionalCostField(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-): { readonly cost?: AgentCost } {
-  return input[key] === undefined ? {} : { cost: parseCost(input[key], path) };
-}
-
-function optionalToolCallsField(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-): { readonly toolCalls?: readonly AgentToolCall[] } {
-  if (input[key] === undefined) return {};
-  if (!Array.isArray(input[key])) {
-    throw protocolError(
-      "agent_runtime_task_result_invalid",
-      `${path} must be an array`,
-    );
-  }
-  return {
-    toolCalls: input[key].map((toolCall, index) =>
-      parseToolCall(toolCall, `${path}[${index}]`),
-    ),
-  };
 }
 
 function optionalMetadataField(
@@ -926,20 +809,6 @@ function optionalStringArrayField(
   };
 }
 
-function optionalStringRecordField(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-): { readonly [P in string]?: Readonly<Record<string, string>> } {
-  if (input[key] === undefined) return {};
-  const value = objectAt(input[key], path);
-  const parsed: Record<string, string> = {};
-  for (const [recordKey, recordValue] of Object.entries(value)) {
-    parsed[recordKey] = stringAt(recordValue, `${path}.${recordKey}`);
-  }
-  return { [key]: parsed };
-}
-
 function optionalEnumField<T extends string>(
   input: Record<string, unknown>,
   key: string,
@@ -950,20 +819,6 @@ function optionalEnumField<T extends string>(
   const value = stringAt(input[key], path);
   if (!allowed.has(value as T)) {
     throw protocolError("agent_runtime_task_request_invalid", `${path} is unsupported`);
-  }
-  return { [key]: value as T };
-}
-
-function optionalResultEnumField<T extends string>(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-  allowed: ReadonlySet<T>,
-): { readonly [P in string]?: T } {
-  if (input[key] === undefined) return {};
-  const value = stringAt(input[key], path);
-  if (!allowed.has(value as T)) {
-    throw protocolError("agent_runtime_task_result_invalid", `${path} is unsupported`);
   }
   return { [key]: value as T };
 }
@@ -991,13 +846,4 @@ function optionalPositiveIntegerField(
 ): { readonly [P in string]?: number } {
   if (input[key] === undefined) return {};
   return { [key]: positiveIntegerAt(input[key], path) };
-}
-
-function optionalNonNegativeNumberField(
-  input: Record<string, unknown>,
-  key: string,
-  path: string,
-): { readonly [P in string]?: number } {
-  if (input[key] === undefined) return {};
-  return { [key]: nonNegativeNumberAt(input[key], path) };
 }

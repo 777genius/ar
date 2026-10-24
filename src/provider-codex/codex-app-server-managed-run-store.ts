@@ -74,7 +74,7 @@ export class InMemoryManagedRunStore implements ManagedRunStorePort {
       current.status !== "waiting_for_input" ||
       current.request?.id !== input.requestId
     ) {
-      throw new Error("managed_run_request_mismatch");
+      throw new Error("codex_managed_run_request_mismatch");
     }
     const record: ManagedRunRecord = {
       runId: input.runId,
