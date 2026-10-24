@@ -4,8 +4,13 @@ import {
   createHash,
   randomBytes,
 } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { writeAtomicLocalFile } from "../../shared/write-atomic-local-file";
 import { dirname, join } from "node:path";
+import {
+  LocalFileLeaseStore,
+  withLocalFileSessionWriteTransaction,
+} from "../../session-leases/adapters/local-file-lease-store";
 import {
   computeSessionGenerationHash,
 } from "@vioxen/subscription-runtime/core";
@@ -32,6 +37,8 @@ export type LocalEncryptedFileStoreOptions = {
   readonly rootDir: string;
   readonly encryptionKey: Uint8Array;
   readonly metadata?: Readonly<Record<string, string>>;
+  readonly requireLease?: boolean;
+  readonly now?: () => Date;
 };
 
 type PersistedRecord = {
@@ -57,6 +64,7 @@ type IdempotencyRecord = {
   readonly generation: number;
   readonly generationHash: string;
   readonly artifactHash: string;
+  readonly requestHash?: string;
 };
 
 export class LocalEncryptedFileStore implements SessionStorePort {
@@ -64,9 +72,14 @@ export class LocalEncryptedFileStore implements SessionStorePort {
   readonly custody = localEncryptedFileStoreCapabilities.custody;
   readonly capabilities = localEncryptedFileStoreCapabilities;
   private readonly encryptionKey: Buffer;
+  private readonly leaseStore: LocalFileLeaseStore;
 
   constructor(private readonly options: LocalEncryptedFileStoreOptions) {
     this.encryptionKey = normalizeEncryptionKey(options.encryptionKey);
+    this.leaseStore = new LocalFileLeaseStore({
+      rootDir: options.rootDir,
+      ...(options.now ? { now: options.now } : {}),
+    });
   }
 
   async read(input: {
@@ -112,77 +125,106 @@ export class LocalEncryptedFileStore implements SessionStorePort {
       throw new Error("provider_id_mismatch");
     }
 
-    const existing = await this.readRecord(input.providerInstanceId);
-    if (existing && existing.providerInstanceId !== input.providerInstanceId) {
-      throw new Error("local_store_record_boundary_mismatch");
-    }
-    const nextGenerationHash = computeSessionGenerationHash({
-      artifact: input.nextArtifact,
-    });
-    const nextArtifactHash = hashBytes(input.nextArtifact.bytes);
-    const replay = existing?.idempotency[input.idempotencyKey];
-    if (replay) {
-      if (replay.artifactHash !== nextArtifactHash) {
-        throw new Error("idempotency_key_conflict");
-      }
-      return {
-        status: "idempotent_replay",
-        generation: replay.generation,
-        generationHash: replay.generationHash,
-      };
-    }
-
-    if (existing && existing.generation !== input.expectedGeneration) {
-      return {
-        status: "stale_generation",
-        currentGeneration: existing.generation,
-        currentGenerationHash: existing.generationHash,
-      };
-    }
-    if (!existing && input.expectedGeneration !== 0) {
-      return {
-        status: "stale_generation",
-        currentGeneration: 0,
-        currentGenerationHash: "",
-      };
-    }
-
-    const generation = existing ? existing.generation + 1 : 1;
-    const record = encryptRecord({
-      providerInstanceId: input.providerInstanceId,
-      providerId: this.options.providerId,
-      artifact: input.nextArtifact,
-      generation,
-      generationHash: nextGenerationHash,
-      metadata: {
-        ...(existing?.metadata ?? {}),
-        ...(this.options.metadata ?? {}),
-        ...(input.metadata ?? {}),
-        leaseId: input.leaseId,
-      },
-      idempotency: {
-        ...(existing?.idempotency ?? {}),
-        [input.idempotencyKey]: {
-          generation,
-          generationHash: nextGenerationHash,
-          artifactHash: nextArtifactHash,
-        },
-      },
-      key: this.encryptionKey,
-    });
-    await this.writeRecord(input.providerInstanceId, record);
-    return {
-      status: "accepted",
-      generation,
-      generationHash: nextGenerationHash,
+    // Own the request before waiting for another process so caller mutation
+    // cannot change what its idempotency key or generation hash identifies.
+    input = {
+      ...input,
+      nextArtifact: { ...input.nextArtifact, bytes: new Uint8Array(input.nextArtifact.bytes) },
+      ...(input.metadata ? { metadata: { ...input.metadata } } : {}),
     };
+    const requestHash = hashWriteRequest(input);
+    return withLocalFileSessionWriteTransaction(this.leaseStore, input.providerInstanceId, async (guard) => {
+      const existing = await this.readRecord(input.providerInstanceId);
+      if (existing && (existing.providerInstanceId !== input.providerInstanceId || existing.providerId !== this.options.providerId)) {
+        throw new Error("local_store_record_boundary_mismatch");
+      }
+      const nextGenerationHash = computeSessionGenerationHash({
+        artifact: input.nextArtifact,
+      });
+      const nextArtifactHash = hashBytes(input.nextArtifact.bytes);
+      const replay = existing && Object.hasOwn(existing.idempotency, input.idempotencyKey)
+        ? existing.idempotency[input.idempotencyKey] : undefined;
+      if (replay) {
+        if (!replay.requestHash) {
+          // Older v1 receipts only stored the byte hash. Reconstruct a request
+          // only while the latest artifact and lease metadata still prove it;
+          // historical receipts cannot identify their original lease or format.
+          if (!canVerifyLegacyReplay(existing!, replay, input, this.options.metadata, nextGenerationHash, nextArtifactHash)) {
+            throw new Error("local_store_legacy_idempotency_unverifiable");
+          }
+          await this.writeRecord(input.providerInstanceId, {
+            ...existing!,
+            idempotency: { ...existing!.idempotency, [input.idempotencyKey]: { ...replay, requestHash } },
+          });
+        } else if (replay.requestHash !== requestHash || replay.artifactHash !== nextArtifactHash) {
+          throw new Error("idempotency_key_conflict");
+        }
+        await guard.recordReceipt({ leaseId: input.leaseId, generationHash: replay.generationHash, idempotencyKey: input.idempotencyKey });
+        return {
+          status: "idempotent_replay",
+          generation: replay.generation,
+          generationHash: replay.generationHash,
+        };
+      }
+
+      if (existing && existing.generation !== input.expectedGeneration) {
+        return {
+          status: "stale_generation",
+          currentGeneration: existing.generation,
+          currentGenerationHash: existing.generationHash,
+        };
+      }
+      if (!existing && input.expectedGeneration !== 0) {
+        return {
+          status: "stale_generation",
+          currentGeneration: 0,
+          currentGenerationHash: "",
+        };
+      }
+
+      await guard.authorize({ leaseId: input.leaseId, restoredGenerationHash: existing?.generationHash ?? "",
+        bootstrap: !existing && input.expectedGeneration === 0, requireLease: this.options.requireLease ?? false });
+      const generation = existing ? existing.generation + 1 : 1;
+      const record = encryptRecord({
+        providerInstanceId: input.providerInstanceId,
+        providerId: this.options.providerId,
+        artifact: input.nextArtifact,
+        generation,
+        generationHash: nextGenerationHash,
+        metadata: {
+          ...(existing?.metadata ?? {}),
+          ...(this.options.metadata ?? {}),
+          ...(input.metadata ?? {}),
+          leaseId: input.leaseId,
+        },
+        idempotency: {
+          ...(existing?.idempotency ?? {}),
+          [input.idempotencyKey]: {
+            generation,
+            generationHash: nextGenerationHash,
+            artifactHash: nextArtifactHash,
+            requestHash,
+          },
+        },
+        key: this.encryptionKey,
+      });
+      await this.writeRecord(input.providerInstanceId, record);
+      await guard.recordReceipt({ leaseId: input.leaseId, generationHash: nextGenerationHash, idempotencyKey: input.idempotencyKey });
+      return {
+        status: "accepted",
+        generation,
+        generationHash: nextGenerationHash,
+      };
+    });
   }
 
   async delete(input: {
     readonly providerInstanceId: string;
     readonly reason: string;
   }): Promise<void> {
-    await rm(this.pathFor(input.providerInstanceId), { force: true });
+    await withLocalFileSessionWriteTransaction(this.leaseStore, input.providerInstanceId, async () => {
+      await rm(this.pathFor(input.providerInstanceId), { force: true });
+    });
   }
 
   private async readRecord(
@@ -203,11 +245,7 @@ export class LocalEncryptedFileStore implements SessionStorePort {
   ): Promise<void> {
     const path = this.pathFor(providerInstanceId);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const tempPath = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(record, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    await rename(tempPath, path);
+    await writeAtomicLocalFile(path, `${JSON.stringify(record, null, 2)}\n`);
   }
 
   private pathFor(providerInstanceId: string): string {
@@ -304,6 +342,35 @@ function parseRecord(value: string): PersistedRecord {
     metadata: parsed.metadata ?? {},
     idempotency: parsed.idempotency ?? {},
   };
+}
+
+function canVerifyLegacyReplay(
+  existing: PersistedRecord,
+  replay: IdempotencyRecord,
+  input: Parameters<SessionStorePort["write"]>[0],
+  metadata: Readonly<Record<string, string>> | undefined,
+  generationHash: string,
+  artifactHash: string,
+): boolean {
+  return existing.generation === replay.generation && input.expectedGeneration === replay.generation - 1 &&
+    replay.generationHash === generationHash && existing.generationHash === generationHash &&
+    replay.artifactHash === artifactHash && existing.metadata.leaseId === input.leaseId &&
+    existing.artifact.kind === input.nextArtifact.kind && existing.artifact.formatVersion === input.nextArtifact.formatVersion &&
+    existing.artifact.contentType === input.nextArtifact.contentType &&
+    JSON.stringify(sortedMetadata(existing.metadata)) === JSON.stringify(sortedMetadata({ ...metadata, ...input.metadata, leaseId: input.leaseId }));
+}
+
+function sortedMetadata(metadata: Readonly<Record<string, string>>): readonly [string, string][] {
+  return Object.entries(metadata).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+}
+
+function hashWriteRequest(input: Parameters<SessionStorePort["write"]>[0]): string {
+  return hashText(JSON.stringify([
+    input.providerInstanceId, input.expectedGeneration, input.leaseId,
+    input.nextArtifact.providerId, input.nextArtifact.kind, input.nextArtifact.formatVersion,
+    input.nextArtifact.contentType, hashBytes(input.nextArtifact.bytes),
+    sortedMetadata(input.metadata ?? {}),
+  ]));
 }
 
 function hashText(value: string): string {

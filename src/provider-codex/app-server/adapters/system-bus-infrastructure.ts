@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, readdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { parseSystemBusInfrastructure, SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH,
-  SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
-  SYSTEM_BUS_SOCKET_FRAGMENT, type SystemBusInfrastructure, type SystemBusFilePin } from "@vioxen/subscription-runtime/core";
+import { parseSystemBusInfrastructure, SYSTEM_BUS_CONFIG_PATH, SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT,
+  SYSTEM_BUS_EXECUTABLE, type SystemBusInfrastructure, type SystemBusFilePin } from "@vioxen/subscription-runtime/core";
+import { SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_SERVICE_FRAGMENT, SYSTEM_BUS_SOCKET_FRAGMENT } from "./system-bus-configuration";
 import { assertSystemdManagerOwner, observeSystemdServiceEmptyArrays, systemdObservationBudget,
   SystemdServiceArrayKind, SystemdArrayProperty, type SystemdEmptyArrayFact, type SystemdObservationRemaining } from "./systemd-service-arrays";
 import { AppServerObserverPoint as ObserverPoint, retainObserverFailure } from "../domain/app-server-observer-failure";
