@@ -252,12 +252,16 @@ export class FileBackendCodexManagedRunCoordinator {
         abortSignal,
       });
       let persisted:ProviderTaskResult;
-      if (sessionExecutionUse && result.status !== "waiting_for_input") {
+      // A refused resume (stale request, foreign handle) never claimed the run,
+      // so the driver still holds its native session: that use is not terminal,
+      // and durable recovery must not open a second thread beside it.
+      const refused = result.status !== "waiting_for_input" && agentDriver.hasManagedRunSession(input.runId);
+      if (sessionExecutionUse && result.status !== "waiting_for_input" && !refused) {
         retainedTerminal = true;
         this.#terminalResumes.set(sessionExecutionUse,{result,session:session ? Object.freeze({...session}) : null,runId:input.runId});
         persisted = await this.settleTerminalResume(sessionExecutionUse);
       } else persisted = await this.persistResumeSessionUpdate({result,session,runId:input.runId});
-      restartAfterCompletion = persisted.status === "failed" && !persisted.warnings.some(warning => warning.code === "codex_session_finalization_pending") && canRecoverManagedRun(input,durableRecord);
+      restartAfterCompletion = !refused && persisted.status === "failed" && !persisted.warnings.some(warning => warning.code === "codex_session_finalization_pending") && canRecoverManagedRun(input,durableRecord);
       if (!restartAfterCompletion) return await this.taskResultToOutput(persisted, {
         kind: "resume",
         input,
