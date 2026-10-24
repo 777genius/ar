@@ -37,6 +37,14 @@ function abortWindowHarness(abort: AbortController) {
     suppressTurnCompletion: true,
   });
   const runStore = new InMemoryManagedRunStore();
+  // Count claims directly: a claim compensated back to waiting leaves the same
+  // status behind, so the status alone cannot prove the fence held.
+  let claims = 0;
+  const originalResume = runStore.resume.bind(runStore);
+  runStore.resume = async (input) => {
+    claims += 1;
+    return await originalResume(input);
+  };
   const engine = new CodexAppServerExecutionEngine({
     codexBinaryPath: "/fake/codex",
     processFactory: factory.create,
@@ -59,14 +67,14 @@ function abortWindowHarness(abort: AbortController) {
     }
     return slot;
   };
-  return { factory, engine, runStore };
+  return { factory, engine, runStore, claims: () => claims };
 }
 
 describe("bug F: abort before the claim must not flip the run", () => {
   it("leaves the run waiting when the signal aborts between slot ready and claim", async () => {
     const home = await workspace();
     const abort = new AbortController();
-    const { factory, engine, runStore } = abortWindowHarness(abort);
+    const { factory, engine, runStore, claims } = abortWindowHarness(abort);
     try {
       const resumeHandle = {
         runId: "abort-window-run",
@@ -108,6 +116,7 @@ describe("bug F: abort before the claim must not flip the run", () => {
       // Nothing may reach the wire before the claim, and the claim itself
       // must never run for an aborted signal.
       expect(threadResumeCount(factory)).toBe(0);
+      expect(claims()).toBe(0);
       expect((await runStore.get({ runId: resumeHandle.runId }))?.status).toBe("waiting_for_input");
     } finally {
       await engine.dispose();
