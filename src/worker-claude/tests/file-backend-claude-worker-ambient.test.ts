@@ -95,7 +95,7 @@ describe("FileBackendClaudeWorker ambient selection", () => {
     const fixture = await ambientTestFixture();
     const first = fixture.worker();
     const second = fixture.worker();
-    const { sessionStore } = createLocalFileBackendRuntimeAdapters({
+    const { sessionStore, leaseStore } = createLocalFileBackendRuntimeAdapters({
       providerId: "claude",
       rootDir: join(fixture.rootDir, "TEST-state", "sessions"),
       encryptionKey: encryptionKey(),
@@ -115,12 +115,25 @@ describe("FileBackendClaudeWorker ambient selection", () => {
       });
       if (!oauth) throw new Error("TEST OAuth state missing");
       // Simulate restored durable paths; a previous opt-in must not outlive the new OAuth choice.
-      await expect(sessionStore.write({
+      const restorationLease = await leaseStore.acquire({
+        providerInstanceId: "claude-TEST-ambient", runId: "TEST-restoration", attempt: 1,
+        ttlMs: 60_000, restoredGenerationHash: oauth.generationHash,
+      });
+      if (restorationLease.status !== "granted") throw new Error("TEST restoration lease unavailable");
+      await leaseStore.finalize({ leaseId: restorationLease.leaseId, restoredGenerationHash: oauth.generationHash });
+      await leaseStore.markWritebackStarted({ leaseId: restorationLease.leaseId });
+      const restored = await sessionStore.write({
         providerInstanceId: "claude-TEST-ambient",
         expectedGeneration: oauth.generation,
         nextArtifact: ambient.artifact,
-        idempotencyKey: "TEST-restore-ambient", leaseId: "TEST-restoration",
-      })).resolves.toMatchObject({ status: "accepted" });
+        idempotencyKey: "TEST-restore-ambient", leaseId: restorationLease.leaseId,
+      });
+      expect(restored).toMatchObject({ status: "accepted" });
+      if (restored.status === "stale_generation") throw new Error("TEST restoration generation changed");
+      await expect(leaseStore.markWritebackCommitted({
+        leaseId: restorationLease.leaseId, nextGenerationHash: restored.generationHash,
+        idempotencyKey: "TEST-restore-ambient",
+      })).resolves.toMatchObject({ status: "committed" });
       await expect(first.run({ prompt: "TEST OAuth remains the current choice" }))
         .rejects.toThrow("claude_ambient_home_opt_in_required");
       await expect(readFile(fixture.launchPath)).rejects.toMatchObject({ code: "ENOENT" });

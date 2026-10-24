@@ -11,7 +11,7 @@ import { types } from "node:util";
 import { captureFixedSignedPythonEnvelopeData, serializeFixedSignedPythonEnvelopeData, PythonDataCatalogStatus, PythonEnvelopeKind, type SignedPackage, type CapturedEnvelope, type PythonDataCatalogSerialization } from "../../host-integration/managed-launcher/dependency-full-python-envelope-TEST.ts";
 import { assertExactH1PackageSeeds, exactH1PackageSeeds, retainOriginalAcquiredArchive, ToolInputArchitecture, type AcquiredSignedPackage } from "./current-h1-tool-inputs-package.ts";
 import { qualifiedH1PackagePins, qualifiedH1PackageRequestArguments, qualifiedH1PackageVectorSha256 } from "./current-h1-qualified-package-image.ts";
-import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
+import { assertCiPublicEvidenceBasename, assertCompleteUbuntuIndex, assertUbuntuArchiveSignature, ciIndexOperationalBytes, CiUbuntuComponent, ciUbuntuSources, findCiUbuntuSecurityPackageIndex, joinCompleteUbuntuIndex, parseUbuntuRelease, ubuntuArchive2018Fingerprint } from "./current-h1-tool-inputs-ci-index.ts";
 import {h1SourceLimits,joinH1BinarySource,joinH1SourceSelection,retainH1SourceArchives,type H1SourceIdentity,type H1SourceIndexOrigin,type H1SourceSelection} from "./current-h1-source-record-TEST.ts";
 import {collectH1PatchedSourceData,readH1ExtractorVisibleFailure} from "./current-h1-source-extraction-TEST.ts";
 import { inspectRetainedOriginalDebFsys, type RawArchiveSurvey } from "./current-h1-archive-format-census.ts";
@@ -224,8 +224,8 @@ export async function mainCiSignedToolInputs():Promise<void> {
   // staged package/image vector, archive survey, role graph or toolroot.
   const sourceOnlyPin:AcquiredSignedPackage=Object.freeze({package:"systemd-container",version:"255.4-1ubuntu8.18",arch:ToolInputArchitecture.Amd64,sha256:"4692e521e9330c8d87427ffbeeed3b21d487857804dbdf630df650ba0f2b6573",size:417242,filename:"pool/main/s/systemd/systemd-container_255.4-1ubuntu8.18_amd64.deb"});
   const sourceOnlyFields="Package: systemd-container\nVersion: 255.4-1ubuntu8.18\nArchitecture: amd64\n";
-  const sourceOnlyIndex=indices.find(index=>index.origin==="https://security.ubuntu.com/ubuntu/dists/noble-security"&&index.path==="main/binary-amd64/Packages");assert(sourceOnlyIndex);
-  assert.deepEqual(joinCompleteUbuntuIndex(sourceOnlyFields,sourceOnlyIndex.bytes,sourceOnlyPin),sourceOnlyPin,"source-only transfer must first join current authenticated complete security index");
+  const sourceOnlyIndex=findCiUbuntuSecurityPackageIndex(indices);assert(sourceOnlyIndex);
+  assert.deepEqual(joinCompleteUbuntuIndex(sourceOnlyFields,sourceOnlyIndex.bytes,sourceOnlyPin),sourceOnlyPin,"source-only transfer must first join authenticated complete snapshot security index");
   const sourceOnlyRoot=join(scratch,"source-only-systemd-container");dir(sourceOnlyRoot);
   const sourceOnlyDirectory=lstatSync(sourceOnlyRoot,{bigint:true}),sourceOnlyFd=openSync(sourceOnlyRoot,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
   try{assert.equal(tuple(fstatSync(sourceOnlyFd,{bigint:true})),tuple(sourceOnlyDirectory));command(CiTool.AptGet,["download","systemd-container:amd64=255.4-1ubuntu8.18"],4*1024*1024,ciNetworkFetchBudgetMs.sourceOnlyBinary,env,`/proc/${process.pid}/fd/${sourceOnlyFd}`);

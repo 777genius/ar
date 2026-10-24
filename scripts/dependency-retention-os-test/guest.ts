@@ -25,9 +25,9 @@ import { decodeCodexGoalOriginDiagnostic } from "../../dist/worker-codex/codex-g
 import { collectCodexGoalStatus } from "../../dist/worker-codex/codex-goal-ops.js";
 import { writeHostedTestEgressGrant } from "../../dist/worker-codex/hosted-test-egress-files.js";
 import { CodexProviderEgressProfileId, verifySystemBusInfrastructure } from "../../dist/provider-codex/index.js";
-import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_CONFIG_PATH,
-  SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_EXECUTABLE, SYSTEM_BUS_SERVICE_FRAGMENT,
-  SYSTEM_BUS_SOCKET_FRAGMENT, SystemBusQueryRenderer, type SystemBusQueryTool, type SystemBusFilePin, type SystemBusInfrastructure } from "../../dist/core/index.js";
+import { SYSTEM_BUS_ARGUMENTS, SYSTEM_BUS_CONFIG, SYSTEM_BUS_SERVICE_FRAGMENT, SYSTEM_BUS_SOCKET_FRAGMENT } from "../../dist/provider-codex/app-server/adapters/system-bus-configuration.js";
+import { parseSystemBusInfrastructure, SystemBusInfrastructureRole, SYSTEM_BUS_CONFIG_PATH,
+  SYSTEM_BUS_CONTROL_GROUP, SYSTEM_BUS_ENDPOINT, SYSTEM_BUS_EXECUTABLE, SystemBusQueryRenderer, type SystemBusQueryTool, type SystemBusFilePin, type SystemBusInfrastructure } from "../../dist/core/index.js";
 import { observeSystemBusFdEmptyArrays } from "../../dist/provider-codex/app-server/adapters/system-bus-infrastructure.js";
 import { assertPinnedSystemBusQueryTool, observeSystemdServiceEmptyArrays, SystemdServiceArrayKind,
   type SystemdEmptyArrayFact } from "../../dist/provider-codex/app-server/adapters/systemd-service-arrays.js";
