@@ -14,8 +14,6 @@ const maxLines = Number(process.env.SUBSCRIPTION_RUNTIME_FILE_MAX_LINES ?? 1000)
 // These are ratchets, not exemptions: any growth fails until the file is split,
 // and each cap should move down (or disappear) when that debt is reduced.
 const legacyLineCaps = {
-  "src/agent-task/task-codec/application/agent-task-codec.ts": 1013,
-  "src/agent-runtime-task/task-codec/application/agent-runtime-task-codec.ts": 1007,
   "src/provider-claude/tests/claude-provider.test.ts": 1254,
   "src/provider-codex/app-server/application/app-server-client.ts": 1107,
   "src/worker-codex/application/project-control/codex-goal-project-admission.ts": 1051,
@@ -69,6 +67,10 @@ for (const file of await listFiles(srcDir)) {
   const text = await readFile(file, "utf8");
   checkLineBudget(rel, text);
   checkApplicationImports(rel, text);
+  if (/^src\/core\/(?!tests\/|.*\/tests\/|.*\.test\.ts$)/.test(rel) &&
+      /\bSYSTEM_BUS_(?:ARGUMENTS|CONFIG(?!_PATH)|SERVICE_FRAGMENT|SOCKET_FRAGMENT)\b|<busconfig>|\[(?:Unit|Service|Socket)\]/.test(text)) {
+    violations.push(`${rel}: Host service installation recipes belong to outer adapters; core owns inventory contracts only`);
+  }
   if (isMcpToolFile(rel) || rel === "src/worker-codex/codex-goal-mcp.ts") {
     checkMcpFacade(rel, text);
   }

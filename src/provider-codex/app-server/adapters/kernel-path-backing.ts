@@ -1,3 +1,4 @@
+/** Linux mount observations owned by the outer Host adapter. */
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readlinkSync, realpathSync, readSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";

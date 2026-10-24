@@ -324,9 +324,15 @@ test("source package contract keeps legacy and binds selected Positive package b
   assert.equal(fullNativeSourcePackageHash(1),"68a91f14118d7b4dc06b02dad1835bc1db19760e5329faff1f4805cbd1508b29");
   const currentBytes=readFileSync(new URL("../../package.json",import.meta.url));
   assert.equal(fullNativeSourcePackageHash(3),createHash("sha256").update(currentBytes).digest("hex"));
-  const current=JSON.parse(currentBytes.toString()) as {bundledDependencies:string[];dependencies:Record<string,string>};
+  const current=JSON.parse(currentBytes.toString()) as {bundledDependencies:string[];dependencies:Record<string,string>;exports:Record<string,{types:string;import:string;default:string}>};
   assert.equal(current.dependencies.undici,"7.30.0");assert.equal(current.bundledDependencies.filter(v=>v==="undici").length,1);
-  const old=structuredClone(current);delete old.dependencies.undici;old.bundledDependencies=old.bundledDependencies.filter(v=>v!=="undici");
+  assert.deepEqual(current.exports["./core"],{types:"./dist/core-compatibility.d.ts",import:"./dist/core-compatibility.js",default:"./dist/core-compatibility.js"});
+  const prior=structuredClone(current);prior.exports["./core"]={types:"./dist/core/index.d.ts",import:"./dist/core/index.js",default:"./dist/core/index.js"};
+  // Keep the exact pre-facade schema3 manifest independently reproducible, then
+  // restore the older no-undici shape before checking immutable schema2 bytes.
+  assert.equal(createHash("sha256").update(JSON.stringify(prior,null,2)+"\n").digest("hex"),"ea298fca6ba721e9cb80ef2d75d195d1c5efcd7cab83d7041d6d24dcf76e7fe2");
+  assert.notEqual(fullNativeSourcePackageHash(3),createHash("sha256").update(JSON.stringify(prior,null,2)+"\n").digest("hex"));
+  const old=structuredClone(prior);delete old.dependencies.undici;old.bundledDependencies=old.bundledDependencies.filter(v=>v!=="undici");
   const bytes=Buffer.from(JSON.stringify(old,null,2)+"\n");
   const hash=(value:Buffer|string)=>createHash("sha256").update(value).digest("hex");
   assert.equal(fullNativeSourcePackageHash(2),"bb43752d46168ba35c90f1ed69e04d41c7fcd87dcb2fac40c3d0d85fc8f890c6");
