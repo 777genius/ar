@@ -48,7 +48,7 @@ import {
   type PendingRequest,
   type TurnState,
 } from "./app-server-turn-state";
-import { waitForAppServerTurn } from "./app-server-turn-waiter";
+import { releaseAppServerTurn, waitForAppServerTurn } from "./app-server-turn-waiter";
 import { isCodexAppServerReconnectProgressMessage, isCodexAppServerTurnProgressMethod } from "../protocol/app-server-event-parser";
 import { readGoal } from "../protocol/app-server-goal-protocol";
 import {
@@ -123,6 +123,8 @@ export class CodexAppServerClient {
   private readonly turnIdAliases = new Map<string, string>();
   private readonly dynamicTools: AppServerDynamicToolHandler;
   private readonly warnings = createBoundedAppServerWarningCollector();
+  private readonly interruptTurn = (threadId: string, turnId: string): void => { this.child?.stdin.write(encodeJsonRpcMessage({ id: this.nextId++, method: "turn/interrupt", params: { threadId, turnId } })); };
+  private readonly releaseTurn = (turn: TurnState, turnId: string, threadId: string): void => releaseAppServerTurn({ turn, terminal: this.isTerminal(), interrupt: () => this.interruptTurn(threadId, turnId), warn: warning => this.warnings.push(warning), clear: () => this.clearTurnTracking(turnId, threadId) });
   private exited = false;
   private terminalError: Error | null = null;
   private stopping: Promise<void> | null = null;
@@ -138,7 +140,7 @@ export class CodexAppServerClient {
       isTerminal: () => this.terminalError !== null,
       activeTurns: () => [...this.pendingTurnIdsByThread],
       recordTerminal: error => this.recordTerminalError(error),
-      interrupt: (threadId, turnId) => { this.child?.stdin.write(encodeJsonRpcMessage({ id: this.nextId++, method: "turn/interrupt", params: { threadId, turnId } })); },
+      interrupt: this.interruptTurn,
       stop: () => this.stopChild(),
     }) : undefined;
     this.dynamicTools = new AppServerDynamicToolHandler({
@@ -620,7 +622,7 @@ export class CodexAppServerClient {
     const existing = this.turns.get(turnId);
     if (existing) attachAppServerTextDeltaSink(existing, input.onTextDelta, () => this.resolveTurn(existing));
     if (existing?.completed || existing?.error) {
-      this.clearTurnTracking(turnId, input.threadId);
+      this.releaseTurn(existing, turnId, input.threadId);
       return Promise.resolve(existing);
     }
     if (this.terminalError) {
@@ -633,7 +635,7 @@ export class CodexAppServerClient {
     const turn = existing ?? createTurnState();
     if (!existing) attachAppServerTextDeltaSink(turn, input.onTextDelta, () => this.resolveTurn(turn));
     if (turn.completed || turn.error) {
-      this.clearTurnTracking(turnId, input.threadId);
+      this.releaseTurn(turn, turnId, input.threadId);
       return Promise.resolve(turn);
     }
     return waitForAppServerTurn({
@@ -645,7 +647,7 @@ export class CodexAppServerClient {
         this.turns.set(turnId, turn);
         this.pendingTurnIdsByThread.set(input.threadId, turnId);
       },
-      clear: () => this.clearTurnTracking(turnId, input.threadId),
+      clear: () => this.releaseTurn(turn, turnId, input.threadId),
     });
   }
 
@@ -995,6 +997,7 @@ export class CodexAppServerClient {
     void this.stopChild().catch(() => undefined);
   }
 
+  isTerminal(): boolean { return this.terminalError !== null; }
   /** Scoped process stop request only; this does not prove host custody release. */
   requestChildCleanup(error: unknown): void {
     if (this.childLifetime) this.childLifetime.cleanup(error); else this.failProtocol(error);

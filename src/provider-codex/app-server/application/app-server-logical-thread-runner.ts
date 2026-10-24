@@ -35,7 +35,7 @@ export async function runCodexAppServerLogicalThread(
       result: CodexExecutionResult,
       input: LogicalThreadInput,
     ): Promise<CodexExecutionResult>;
-    disposeSession(): Promise<void>;
+    disposeSession(error: unknown): Promise<void>;
   },
 ): Promise<CodexLogicalThreadExecutionResult> {
   if (!deps.goalMode) {
@@ -86,7 +86,7 @@ export async function runCodexAppServerLogicalThread(
       outcome: result.outcome,
     };
   } catch (error) {
-    if (!isAppServerAdmissionError(error)) await deps.disposeSession();
+    if (!isAppServerAdmissionError(error)) await deps.disposeSession(error);
     throw error;
   }
 }
