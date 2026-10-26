@@ -386,7 +386,7 @@ jobs:
           SR_ARCHIVE_TEST_PRIVILEGE: nonroot
 
   unit-tests:
-    if: ${{ always() }}
+    if: ${{ always() && !cancelled() }}
     needs: [ci-proof-reuse, unit-test-shards, unit-test-ancillary]
     runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
     steps:
@@ -413,7 +413,7 @@ jobs:
     # The unchanged archive TEST runs as native UID 0 in the existing disposable
     # SOURCE container. Its command and completed JSON report are mandatory there.
     needs: native-probe-source
-    if: ${{ always() }}
+    if: ${{ always() && !cancelled() }}
     runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
@@ -1655,7 +1655,7 @@ jobs:
   crash-boundary-shards-complete:
     permissions:
       contents: read
-    if: ${{ always() }}
+    if: ${{ always() && !cancelled() }}
     needs: [ci-proof-reuse, crash-boundary-shards]
     runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
     steps:
@@ -1677,7 +1677,7 @@ jobs:
           fi
 
   test:
-    if: ${{ always() }}
+    if: ${{ always() && !cancelled() }}
     needs: [quality, unit-tests, observer-mount-tests, archive-root-tests, package, native-probe-source, crash-boundary-shards-complete]
     runs-on: ${{ vars.CI_CONTROL_RUNNER || 'ubuntu-24.04' }}
     steps:
