@@ -25,6 +25,11 @@ on:
 permissions:
   contents: read
 
+# Replace stale code checks; keep diagnostic runs independent.
+concurrency:
+  group: dependency-retention-linux-test-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && (github.event.pull_request.number || github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+
 jobs:
   native-test-primitives:
     # A fresh GitHub-hosted VM is required: never inherit a configured host pool.

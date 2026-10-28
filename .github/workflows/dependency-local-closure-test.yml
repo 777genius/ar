@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# Replace stale code checks; keep diagnostic runs independent.
+concurrency:
+  group: dependency-local-closure-test-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && (github.event.pull_request.number || github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+
 jobs:
   npm-local-closure:
     runs-on: ubuntu-24.04
