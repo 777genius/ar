@@ -225,7 +225,7 @@
     "ajv": "8.20.0",
     "libsodium-wrappers": "^0.8.4",
     "zod": "^4.4.3",
-    "undici": "7.30.0"
+    "undici": "7.30.1"
   },
   "peerDependencies": {
     "vitest": "^4.1.12"
