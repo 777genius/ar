@@ -14,6 +14,7 @@ import { assertManagedRunIdentifiersSafe, discardLegacyAnswerSummary, redactMana
 
 export class LocalFileManagedRunStore implements ManagedRunStorePort {
   constructor(private readonly rootDir: string, private readonly redactor: RedactorPort) {}
+  private claimChain: Promise<unknown> = Promise.resolve();
 
   async get(input: { readonly runId: string }): Promise<ManagedRunRecord | null> {
     const raw = await readFile(this.recordPath(input.runId), "utf8").catch(
@@ -71,25 +72,31 @@ export class LocalFileManagedRunStore implements ManagedRunStorePort {
     readonly answer: string;
     readonly now: Date;
   }): Promise<ManagedRunRecord> {
-    const current = await this.get({ runId: input.runId });
-    if (
-      !current ||
-      current.status !== "waiting_for_input" ||
-      current.request?.id !== input.requestId
-    ) {
-      throw new Error("codex_managed_run_request_mismatch");
-    }
-    const {
-      request: _request,
-      ...currentWithoutRequest
-    } = current;
-    const record: ManagedRunRecord = {
-      ...currentWithoutRequest,
-      status: "active",
-      updatedAt: input.now,
-    };
-    await this.writeRecord(record);
-    return record;
+    // The claim is the run's exclusion primitive: check-and-flip must be
+    // atomic or two racing resumes both proceed and double their side effects.
+    const attempt = this.claimChain.then(async () => {
+      const current = await this.get({ runId: input.runId });
+      if (
+        !current ||
+        current.status !== "waiting_for_input" ||
+        current.request?.id !== input.requestId
+      ) {
+        throw new Error("codex_managed_run_request_mismatch");
+      }
+      const {
+        request: _request,
+        ...currentWithoutRequest
+      } = current;
+      const record: ManagedRunRecord = {
+        ...currentWithoutRequest,
+        status: "active",
+        updatedAt: input.now,
+      };
+      await this.writeRecord(record);
+      return record;
+    });
+    this.claimChain = attempt.catch(() => undefined);
+    return await attempt;
   }
 
   async complete(input: {
