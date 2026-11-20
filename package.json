@@ -191,7 +191,7 @@
   },
   "devDependencies": {
     "@vioxen/agent-account-observability": "file:packages/agent-account-observability",
-    "typescript": "^6.0.3",
+    "typescript": "7.0.2",
     "vitest": "^4.1.5"
   },
   "optionalDependencies": {
